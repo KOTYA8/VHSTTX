@@ -79,6 +79,18 @@ sudo touch /etc/modprobe.d/bttv.conf
 ```
 In a folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
 
+# Additional features
+### Fixing self-brightness on BT878
+1. Installing ffmpeg
+```
+sudo apt install ffmpeg
+```
+2. Run the script in the terminal
+```
+while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sleep 3m ; done ; loop
+```
+Every 3 minutes (within 2 seconds), the capture card will be launched
+
 # Changelog
 All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/VHSTT2_VER)  
 
