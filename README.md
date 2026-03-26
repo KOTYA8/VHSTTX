@@ -32,7 +32,7 @@ pip install PyQt5
 ```
 2. Install   
 ```
-ttviewr-install
+ttviewer-install
 ```
 
 # Functions
