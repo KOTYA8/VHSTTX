@@ -89,7 +89,7 @@ sudo apt install ffmpeg
 ```
 while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sleep 3m ; done ; loop
 ```
-*Every 3 minutes (within 2 seconds), the capture card will be launched.*
+**Every 3 minutes (within 2 seconds), the capture card will be launched.**
 
 # Changelog
 All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/VHSTT2_VER)  
