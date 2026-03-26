@@ -31,7 +31,7 @@ if os.name == 'nt' and platform.release() == '10' and platform.version() >= '10.
     kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
 
 
-def parse_ignore_lines(ctx, param, value):
+def parse_frame_lines(ctx, param, value):
     lines = []
     for group in value:
         for item in group.split(','):
@@ -45,21 +45,48 @@ def parse_ignore_lines(ctx, param, value):
     return tuple(lines)
 
 
+def parse_ignore_lines(ctx, param, value):
+    return parse_frame_lines(ctx, param, value)
+
+
+def parse_used_lines(ctx, param, value):
+    return parse_frame_lines(ctx, param, value)
+
+
 def useful_frame_lines(config):
     return len(config.field_range) * 2
 
 
-def normalise_ignore_lines(ignore_lines, config):
-    ignore_lines = frozenset(ignore_lines)
+def normalise_frame_lines(lines, config, param_hint):
+    lines = frozenset(lines)
     max_line = useful_frame_lines(config)
-    invalid = sorted(line for line in ignore_lines if line < 1 or line > max_line)
+    invalid = sorted(line for line in lines if line < 1 or line > max_line)
     if invalid:
         invalid_str = ', '.join(str(line) for line in invalid)
         raise click.BadParameter(
             f'Line numbers must be between 1 and {max_line}. Invalid value(s): {invalid_str}.',
-            param_hint='--ignore-line'
+            param_hint=param_hint
         )
-    return ignore_lines
+    return lines
+
+
+def normalise_ignore_lines(ignore_lines, config):
+    return normalise_frame_lines(ignore_lines, config, '--ignore-line')
+
+
+def normalise_used_lines(used_lines, config):
+    return normalise_frame_lines(used_lines, config, '--used-line')
+
+
+def resolve_frame_line_selection(config, ignore_lines=(), used_lines=()):
+    max_line = useful_frame_lines(config)
+    all_lines = frozenset(range(1, max_line + 1))
+    ignore_lines = normalise_ignore_lines(ignore_lines, config)
+    used_lines = normalise_used_lines(used_lines, config)
+    selected_lines = used_lines if used_lines else all_lines
+    selected_lines = selected_lines - ignore_lines
+    ignored_lines = all_lines - selected_lines
+    return selected_lines, ignored_lines
 
 
 def ignored_frame_line_byte_ranges(config, ignore_lines):
@@ -554,8 +581,10 @@ def html(packets, outdir, template, localcodepage):
 @click.option('-d', '--device', type=click.File('rb'), default='/dev/vbi0', help='Capture device.')
 @click.option('--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
               help='Ignore 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 23,24,25.')
+@click.option('--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
+              help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
 @carduser()
-def record(output, device, ignore_lines, config):
+def record(output, device, ignore_lines, used_lines, config):
 
     """Record VBI samples from a capture device."""
 
@@ -565,7 +594,7 @@ def record(output, device, ignore_lines, config):
     if output.name.startswith('/dev/vbi'):
         raise click.UsageError(f'Refusing to write output to VBI device. Did you mean -d?')
 
-    ignore_lines = normalise_ignore_lines(ignore_lines, config)
+    _, ignore_lines = resolve_frame_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
     ignored_ranges = ignored_frame_line_byte_ranges(config, ignore_lines)
     preserve_tail = 4 if config.card == 'bt8x8' else 0
 
@@ -633,6 +662,8 @@ def vbiview(chunker, config, pause, tape_format, n_lines):
 @click.option('-k', '--keep-empty', is_flag=True, help='Insert empty packets in the output when line could not be deconvolved.')
 @click.option('--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
               help='Ignore 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 23,24,25.')
+@click.option('--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
+              help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
 @carduser(extended=True)
 @packetwriter
 @chunkreader()
@@ -640,7 +671,7 @@ def vbiview(chunker, config, pause, tape_format, n_lines):
 @paginated()
 @progressparams(progress=True, mag_hist=True)
 @click.option('--rejects/--no-rejects', default=True, help='Display percentage of lines rejected.')
-def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eight_bit, force_cpu, prefer_opencl, threads, keep_empty, ignore_lines, progress, mag_hist, row_hist, err_hist, rejects, tape_format):
+def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eight_bit, force_cpu, prefer_opencl, threads, keep_empty, ignore_lines, used_lines, progress, mag_hist, row_hist, err_hist, rejects, tape_format):
 
     """Deconvolve raw VBI samples into Teletext packets."""
 
@@ -652,7 +683,7 @@ def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eig
     if force_cpu:
         sys.stderr.write('GPU disabled by user request.\n')
 
-    ignore_lines = normalise_ignore_lines(ignore_lines, config)
+    _, ignore_lines = resolve_frame_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
     chunks = chunker(config.line_bytes, config.field_lines, config.field_range)
     chunks = filter_ignored_chunks(chunks, config, ignore_lines)
 
