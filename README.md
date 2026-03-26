@@ -29,7 +29,7 @@ teletext deconvolve -f hd630lp test.vbi > test.t42
 ```
 
 # Guide for Functions
-[GUIDE](https://github.com/KOTYA8/VHSTT2/blob/main/examples/help-all.txt)
+[GUIDE](https://github.com/KOTYA8/VHSTTX/blob/main/examples/help-all.txt)
 
 # Installation
 ### Installation VHSTTX
@@ -95,7 +95,7 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 **Every 3 minutes (within 2 seconds), the capture card will be launched.**
 
 # Changelog
-All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/VHSTT2_VER)  
+All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
 * **V1** - Support **--ignore-line** for `record` and `deconvolve`. Numbering in `vbiview`. Templates: **fs200sp**, **fs200lp**, **hd630lp**, **hd630sp**, **grundig_2x4**, **hrs9700**, **hd630vdlp**, **hd630vdlp24**, **fs200vdsp**, **fs200vdlp**, **betacamsp**, **betamax**
