@@ -137,6 +137,12 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 ```
 **Every 3 minutes (within 2 seconds), the capture card will be launched.**
 
+# Update VHSTTX
+```
+source myvenv/bin/activate
+python3 setup.py install
+```
+
 # Changelog
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
