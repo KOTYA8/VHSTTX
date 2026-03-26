@@ -42,7 +42,7 @@ pipx install -e .[CUDA,spellcheck,viewer] --force
 # Future Functions
 
 # Changelog
-All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/PiFMX_VER)  
+All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/VHSTT2_VER)  
 
 ### **Currently**  
 * **V1** - Support **--ignore-line** for `record` and `deconvolve`. Numbering in `vbiview`
