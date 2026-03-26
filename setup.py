@@ -5,7 +5,7 @@ setup(
     version='1',
     author='kOt',
     author_email='',
-    url='http://github.com/ali1234/vhs-teletext',
+    url='http://github.com/KOTYA8/VHSTTX',
     packages=['teletext', 'teletext.vbi', 'teletext.cli', 'teletext.gui'],
     package_data={
         'teletext.vbi': [
@@ -53,14 +53,18 @@ setup(
         'teletext.gui': [
             'decoder.qml',
             'editor.ui',
+            'teletext.png',
+            'teletext2.ttf',
         ]
     },
     entry_points={
         'console_scripts': [
             'teletext = teletext.cli.teletext:teletext',
+            'ttviewer-install = teletext.gui.install:main',
         ],
         'gui_scripts': [
-            'ttviewer = teletext.gui.editor:main',
+            'ttviewer = teletext.gui.viewer:main',
+            'tteditor = teletext.gui.editor:main',
         ],
     },
     install_requires=[
