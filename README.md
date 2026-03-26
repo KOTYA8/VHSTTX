@@ -11,14 +11,14 @@ sudo apt install python3
 sudo apt install python3-pip
 sudo apt install git
 git clone https://github.com/KOTYA8/VHSTT2.git
-cd vhs-teletext
+cd VHSTT2
 sudo apt install pipx
 pipx install -e .[spellcheck,viewer]
 cd
 sudo apt install python3-venv
 python3 -m venv myvenv
 source myvenv/bin/activate
-cd vhs-teletext
+cd VHSTT2
 pip install setuptools
 python3 setup.py install
 pip install click
@@ -38,9 +38,10 @@ sudo apt install nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc
 pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 ```
-# Added Features
 
 # Future Functions
+* **Ignore Line (record/deconvolve)** - ✅ realized
+* **Line numbering (vbiview)** - ✅ realized
 
 # Changelog
 All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/VHSTT2_VER)  
