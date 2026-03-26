@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 
+if command -v ttviewer-install >/dev/null 2>&1; then
+    exec ttviewer-install "$@"
+fi
+
 if ! command -v ttviewer >/dev/null 2>&1; then
     echo "Warning: ttviewer is not on PATH. Install the package first, for example with pipx install -e .[qt]." >&2
 fi
