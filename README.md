@@ -39,11 +39,11 @@ pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 ```
 # Functions
-* **Ignore Line (record/deconvolve)** - Ignoring lines when writing to VBI and deconvolving to t42.   
+* **Ignore Line** (record/deconvolve) - Ignoring lines when writing to VBI and deconvolving to t42.   
 `teletext record --ignore-line 1,2,20 test.vbi`   
 `teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42`
    
-* **Line numbering (vbiview)** - Line numbering in VBI Viewer.   
+* **Line numbering** (vbiview) - Line numbering in VBI Viewer.   
    
 * **Templates** (fs200sp, fs200lp, hd630lp, hd630sp, grundig_2x4, hrs9700, hd630vdlp, hd630vdlp24, fs200vdsp, fs200vdlp, betacamsp, betamax) - Adding templates (VCRs) for deconvolution.   
 `teletext vbiview -f hd630sp test.vbi`   
