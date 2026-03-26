@@ -1,5 +1,5 @@
-# VHSTT2
-VHS Teletext 2 - advanced features of [vhs-teletext](https://github.com/ali1234/vhs-teletext)   
+# VHSTTX
+VHS Teletext X - advanced features of [vhs-teletext](https://github.com/ali1234/vhs-teletext)   
    
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
@@ -32,7 +32,7 @@ teletext deconvolve -f hd630lp test.vbi > test.t42
 [GUIDE](https://github.com/KOTYA8/VHSTT2/blob/main/examples/help-all.txt)
 
 # Installation
-### Installation VHSTT2
+### Installation VHSTTX
 The entire installation was performed on Ubuntu 24.04 LTS.
 ```
 sudo apt update
@@ -40,15 +40,15 @@ sudo apt upgrade
 sudo apt install python3
 sudo apt install python3-pip
 sudo apt install git
-git clone https://github.com/KOTYA8/VHSTT2.git
-cd VHSTT2
+git clone https://github.com/KOTYA8/VHSTTX.git
+cd VHSTTX
 sudo apt install pipx
 pipx install -e .[spellcheck,viewer]
 cd
 sudo apt install python3-venv
 python3 -m venv myvenv
 source myvenv/bin/activate
-cd VHSTT2
+cd VHSTTX
 pip install setuptools
 python3 setup.py install
 pip install click
