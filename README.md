@@ -38,6 +38,7 @@ sudo apt install nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc
 pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 ```
+# Added Features
 
 # Future Functions
 
@@ -45,4 +46,4 @@ pipx install -e .[CUDA,spellcheck,viewer] --force
 All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/VHSTT2_VER)  
 
 ### **Currently**  
-* **V1** - Support **--ignore-line** for `record` and `deconvolve`. Numbering in `vbiview`
+* **V1** - Support **--ignore-line** for `record` and `deconvolve`. Numbering in `vbiview`. Templates: **fs200sp**, **fs200lp**, **hd630lp**, **hd630sp**, **grundig_2x4**, **hrs9700**, **hd630vdlp**, **hd630vdlp24**, **fs200vdsp**, **fs200vdlp**, **betacamsp**, **betamax**
