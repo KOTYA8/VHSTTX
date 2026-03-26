@@ -1,0 +1,79 @@
+from setuptools import setup
+
+setup(
+    name='teletext',
+    version='3.1.99',
+    author='Alistair Buxton',
+    author_email='a.j.buxton@gmail.com',
+    url='http://github.com/ali1234/vhs-teletext',
+    packages=['teletext', 'teletext.vbi', 'teletext.cli', 'teletext.gui'],
+    package_data={
+        'teletext.vbi': [
+            'data/debruijn.dat',
+            'data/vhs/parity.dat',
+            'data/vhs/hamming.dat',
+            'data/vhs/full.dat',
+            'data/fs200sp/parity.dat',
+            'data/fs200sp/hamming.dat',
+            'data/fs200sp/full.dat',
+            'data/fs200lp/parity.dat',
+            'data/fs200lp/hamming.dat',
+            'data/fs200lp/full.dat',
+            'data/hd630lp/parity.dat',
+            'data/hd630lp/hamming.dat',
+            'data/hd630lp/full.dat',
+            'data/hd630sp/parity.dat',
+            'data/hd630sp/hamming.dat',
+            'data/hd630sp/full.dat',
+            'data/grundig_2x4/parity.dat',
+            'data/grundig_2x4/hamming.dat',
+            'data/grundig_2x4/full.dat',
+            'data/hrs9700/parity.dat',
+            'data/hrs9700/hamming.dat',
+            'data/hrs9700/full.dat',
+            'data/hd630vdlp/parity.dat',
+            'data/hd630vdlp/hamming.dat',
+            'data/hd630vdlp/full.dat',
+            'data/hd630vdlp24/parity.dat',
+            'data/hd630vdlp24/hamming.dat',
+            'data/hd630vdlp24/full.dat',
+            'data/fs200vdsp/parity.dat',
+            'data/fs200vdsp/hamming.dat',
+            'data/fs200vdsp/full.dat',
+            'data/fs200vdlp/parity.dat',
+            'data/fs200vdlp/hamming.dat',
+            'data/fs200vdlp/full.dat',
+            'data/betacamsp/parity.dat',
+            'data/betacamsp/hamming.dat',
+            'data/betacamsp/full.dat',
+            'data/betamax/parity.dat',
+            'data/betamax/hamming.dat',
+            'data/betamax/full.dat'
+        ],
+        'teletext.gui': [
+            'decoder.qml',
+            'editor.ui',
+        ]
+    },
+    entry_points={
+        'console_scripts': [
+            'teletext = teletext.cli.teletext:teletext',
+        ],
+        'gui_scripts': [
+            'ttviewer = teletext.gui.editor:main',
+        ],
+    },
+    install_requires=[
+        'numpy<2', 'scipy', 'matplotlib', 'click', 'tqdm',  'pyzmq', 'watchdog', 'pyserial',
+        'windows-curses;platform_system=="Windows"',
+    ],
+    extras_require={
+        'spellcheck': ['pyenchant'],
+        'CUDA': ['pycuda'],
+        'OpenCL': ['pyopencl'],
+        'viewer': ['PyOpenGL'],
+        'profiler': ['plop'],
+        'qt': ['PyQt5'],
+        'audio': ['spectrum', 'miniaudio'],
+    }
+)
