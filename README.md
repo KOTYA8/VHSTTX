@@ -5,7 +5,7 @@ Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-t
 
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
-* **Added Line (record/deconvolve)** - ✅ realized
+* **Used Line (record/deconvolve)** - ✅ realized
 * **Line numbering (vbiview)** - ✅ realized
 
 # Functions
