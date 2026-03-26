@@ -1,6 +1,6 @@
 # VHSTT2
 
-Original repository: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
+Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
 # Installation
 ### Installation VHSTT2
