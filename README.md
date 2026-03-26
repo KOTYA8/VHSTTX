@@ -3,6 +3,9 @@ VHS Teletext X - advanced features of [vhs-teletext](https://github.com/ali1234/
    
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
+# Future Apps
+* **Teletext Viewer** - ❌ not realized
+
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
 * **Used Line (record/deconvolve)** - ✅ realized
