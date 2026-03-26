@@ -43,7 +43,7 @@ pipx install -e .[CUDA,spellcheck,viewer] --force
 `teletext record --ignore-line 1,2,20 test.vbi`   
 `teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42`
 * **Line numbering (vbiview)** - Line numbering in VBI Viewer.
-* **Templates** (fs200sp, fs200lp, hd630lp, hd630sp, grundig_2x4, hrs9700, hd630vdlp, hd630vdlp24, fs200vdsp, fs200vdlp, betacamsp, betamax) - Adding templates (VCRs) for deconvolution.
+* **Templates** (fs200sp, fs200lp, hd630lp, hd630sp, grundig_2x4, hrs9700, hd630vdlp, hd630vdlp24, fs200vdsp, fs200vdlp, betacamsp, betamax) - Adding templates (VCRs) for deconvolution.   
 `teletext vbiview -f hd630sp test.vbi`   
 `teletext deconvolve -f hd630lp test.vbi > test.t42`   
 
