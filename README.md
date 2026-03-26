@@ -28,6 +28,9 @@ teletext vbiview -f hd630sp test.vbi
 teletext deconvolve -f hd630lp test.vbi > test.t42  
 ```
 
+# Guide for Functions
+[HELP](https://github.com/ali1234/vhs-teletext)
+
 # Installation
 ### Installation VHSTT2
 The entire installation was performed on Ubuntu 24.04 LTS.
