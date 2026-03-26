@@ -111,6 +111,19 @@ sudo modprobe -v bttv card=16 tuner=0 radio=0
 sudo touch /etc/modprobe.d/bttv.conf
 ```
 3. In a folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
+### Install Terminal for Teletext
+```
+sudo apt-get install tv-fonts rxvt-unicode
+cd /etc/fonts/conf.d
+sudo rm 70-no-bitmaps.conf
+sudo ln -s ../conf.avail/70-yes-bitmaps.conf .
+xset fp rehash
+```
+Launch the terminal and view teletext   
+```
+urxvt -fg white -bg black -fn teletext -fb teletext -geometry 41x25 +sb &
+teletext service test.t42 | teletext interactive
+```
 
 # Additional features
 ### Fixing self-brightness on Capture Card
