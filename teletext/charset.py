@@ -300,6 +300,90 @@ g0 = {'default': {
 
 }}
 
+
+def _latin_subset(replacements):
+    subset = dict(g0['default'])
+    subset.update(replacements)
+    return subset
+
+
+# ETSI EN 300 706 V1.2.1 (2003-04), table 36: Latin National Option Sub-sets.
+g0['fra'] = _latin_subset(
+    {
+        0x23: chr(0x00E9),  # LATIN SMALL LETTER E WITH ACUTE
+        0x24: chr(0x00EF),  # LATIN SMALL LETTER I WITH DIAERESIS
+        0x40: chr(0x00E0),  # LATIN SMALL LETTER A WITH GRAVE
+        0x5B: chr(0x00EB),  # LATIN SMALL LETTER E WITH DIAERESIS
+        0x5C: chr(0x00EA),  # LATIN SMALL LETTER E WITH CIRCUMFLEX
+        0x5D: chr(0x00F9),  # LATIN SMALL LETTER U WITH GRAVE
+        0x5E: chr(0x00EE),  # LATIN SMALL LETTER I WITH CIRCUMFLEX
+        0x5F: chr(0x0023),  # NUMBER SIGN
+        0x60: chr(0x00E8),  # LATIN SMALL LETTER E WITH GRAVE
+        0x7B: chr(0x00E2),  # LATIN SMALL LETTER A WITH CIRCUMFLEX
+        0x7C: chr(0x00F4),  # LATIN SMALL LETTER O WITH CIRCUMFLEX
+        0x7D: chr(0x00FB),  # LATIN SMALL LETTER U WITH CIRCUMFLEX
+        0x7E: chr(0x00E7),  # LATIN SMALL LETTER C WITH CEDILLA
+    }
+)
+
+g0['deu'] = _latin_subset(
+    {
+        0x23: chr(0x0023),  # NUMBER SIGN
+        0x24: chr(0x0024),  # DOLLAR SIGN
+        0x40: chr(0x00A7),  # SECTION SIGN
+        0x5B: chr(0x00C4),  # LATIN CAPITAL LETTER A WITH DIAERESIS
+        0x5C: chr(0x00D6),  # LATIN CAPITAL LETTER O WITH DIAERESIS
+        0x5D: chr(0x00DC),  # LATIN CAPITAL LETTER U WITH DIAERESIS
+        0x5E: chr(0x005E),  # CIRCUMFLEX ACCENT
+        0x5F: chr(0x005F),  # LOW LINE
+        0x60: chr(0x00B0),  # DEGREE SIGN
+        0x7B: chr(0x00E4),  # LATIN SMALL LETTER A WITH DIAERESIS
+        0x7C: chr(0x00F6),  # LATIN SMALL LETTER O WITH DIAERESIS
+        0x7D: chr(0x00FC),  # LATIN SMALL LETTER U WITH DIAERESIS
+        0x7E: chr(0x00DF),  # LATIN SMALL LETTER SHARP S
+    }
+)
+
+g0['ita'] = _latin_subset(
+    {
+        0x23: chr(0x00A3),  # POUND SIGN
+        0x24: chr(0x0024),  # DOLLAR SIGN
+        0x40: chr(0x00E9),  # LATIN SMALL LETTER E WITH ACUTE
+        0x5B: chr(0x00B0),  # DEGREE SIGN
+        0x5C: chr(0x00E7),  # LATIN SMALL LETTER C WITH CEDILLA
+        0x5D: chr(0x2192),  # RIGHTWARDS ARROW
+        0x5E: chr(0x2191),  # UPWARDS ARROW
+        0x5F: chr(0x0023),  # NUMBER SIGN
+        0x60: chr(0x00F9),  # LATIN SMALL LETTER U WITH GRAVE
+        0x7B: chr(0x00E0),  # LATIN SMALL LETTER A WITH GRAVE
+        0x7C: chr(0x00F2),  # LATIN SMALL LETTER O WITH GRAVE
+        0x7D: chr(0x00E8),  # LATIN SMALL LETTER E WITH GRAVE
+        0x7E: chr(0x00EC),  # LATIN SMALL LETTER I WITH GRAVE
+    }
+)
+
+g0['pol'] = _latin_subset(
+    {
+        0x23: chr(0x0023),  # NUMBER SIGN
+        0x24: chr(0x0144),  # LATIN SMALL LETTER N WITH ACUTE
+        0x40: chr(0x0105),  # LATIN SMALL LETTER A WITH OGONEK
+        0x5B: chr(0x017B),  # LATIN CAPITAL LETTER Z WITH DOT ABOVE
+        0x5C: chr(0x015A),  # LATIN CAPITAL LETTER S WITH ACUTE
+        0x5D: chr(0x0141),  # LATIN CAPITAL LETTER L WITH STROKE
+        0x5E: chr(0x0106),  # LATIN CAPITAL LETTER C WITH ACUTE
+        0x5F: chr(0x00D3),  # LATIN CAPITAL LETTER O WITH ACUTE
+        0x60: chr(0x0119),  # LATIN SMALL LETTER E WITH OGONEK
+        0x7B: chr(0x017C),  # LATIN SMALL LETTER Z WITH DOT ABOVE
+        0x7C: chr(0x015B),  # LATIN SMALL LETTER S WITH ACUTE
+        0x7D: chr(0x0142),  # LATIN SMALL LETTER L WITH STROKE
+        0x7E: chr(0x017A),  # LATIN SMALL LETTER Z WITH ACUTE
+    }
+)
+
+# The ETSI latin national option subsets do not define a dedicated Dutch set.
+# Eurotext CF702xx documentation maps Dutch/Flemish to the German national option.
+g0['nld'] = dict(g0['deu'])
+
 #       Name:   Map from Teletext G1 character set to Unicode
 #       Date:   2018 April 20
 #       Author: Rebecca Bettencourt <support@kreativekorp.com>

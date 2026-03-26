@@ -57,6 +57,16 @@ class ParserQML(Parser):
         value = self._root.property('flashenabled')
         return True if value is None else bool(value)
 
+    def _local_codepage(self):
+        value = self._root.property('localcodepage')
+        return None if value in (None, '', 'default') else str(value)
+
+    def _current_codepage(self):
+        if self._root.property('forcecodepage'):
+            return 1
+        value = self._root.property('pagecodepage')
+        return 0 if value is None else int(value)
+
     def setstate(self, **kwargs):
         if 'dh' in kwargs and not self._doubleheight_enabled():
             kwargs['dh'] = False
@@ -74,6 +84,8 @@ class ParserQML(Parser):
         self._cell += 1
 
     def parse(self):
+        self.localcodepage = self._local_codepage()
+        self.codepage = self._current_codepage()
         self._cell = 0
         self._dh = False
         super().parse()
@@ -223,6 +235,35 @@ class Decoder(object):
         self._root.setProperty('flashenabled', bool(enabled))
         for parser in self._parsers:
             parser.parse()
+
+    @property
+    def language(self):
+        value = self._root.property('localcodepage')
+        return 'default' if value in (None, '') else str(value)
+
+    @language.setter
+    def language(self, language):
+        language = 'default' if language in (None, '', 'default') else str(language)
+        if language == 'default':
+            self._root.setProperty('localcodepage', '')
+            self._root.setProperty('forcecodepage', False)
+        else:
+            self._root.setProperty('localcodepage', language)
+            self._root.setProperty('forcecodepage', True)
+        for parser in self._parsers:
+            parser.parse()
+
+    @property
+    def pagecodepage(self):
+        value = self._root.property('pagecodepage')
+        return 0 if value is None else int(value)
+
+    @pagecodepage.setter
+    def pagecodepage(self, codepage):
+        self._root.setProperty('pagecodepage', int(codepage))
+        if not self._root.property('forcecodepage'):
+            for parser in self._parsers:
+                parser.parse()
 
     def size(self):
         sf = self.widget.rootObject().size()

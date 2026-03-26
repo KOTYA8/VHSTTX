@@ -113,6 +113,25 @@ if QtCore is not None:
             self._no_hex_pages_action = self._settings_menu.addAction('No Hex Pages')
             self._no_hex_pages_action.setCheckable(True)
             self._no_hex_pages_action.toggled.connect(self._set_no_hex_pages)
+            self._language_menu = self._settings_menu.addMenu('Language')
+            self._language_action_group = QtWidgets.QActionGroup(self)
+            self._language_action_group.setExclusive(True)
+            self._language_actions = {}
+            for key, label in (
+                ('default', 'Default'),
+                ('cyr', 'Cyrillic'),
+                ('swe', 'Swedish'),
+                ('ita', 'Italian'),
+                ('deu', 'German'),
+                ('fra', 'French'),
+                ('pol', 'Polish'),
+                ('nld', 'Dutch'),
+            ):
+                action = self._language_menu.addAction(label)
+                action.setCheckable(True)
+                action.toggled.connect(lambda checked=False, item=key: self._set_language(item, checked))
+                self._language_action_group.addAction(action)
+                self._language_actions[key] = action
             self._settings_button.setMenu(self._settings_menu)
             toolbar.addWidget(self._settings_button)
 
@@ -162,6 +181,7 @@ if QtCore is not None:
             self._single_height_action.setChecked(True)
             self._single_width_action.setChecked(True)
             self._no_flash_action.setChecked(True)
+            self._language_actions['default'].setChecked(True)
             root.addWidget(self._decoder_widget, 0, QtCore.Qt.AlignCenter)
 
             nav = QtWidgets.QHBoxLayout()
@@ -286,6 +306,13 @@ if QtCore is not None:
             self._direct_page_buffer.clear()
             self._render_current_subpage()
 
+        def _set_language(self, language_key, checked):
+            if not checked:
+                return
+            self._decoder.language = language_key
+            if self._navigator is not None:
+                self._render_current_subpage()
+
         def _set_crt_effect(self, enabled):
             self._decoder.crteffect = enabled
 
@@ -311,6 +338,7 @@ if QtCore is not None:
                 self._single_width_action,
                 self._no_flash_action,
                 self._no_hex_pages_action,
+                *self._language_actions.values(),
             ):
                 action.setEnabled(enabled)
             for button in self._fastext_buttons:
@@ -374,6 +402,7 @@ if QtCore is not None:
             magazine, page = self._navigator.split_page_number(self._navigator.current_page_number)
             header[3:7] = np.fromstring(f'P{magazine}{page:02X}', dtype=np.uint8)
             header[8:] = subpage.header.displayable[:]
+            self._decoder.pagecodepage = subpage.codepage
             self._decoder[0] = header
             self._decoder[1:] = subpage.displayable[:]
             self._sync_decoder_size()

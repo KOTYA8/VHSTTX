@@ -8,6 +8,9 @@ Rectangle {
     property bool doubleheight: true
     property bool doublewidth: true
     property bool flashenabled: true
+    property string localcodepage: ""
+    property bool forcecodepage: false
+    property int pagecodepage: 0
     property real horizontalScale: 0.95
     property real borderSize: 6 * zoom
     property bool crteffect: true
