@@ -20,7 +20,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * **Line numbering (vbiview)** - ✅ realized
 
 # Apps
-* **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file.
+* **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection   
 ### Installation Viewer
 1. Install QT and PyQt5   
 ```
