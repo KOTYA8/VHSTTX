@@ -3,6 +3,7 @@
 Original repository: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
 # Installation
+### Installation VHSTT2
 The entire installation was performed on Ubuntu 24.04 LTS.
 ```
 sudo apt update
@@ -38,6 +39,20 @@ sudo apt install nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc
 pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 ```
+### Preparing BT878
+1. Installing the QV4L2 Control Panel:
+```
+sudo apt install qv4l2
+```
+2. Setting up the card model:
+[BTTV Card List](https://docs.kernel.org/admin-guide/media/bttv-cardlist.html)   
+```
+sudo rmmod bttv
+sudo modprobe -v bttv card=16 tuner=0 radio=0
+sudo touch /etc/modprobe.d/bttv.conf
+```
+In a folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
+
 # Functions
 * **Ignore Line** (`record/deconvolve`) - Ignoring lines when writing to VBI and deconvolving to t42.   
 ```
