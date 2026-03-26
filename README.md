@@ -75,10 +75,10 @@ cd /etc/fonts/conf.d
 sudo rm 70-no-bitmaps.conf
 sudo ln -s ../conf.avail/70-yes-bitmaps.conf .
 xset fp rehash
-urxvt -fg white -bg black -fn teletext -fb teletext -geometry 41x25 +sb &
 ```
 Viewing Teletext in the terminal:
 ```
+urxvt -fg white -bg black -fn teletext -fb teletext -geometry 41x25 +sb &
 teletext service stream.t42 | teletext interactive
 ```
 ### Preparing BT878
@@ -87,13 +87,14 @@ teletext service stream.t42 | teletext interactive
 sudo apt install qv4l2
 ```
 2. Setting up the card model:
-[BTTV Card List](https://docs.kernel.org/admin-guide/media/bttv-cardlist.html)   
+[BTTV Card List](https://docs.kernel.org/admin-guide/media/bttv-cardlist.html)  
+Quick setup:
 ```
 sudo rmmod bttv
 sudo modprobe -v bttv card=16 tuner=0 radio=0
-sudo touch /etc/modprobe.d/bttv.conf
 ```
-3. In a folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
+Constant customization:
+Create a file `sudo touch /etc/modprobe.d/bttv.conf`, go to the folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
 
 # Additional features
 ### Fixing self-brightness on Capture Card
