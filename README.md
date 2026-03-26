@@ -5,7 +5,7 @@ Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-t
 
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
-* **Added Line (record/deconvolve)** - ❌ not realized
+* **Used Line (record/deconvolve)** - ❌ not realized
 * **Line numbering (vbiview)** - ✅ realized
 
 # Functions
@@ -67,6 +67,19 @@ sudo apt install nvidia-driver-580
 sudo apt install nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc
 pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
+```
+### Installation Terminal for Teletext
+```
+sudo apt-get install tv-fonts rxvt-unicode
+cd /etc/fonts/conf.d
+sudo rm 70-no-bitmaps.conf
+sudo ln -s ../conf.avail/70-yes-bitmaps.conf .
+xset fp rehash
+urxvt -fg white -bg black -fn teletext -fb teletext -geometry 41x25 +sb &
+```
+Viewing Teletext in the terminal:
+```
+teletext service stream.t42 | teletext interactive
 ```
 ### Preparing BT878
 1. Installing the QV4L2 Control Panel:
