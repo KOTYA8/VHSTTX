@@ -29,7 +29,7 @@ teletext deconvolve -f hd630lp test.vbi > test.t42
 ```
 
 # Guide for Functions
-[HELP]](https://github.com/KOTYA8/VHSTT2/blob/main/examples/help-all.txt)
+[GUIDE](https://github.com/KOTYA8/VHSTT2/blob/main/examples/help-all.txt)
 
 # Installation
 ### Installation VHSTT2
