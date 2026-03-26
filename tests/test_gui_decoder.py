@@ -101,6 +101,9 @@ class TestParserQMLAttributes(unittest.TestCase):
             'doubleheight': True,
             'doublewidth': True,
             'flashenabled': True,
+            'localcodepage': '',
+            'forcecodepage': False,
+            'pagecodepage': 0,
         }
         root_defaults.update(root_properties)
         root = FakeObject(**root_defaults)
@@ -154,3 +157,87 @@ class TestParserQMLAttributes(unittest.TestCase):
         parser.parse()
 
         self.assertFalse(any(cell.property('flash') for cell in cells))
+
+    def test_default_language_keeps_latin_g0_mapping(self):
+        parser, row, nextrow, cells = self.make_parser(
+            np.array([0x41] + [0x20] * 39, dtype=np.uint8),
+            localcodepage='',
+            forcecodepage=False,
+            pagecodepage=0,
+        )
+
+        parser.parse()
+
+        self.assertEqual(cells[0].property('c'), 'A')
+
+    def test_forced_cyrillic_language_uses_cyrillic_mapping(self):
+        parser, row, nextrow, cells = self.make_parser(
+            np.array([0x41] + [0x20] * 39, dtype=np.uint8),
+            localcodepage='cyr',
+            forcecodepage=True,
+            pagecodepage=0,
+        )
+
+        parser.parse()
+
+        self.assertEqual(cells[0].property('c'), '\u0410')
+
+    def test_forced_italian_language_uses_italian_mapping(self):
+        parser, row, nextrow, cells = self.make_parser(
+            np.array([0x40] + [0x20] * 39, dtype=np.uint8),
+            localcodepage='ita',
+            forcecodepage=True,
+            pagecodepage=0,
+        )
+
+        parser.parse()
+
+        self.assertEqual(cells[0].property('c'), '\u00e9')
+
+    def test_forced_french_language_uses_french_mapping(self):
+        parser, row, nextrow, cells = self.make_parser(
+            np.array([0x5D] + [0x20] * 39, dtype=np.uint8),
+            localcodepage='fra',
+            forcecodepage=True,
+            pagecodepage=0,
+        )
+
+        parser.parse()
+
+        self.assertEqual(cells[0].property('c'), '\u00f9')
+
+    def test_forced_german_language_uses_german_mapping(self):
+        parser, row, nextrow, cells = self.make_parser(
+            np.array([0x7E] + [0x20] * 39, dtype=np.uint8),
+            localcodepage='deu',
+            forcecodepage=True,
+            pagecodepage=0,
+        )
+
+        parser.parse()
+
+        self.assertEqual(cells[0].property('c'), '\u00df')
+
+    def test_forced_polish_language_uses_polish_mapping(self):
+        parser, row, nextrow, cells = self.make_parser(
+            np.array([0x5D] + [0x20] * 39, dtype=np.uint8),
+            localcodepage='pol',
+            forcecodepage=True,
+            pagecodepage=0,
+        )
+
+        parser.parse()
+
+        self.assertEqual(cells[0].property('c'), '\u0141')
+
+    def test_dutch_alias_uses_german_subset(self):
+        parser, row, nextrow, cells = self.make_parser(
+            np.array([0x5B] + [0x20] * 39, dtype=np.uint8),
+            localcodepage='nld',
+            forcecodepage=True,
+            pagecodepage=0,
+        )
+
+        parser.parse()
+
+        self.assertEqual(cells[0].property('c'), '\u00c4')
