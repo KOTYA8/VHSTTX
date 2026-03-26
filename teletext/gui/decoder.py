@@ -62,9 +62,10 @@ class ParserQML(Parser):
 
 class Decoder(object):
 
-    def __init__(self, widget):
+    def __init__(self, widget, font_family='teletext2'):
 
         self.widget = widget
+        self._font_family = font_family
 
         self._fonts = [
             [
@@ -107,7 +108,7 @@ class Decoder(object):
         self[1:] = np.random.randint(0, 256, size=(24, 40), dtype=np.uint8)
 
     def make_font(self, stretch):
-        font = QFont('teletext2')
+        font = QFont(self._font_family)
         font.setStyleStrategy(QFont.NoSubpixelAntialias)
         font.setHintingPreference(QFont.PreferNoHinting)
         font.setStretch(stretch)

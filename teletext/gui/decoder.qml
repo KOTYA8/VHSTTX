@@ -14,6 +14,7 @@ Rectangle {
     border.width: borderSize
     border.color: "black"
     color: "black"
+
     Column {
         id: teletext
         objectName: "teletext"
@@ -22,15 +23,19 @@ Rectangle {
         x: borderSize * 2
         y: borderSize
         clip: true
+
         Repeater {
             objectName: "rows"
             model: 25
+
             Row {
                 property int rowheight: 1
                 property bool rowrendered: true
+
                 Repeater {
                     objectName: "cols"
                     model: 40
+
                     Item {
                         property string c: "X"
                         property int bg: 1
@@ -45,19 +50,21 @@ Rectangle {
                         property bool rendered: true
                         height: 10 * zoom
                         width: 8 * zoom
+
                         Rectangle {
                             height: rowheight * 10 * zoom
-                            width: (dw?2:1) * 8 * zoom
+                            width: (dw ? 2 : 1) * 8 * zoom
                             clip: true
                             visible: rowrendered && rendered
                             color: ttpalette[bg]
+
                             Text {
                                 renderType: Text.NativeRendering
                                 anchors.top: parent.top
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 color: ttpalette[fg]
                                 text: c
-                                font: ttfonts[(mosaic && solid && text[0] > "\ue000")?1:0][dw?1:0][dh?1:0]
+                                font: ttfonts[(mosaic && solid && text[0] > "\ue000") ? 1 : 0][dw ? 1 : 0][dh ? 1 : 0]
                                 visible: ((!flash) || flashsrc) && (conceal ? reveal : true)
                             }
                         }
@@ -65,6 +72,7 @@ Rectangle {
                 }
             }
         }
+
         layer.enabled: crteffect && (zoom > 1)
         layer.effect: ShaderEffect {
             fragmentShader: "
@@ -81,10 +89,12 @@ Rectangle {
                 "
         }
     }
+
     layer.enabled: crteffect && (zoom > 1)
     layer.effect: GaussianBlur {
         radius: 0.75 * zoom
     }
+
     SequentialAnimation on flashsrc {
         loops: -1
         running: true
@@ -94,5 +104,3 @@ Rectangle {
         PauseAnimation { duration: 1000 }
     }
 }
-
-
