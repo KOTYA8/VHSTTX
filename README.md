@@ -88,13 +88,15 @@ sudo apt install qv4l2
 ```
 2. Setting up the card model:
 [BTTV Card List](https://docs.kernel.org/admin-guide/media/bttv-cardlist.html)  
-Quick setup:
+Quick setup:   
 ```
 sudo rmmod bttv
 sudo modprobe -v bttv card=16 tuner=0 radio=0
 ```
-Constant customization:
-Create a file `sudo touch /etc/modprobe.d/bttv.conf`, go to the folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
+Constant customization:   
+Create a file `sudo touch /etc/modprobe.d/bttv.conf`,   
+go to the folder `/etc/modprobe.d/bttv.conf`,   
+we write `options bttv card=16 tuner=0 radio=0`  
 
 # Additional features
 ### Fixing self-brightness on Capture Card
