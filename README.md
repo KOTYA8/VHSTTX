@@ -10,7 +10,7 @@ sudo apt upgrade
 sudo apt install python3
 sudo apt install python3-pip
 sudo apt install git
-git clone https://github.com/KOTYA/VHSTT2.git
+git clone https://github.com/KOTYA8/VHSTT2.git
 cd vhs-teletext
 sudo apt install pipx
 pipx install -e .[spellcheck,viewer]
