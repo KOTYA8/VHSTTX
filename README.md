@@ -4,12 +4,30 @@ VHS Teletext X - advanced features of [vhs-teletext](https://github.com/ali1234/
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
 # Future Apps
-* **Teletext Viewer** - ❌ not realized
+* **Teletext Viewer** - ✅ not realized
 
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
 * **Used Line (record/deconvolve)** - ✅ realized
 * **Line numbering (vbiview)** - ✅ realized
+
+# Apps
+* **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file.
+### Installation Viewer
+1. Install QT and PyQt5   
+```
+pipx install -e .[qt] --force
+```
+```
+pip install PyQt5
+```
+2. In the terminal go to the folder   
+`cd VHSTTX/misc/ubuntu`
+3. Give permission and install   
+```
+chmod +x install-ttviewer.sh
+./install-ttviewer.sh
+```
 
 # Functions
 * **Ignore Line** (`record/deconvolve`) - Ignoring lines when writing to VBI and deconvolving to t42.   
@@ -54,7 +72,7 @@ sudo apt install git
 git clone https://github.com/KOTYA8/VHSTTX.git
 cd VHSTTX
 sudo apt install pipx
-pipx install -e .[spellcheck,viewer]
+pipx install -e .[spellcheck,viewer,qt]
 cd
 sudo apt install python3-venv
 python3 -m venv myvenv
@@ -78,6 +96,7 @@ sudo apt install nvidia-driver-580
 sudo apt install nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc
 pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
+pip install PyQt5
 ```
 ### Preparing BT878
 1. Installing the QV4L2 Control Panel:
@@ -109,4 +128,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V1** - Support **--ignore-line** and **--used-line** for `record` and `deconvolve`. Numbering in `vbiview`. Templates: **fs200sp**, **fs200lp**, **hd630lp**, **hd630sp**, **grundig_2x4**, **hrs9700**, **hd630vdlp**, **hd630vdlp24**, **fs200vdsp**, **fs200vdlp**, **betacamsp**, **betamax**
+* **V1** - Support **--ignore-line** and **--used-line** for `record` and `deconvolve`. Numbering in `vbiview`. Templates: **fs200sp**, **fs200lp**, **hd630lp**, **hd630sp**, **grundig_2x4**, **hrs9700**, **hd630vdlp**, **hd630vdlp24**, **fs200vdsp**, **fs200vdlp**, **betacamsp**, **betamax**. New Teletext viewer.
