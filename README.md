@@ -39,7 +39,7 @@ pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 ```
 # Functions
-* **Ignore Line (record/deconvolve)** - Ignoring lines when writing to VBI and deconvolving to t42. 
+* **Ignore Line (record/deconvolve)** - Ignoring lines when writing to VBI and deconvolving to t42.   
 `teletext record --ignore-line 1,2,20 test.vbi`
 `teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42`
 * **Line numbering (vbiview)** - Line numbering in VBI Viewer.
