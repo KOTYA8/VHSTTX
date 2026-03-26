@@ -2,9 +2,9 @@ from setuptools import setup
 
 setup(
     name='teletext',
-    version='3.1.99',
-    author='Alistair Buxton',
-    author_email='a.j.buxton@gmail.com',
+    version='1',
+    author='kOt',
+    author_email='',
     url='http://github.com/ali1234/vhs-teletext',
     packages=['teletext', 'teletext.vbi', 'teletext.cli', 'teletext.gui'],
     package_data={
