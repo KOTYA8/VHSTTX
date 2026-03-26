@@ -8,6 +8,8 @@ Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-t
 source myvenv/bin/activate
 python3 setup.py install
 ```
+### Uninstalling the old version
+In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
 
 # Future Apps
 * **Teletext Viewer** - ✅ realized
