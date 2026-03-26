@@ -28,7 +28,7 @@ teletext vbiview -f hd630sp test.vbi
 teletext deconvolve -f hd630lp test.vbi > test.t42  
 ```
 
-# Guide for Functions
+### Guide for Functions
 [GUIDE](https://github.com/KOTYA8/VHSTTX/blob/main/examples/help-all.txt)
 
 # Installation
