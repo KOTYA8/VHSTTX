@@ -17,7 +17,7 @@ else:
 if IMPORT_ERROR is None:
     from teletext.gui.decoder import Decoder
     from teletext.service import Service
-    from teletext.viewer import ServiceNavigator
+    from teletext.viewer import DirectPageBuffer, ServiceNavigator
 
 
 if QtCore is not None:
@@ -56,6 +56,11 @@ if QtCore is not None:
             self._loader = None
             self._icon_path = self._resource_path('teletext.png')
             self._font_family = self._load_font_family()
+            self._direct_page_buffer = DirectPageBuffer()
+            self._direct_page_timer = QtCore.QTimer(self)
+            self._direct_page_timer.setInterval(1500)
+            self._direct_page_timer.setSingleShot(True)
+            self._direct_page_timer.timeout.connect(self._reset_direct_page_buffer)
             self._auto_scroll_timer = QtCore.QTimer(self)
             self._auto_scroll_timer.setInterval(3500)
             self._auto_scroll_timer.timeout.connect(self._auto_advance_subpage)
@@ -87,6 +92,30 @@ if QtCore is not None:
             self._open_button.clicked.connect(self.open_dialog)
             toolbar.addWidget(self._open_button)
 
+            self._screenshot_button = QtWidgets.QPushButton('Screenshot')
+            self._screenshot_button.clicked.connect(self.save_screenshot)
+            toolbar.addWidget(self._screenshot_button)
+
+            self._settings_button = QtWidgets.QToolButton()
+            self._settings_button.setText('Settings')
+            self._settings_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._settings_menu = QtWidgets.QMenu(self._settings_button)
+            self._single_height_action = self._settings_menu.addAction('Single Height')
+            self._single_height_action.setCheckable(True)
+            self._single_height_action.toggled.connect(self._set_single_height)
+            self._single_width_action = self._settings_menu.addAction('Single Width')
+            self._single_width_action.setCheckable(True)
+            self._single_width_action.toggled.connect(self._set_single_width)
+            self._no_flash_action = self._settings_menu.addAction('No Flash')
+            self._no_flash_action.setCheckable(True)
+            self._no_flash_action.toggled.connect(self._set_no_flash)
+            self._settings_menu.addSeparator()
+            self._no_hex_pages_action = self._settings_menu.addAction('No Hex Pages')
+            self._no_hex_pages_action.setCheckable(True)
+            self._no_hex_pages_action.toggled.connect(self._set_no_hex_pages)
+            self._settings_button.setMenu(self._settings_menu)
+            toolbar.addWidget(self._settings_button)
+
             toolbar.addWidget(QtWidgets.QLabel('Page'))
             self._page_input = QtWidgets.QLineEdit()
             self._page_input.setMaxLength(4)
@@ -99,12 +128,9 @@ if QtCore is not None:
             self._go_button.clicked.connect(self.go_to_page_text)
             toolbar.addWidget(self._go_button)
 
-            self._reveal_toggle = QtWidgets.QCheckBox('Reveal')
-            self._reveal_toggle.toggled.connect(self._set_reveal)
-            toolbar.addWidget(self._reveal_toggle)
-
             self._auto_toggle = QtWidgets.QCheckBox('Auto')
             self._auto_toggle.toggled.connect(self._set_auto_scroll)
+            self._auto_toggle.setChecked(True)
             toolbar.addWidget(self._auto_toggle)
 
             self._stretch_toggle = QtWidgets.QCheckBox('Stretch')
@@ -133,6 +159,9 @@ if QtCore is not None:
             self._decoder = Decoder(self._decoder_widget, font_family=self._font_family)
             self._decoder.zoom = self.base_zoom
             self._decoder_widget.setFixedSize(self._decoder.size())
+            self._single_height_action.setChecked(True)
+            self._single_width_action.setChecked(True)
+            self._no_flash_action.setChecked(True)
             root.addWidget(self._decoder_widget, 0, QtCore.Qt.AlignCenter)
 
             nav = QtWidgets.QHBoxLayout()
@@ -192,6 +221,7 @@ if QtCore is not None:
             QtWidgets.QShortcut(QtGui.QKeySequence('Left'), self, activated=self.prev_subpage)
             QtWidgets.QShortcut(QtGui.QKeySequence('Right'), self, activated=self.next_subpage)
             QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+O'), self, activated=self.open_dialog)
+            QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+S'), self, activated=self.save_screenshot)
 
         def _resource_path(self, filename):
             return os.path.join(os.path.dirname(__file__), filename)
@@ -211,10 +241,23 @@ if QtCore is not None:
 
         def _sync_decoder_size(self):
             self._decoder_widget.setFixedSize(self._decoder.size())
+            if self.centralWidget() is not None:
+                self.centralWidget().adjustSize()
             self.adjustSize()
+            self.resize(self.sizeHint())
 
-        def _set_reveal(self, enabled):
-            self._decoder.reveal = enabled
+        def _reset_direct_page_buffer(self):
+            self._direct_page_buffer.clear()
+            self._direct_page_timer.stop()
+            if self._navigator is not None:
+                self._page_input.setText(self._navigator.current_page_label[1:])
+            else:
+                self._page_input.clear()
+
+        def _restore_navigation_focus(self):
+            self._page_input.clearFocus()
+            self.centralWidget().setFocus(QtCore.Qt.OtherFocusReason)
+            self.activateWindow()
 
         def _set_auto_scroll(self, enabled):
             if not enabled:
@@ -225,6 +268,24 @@ if QtCore is not None:
             self._decoder.zoom = self.stretch_zoom if enabled else self.base_zoom
             self._sync_decoder_size()
 
+        def _set_single_height(self, enabled):
+            self._decoder.doubleheight = not enabled
+            self._sync_decoder_size()
+
+        def _set_single_width(self, enabled):
+            self._decoder.doublewidth = not enabled
+            self._sync_decoder_size()
+
+        def _set_no_flash(self, enabled):
+            self._decoder.flashenabled = not enabled
+
+        def _set_no_hex_pages(self, enabled):
+            if self._navigator is None:
+                return
+            self._navigator.set_hex_pages_enabled(not enabled)
+            self._direct_page_buffer.clear()
+            self._render_current_subpage()
+
         def _set_crt_effect(self, enabled):
             self._decoder.crteffect = enabled
 
@@ -232,9 +293,10 @@ if QtCore is not None:
             if not enabled:
                 self._auto_scroll_timer.stop()
             for widget in (
+                self._screenshot_button,
+                self._settings_button,
                 self._go_button,
                 self._page_input,
-                self._reveal_toggle,
                 self._auto_toggle,
                 self._stretch_toggle,
                 self._crt_toggle,
@@ -244,6 +306,13 @@ if QtCore is not None:
                 self._next_subpage_button,
             ):
                 widget.setEnabled(enabled)
+            for action in (
+                self._single_height_action,
+                self._single_width_action,
+                self._no_flash_action,
+                self._no_hex_pages_action,
+            ):
+                action.setEnabled(enabled)
             for button in self._fastext_buttons:
                 button.setEnabled(enabled)
 
@@ -262,6 +331,7 @@ if QtCore is not None:
                 return
 
             self._filename = filename
+            self._reset_direct_page_buffer()
             self._set_navigation_enabled(False)
             self.statusBar().showMessage(f'Loading {os.path.basename(filename)}...')
 
@@ -280,6 +350,7 @@ if QtCore is not None:
                 QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
                 self.statusBar().showMessage(str(exc))
             else:
+                self._navigator.set_hex_pages_enabled(not self._no_hex_pages_action.isChecked())
                 self._render_current_subpage()
                 self._set_navigation_enabled(True)
                 self.setWindowTitle(f'Teletext Viewer - {os.path.basename(self._filename)}')
@@ -288,6 +359,7 @@ if QtCore is not None:
         def _service_failed(self, message):  # pragma: no cover - GUI error path
             self._navigator = None
             self._clear_decoder()
+            self._reset_direct_page_buffer()
             QtWidgets.QMessageBox.critical(self, 'Teletext Viewer', message)
             self.statusBar().showMessage(message)
 
@@ -311,13 +383,44 @@ if QtCore is not None:
             self._subpage_label.setText(
                 f'Subpage: {current_subpage:02d}/{total_subpages:02d} ({self._navigator.current_subpage_number:04X})'
             )
-            self._page_input.setText(self._navigator.current_page_label[1:])
+            if not self._direct_page_buffer.text:
+                self._page_input.setText(self._navigator.current_page_label[1:])
 
             for button, link in zip(self._fastext_buttons, self._navigator.fastext_links()):
                 button.setText(link.label)
                 button.setEnabled(link.enabled)
                 button.setToolTip(f'Go to {link.label}')
             self._sync_auto_scroll()
+
+        def _suggest_screenshot_path(self):
+            directory = os.path.dirname(self._filename) if self._filename else os.getcwd()
+            base_name = os.path.splitext(os.path.basename(self._filename or 'teletext'))[0]
+            if self._navigator is None:
+                return os.path.join(directory, f'{base_name}.png')
+            return os.path.join(
+                directory,
+                f'{base_name}-{self._navigator.current_page_label}-{self._navigator.current_subpage_number:04X}.png',
+            )
+
+        def save_screenshot(self):
+            if self._navigator is None:
+                return
+
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save teletext screenshot',
+                self._suggest_screenshot_path(),
+                'PNG Image (*.png)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.png'):
+                filename += '.png'
+
+            if self._decoder_widget.grab().save(filename, 'PNG'):
+                self.statusBar().showMessage(f'Screenshot saved to {filename}', 5000)
+            else:  # pragma: no cover - GUI error path
+                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', f'Could not save screenshot to {filename}.')
 
         def _sync_auto_scroll(self):
             if (
@@ -334,53 +437,67 @@ if QtCore is not None:
                 self._auto_scroll_timer.stop()
                 return
             self._navigator.go_next_subpage()
+            self._direct_page_buffer.clear()
             self._render_current_subpage()
 
         def go_to_page_text(self):
             if self._navigator is None:
-                return
+                return False
+            self._direct_page_timer.stop()
             try:
                 success = self._navigator.go_to_page_text(self._page_input.text())
             except ValueError as exc:
                 QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
-                return
+                self._reset_direct_page_buffer()
+                self._restore_navigation_focus()
+                return False
             if not success:
                 QtWidgets.QMessageBox.information(
                     self,
                     'Teletext Viewer',
                     f'Page {self._page_input.text().strip().upper()} is not present in this file.',
                 )
-                return
+                self._reset_direct_page_buffer()
+                self._restore_navigation_focus()
+                return False
+            self._direct_page_buffer.clear()
             self._render_current_subpage()
+            self._restore_navigation_focus()
+            return True
 
         def prev_page(self):
             if self._navigator is None:
                 return
             self._navigator.go_prev_page()
+            self._direct_page_buffer.clear()
             self._render_current_subpage()
 
         def next_page(self):
             if self._navigator is None:
                 return
             self._navigator.go_next_page()
+            self._direct_page_buffer.clear()
             self._render_current_subpage()
 
         def prev_subpage(self):
             if self._navigator is None:
                 return
             self._navigator.go_prev_subpage()
+            self._direct_page_buffer.clear()
             self._render_current_subpage()
 
         def next_subpage(self):
             if self._navigator is None:
                 return
             self._navigator.go_next_subpage()
+            self._direct_page_buffer.clear()
             self._render_current_subpage()
 
         def go_to_fastext(self, index):
             if self._navigator is None:
                 return
             if self._navigator.go_to_fastext(index):
+                self._direct_page_buffer.clear()
                 self._render_current_subpage()
 
         def dragEnterEvent(self, event):  # pragma: no cover - GUI event path
@@ -393,6 +510,31 @@ if QtCore is not None:
                     self.open_file(url.toLocalFile())
                     event.acceptProposedAction()
                     return
+
+        def keyPressEvent(self, event):  # pragma: no cover - GUI event path
+            if self._navigator is not None and self.focusWidget() is not self._page_input:
+                if event.key() == QtCore.Qt.Key_Backspace and self._direct_page_buffer.backspace():
+                    self._page_input.setText(self._direct_page_buffer.text or self._navigator.current_page_label[1:])
+                    self._direct_page_timer.start()
+                    event.accept()
+                    return
+
+                text = event.text().upper()
+                if self._direct_page_buffer.push(text):
+                    self._page_input.setText(self._direct_page_buffer.text)
+                    self._direct_page_timer.start()
+                    if self._direct_page_buffer.complete:
+                        if self.go_to_page_text():
+                            self.statusBar().showMessage(
+                                f'Page {self._navigator.current_page_label} selected from keyboard.',
+                                3000,
+                            )
+                        else:
+                            self._direct_page_buffer.clear()
+                    event.accept()
+                    return
+
+            super().keyPressEvent(event)
 
 
 def main(argv=None):

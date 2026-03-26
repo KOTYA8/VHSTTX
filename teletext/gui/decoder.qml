@@ -5,11 +5,15 @@ import QtGraphicalEffects 1.12
 
 Rectangle {
     property int zoom: 2
-    property int borderSize: 10 * zoom
+    property bool doubleheight: true
+    property bool doublewidth: true
+    property bool flashenabled: true
+    property real horizontalScale: 0.95
+    property real borderSize: 6 * zoom
     property bool crteffect: true
     property bool flashsrc: true
     property bool reveal: false
-    width: teletext.width + borderSize * 4
+    width: teletext.width + borderSize * 2
     height: teletext.height + borderSize * 2
     border.width: borderSize
     border.color: "black"
@@ -18,9 +22,9 @@ Rectangle {
     Column {
         id: teletext
         objectName: "teletext"
-        width: 40 * 8 * zoom
+        width: 40 * 8 * zoom * horizontalScale
         height: 250 * zoom
-        x: borderSize * 2
+        x: borderSize
         y: borderSize
         clip: true
 
@@ -49,11 +53,11 @@ Rectangle {
                         property bool conceal: false
                         property bool rendered: true
                         height: 10 * zoom
-                        width: 8 * zoom
+                        width: 8 * zoom * horizontalScale
 
                         Rectangle {
                             height: rowheight * 10 * zoom
-                            width: (dw ? 2 : 1) * 8 * zoom
+                            width: (dw ? 2 : 1) * 8 * zoom * horizontalScale
                             clip: true
                             visible: rowrendered && rendered
                             color: ttpalette[bg]

@@ -9,10 +9,47 @@ class FastextLinkInfo:
     enabled: bool
 
 
+class DirectPageBuffer:
+    valid_digits = '0123456789ABCDEF'
+    valid_first_digits = '12345678'
+
+    def __init__(self):
+        self.clear()
+
+    def clear(self):
+        self._text = ''
+
+    @property
+    def text(self):
+        return self._text
+
+    def push(self, character):
+        character = character.strip().upper()
+        if len(character) != 1 or character not in self.valid_digits:
+            return False
+        if not self._text and character not in self.valid_first_digits:
+            return False
+        if len(self._text) >= 3:
+            self._text = ''
+        self._text += character
+        return True
+
+    def backspace(self):
+        if not self._text:
+            return False
+        self._text = self._text[:-1]
+        return True
+
+    @property
+    def complete(self):
+        return len(self._text) == 3
+
+
 class ServiceNavigator:
     def __init__(self, service):
         self._service = service
         self._pages = self._collect_pages(service)
+        self._hex_pages_enabled = True
         if not self._pages:
             raise ValueError('Teletext service does not contain any pages.')
         self._current_page_number = self._pages[0]
@@ -45,7 +82,7 @@ class ServiceNavigator:
 
     @property
     def page_numbers(self):
-        return tuple(self._pages)
+        return tuple(self._navigable_pages())
 
     @property
     def current_page_number(self):
@@ -79,8 +116,24 @@ class ServiceNavigator:
     def go_to_page_text(self, text):
         return self.go_to_page(self.parse_page_number(text))
 
+    @staticmethod
+    def is_decimal_page(page_number):
+        _, page = ServiceNavigator.split_page_number(page_number)
+        return all(character.isdigit() for character in f'{page:02X}')
+
+    @property
+    def hex_pages_enabled(self):
+        return self._hex_pages_enabled
+
+    def set_hex_pages_enabled(self, enabled):
+        self._hex_pages_enabled = bool(enabled)
+        navigable_pages = self._navigable_pages()
+        if self._current_page_number not in navigable_pages:
+            self._current_page_number = self._closest_navigable_page()
+            self._current_subpage_number = self._subpage_numbers(self._current_page_number)[0]
+
     def go_to_page(self, page_number, subpage_number=None):
-        if page_number not in self._pages:
+        if page_number not in self._navigable_pages():
             return False
 
         subpages = self._subpage_numbers(page_number)
@@ -92,12 +145,14 @@ class ServiceNavigator:
         return True
 
     def go_next_page(self):
-        index = self._pages.index(self._current_page_number)
-        return self.go_to_page(self._pages[(index + 1) % len(self._pages)])
+        pages = self._navigable_pages()
+        index = pages.index(self._current_page_number)
+        return self.go_to_page(pages[(index + 1) % len(pages)])
 
     def go_prev_page(self):
-        index = self._pages.index(self._current_page_number)
-        return self.go_to_page(self._pages[(index - 1) % len(self._pages)])
+        pages = self._navigable_pages()
+        index = pages.index(self._current_page_number)
+        return self.go_to_page(pages[(index - 1) % len(pages)])
 
     def go_next_subpage(self):
         subpages = self._subpage_numbers(self._current_page_number)
@@ -120,11 +175,11 @@ class ServiceNavigator:
         for link in subpage.fastext.links[:4]:
             page_number = self.compose_page_number(link.magazine, link.page)
             links.append(FastextLinkInfo(
-                page_number=page_number,
-                subpage_number=link.subpage,
-                label=f'P{link.magazine}{link.page:02X}',
-                enabled=page_number in self._pages,
-            ))
+            page_number=page_number,
+            subpage_number=link.subpage,
+            label=f'P{link.magazine}{link.page:02X}',
+            enabled=page_number in self._navigable_pages(),
+        ))
         return tuple(links)
 
     def go_to_fastext(self, index):
@@ -145,6 +200,22 @@ class ServiceNavigator:
 
     def _subpage_numbers(self, page_number):
         return tuple(sorted(self._page(page_number).subpages))
+
+    def _navigable_pages(self):
+        pages = [page_number for page_number in self._pages if self._page_allowed(page_number)]
+        return pages if pages else list(self._pages)
+
+    def _page_allowed(self, page_number):
+        return self._hex_pages_enabled or self.is_decimal_page(page_number)
+
+    def _closest_navigable_page(self):
+        pages = self._navigable_pages()
+        current_index = self._pages.index(self._current_page_number)
+        for offset in range(len(self._pages)):
+            candidate = self._pages[(current_index + offset) % len(self._pages)]
+            if candidate in pages:
+                return candidate
+        return pages[0]
 
     @staticmethod
     def _collect_pages(service):

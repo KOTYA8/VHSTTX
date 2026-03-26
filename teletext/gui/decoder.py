@@ -38,11 +38,33 @@ class Palette(object):
 
 class ParserQML(Parser):
 
-    def __init__(self, tt, row, cells, nextrow):
+    def __init__(self, tt, row, cells, nextrow, root):
         self._row = row
         self._cells = cells
         self._nextrow = nextrow
+        self._root = root
         super().__init__(tt)
+
+    def _doubleheight_enabled(self):
+        value = self._root.property('doubleheight')
+        return True if value is None else bool(value)
+
+    def _doublewidth_enabled(self):
+        value = self._root.property('doublewidth')
+        return True if value is None else bool(value)
+
+    def _flash_enabled(self):
+        value = self._root.property('flashenabled')
+        return True if value is None else bool(value)
+
+    def setstate(self, **kwargs):
+        if 'dh' in kwargs and not self._doubleheight_enabled():
+            kwargs['dh'] = False
+        if 'dw' in kwargs and not self._doublewidth_enabled():
+            kwargs['dw'] = False
+        if 'flash' in kwargs and not self._flash_enabled():
+            kwargs['flash'] = False
+        super().setstate(**kwargs)
 
     def emitcharacter(self, c):
         self._cells[self._cell].setProperty('c', c)
@@ -84,10 +106,20 @@ class Decoder(object):
         qml_file = os.path.join(os.path.dirname(__file__), 'decoder.qml')
         self.widget.setSource(QUrl.fromLocalFile(qml_file))
 
-        self._rows = [self.widget.rootObject().findChild(QObject, 'rows').itemAt(x) for x in range(25)]
+        self._root = self.widget.rootObject()
+        self._rows = [self._root.findChild(QObject, 'rows').itemAt(x) for x in range(25)]
         self._cells = [[r.findChild(QObject, 'cols').itemAt(x) for x in range(40)] for r in self._rows]
         self._data = np.zeros((25, 40), dtype=np.uint8)
-        self._parsers = [ParserQML(self._data[x], self._rows[x], self._cells[x], self._rows[x+1] if x < 24 else None) for x in range(25)]
+        self._parsers = [
+            ParserQML(
+                self._data[x],
+                self._rows[x],
+                self._cells[x],
+                self._rows[x+1] if x < 24 else None,
+                self._root,
+            )
+            for x in range(25)
+        ]
 
         self.zoom = 2
 
@@ -152,6 +184,45 @@ class Decoder(object):
     @crteffect.setter
     def crteffect(self, crteffect):
         self.widget.rootObject().setProperty('crteffect', crteffect)
+
+    @property
+    def doublewidth(self):
+        return self._root.property('doublewidth')
+
+    @doublewidth.setter
+    def doublewidth(self, enabled):
+        self._root.setProperty('doublewidth', bool(enabled))
+        for parser in self._parsers:
+            parser.parse()
+
+    @property
+    def horizontalscale(self):
+        return self._root.property('horizontalScale')
+
+    @horizontalscale.setter
+    def horizontalscale(self, value):
+        self._root.setProperty('horizontalScale', float(value))
+        self.widget.setFixedSize(self.size())
+
+    @property
+    def doubleheight(self):
+        return self._root.property('doubleheight')
+
+    @doubleheight.setter
+    def doubleheight(self, enabled):
+        self._root.setProperty('doubleheight', bool(enabled))
+        for parser in self._parsers:
+            parser.parse()
+
+    @property
+    def flashenabled(self):
+        return self._root.property('flashenabled')
+
+    @flashenabled.setter
+    def flashenabled(self, enabled):
+        self._root.setProperty('flashenabled', bool(enabled))
+        for parser in self._parsers:
+            parser.parse()
 
     def size(self):
         sf = self.widget.rootObject().size()
