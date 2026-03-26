@@ -1,5 +1,6 @@
 # VHSTT2
-
+VHS Teletext 2 - advanced features of [vhs-teletext](https://github.com/ali1234/vhs-teletext)   
+   
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
 # Installation
