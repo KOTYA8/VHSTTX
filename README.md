@@ -3,6 +3,30 @@ VHS Teletext 2 - advanced features of [vhs-teletext](https://github.com/ali1234/
    
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
+# Functions
+* **Ignore Line** (`record/deconvolve`) - Ignoring lines when writing to VBI and deconvolving to t42.   
+```
+teletext record --ignore-line 1,2,20 test.vbi
+```
+```
+teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42
+```
+   
+* **Line numbering** (`vbiview`) - Line numbering in VBI Viewer.   
+   
+* **Templates** (`vbiview/deconvolve`)    
+(`fs200sp`, `fs200lp`, `hd630lp`, `hd630sp`, `grundig_2x4`, `hrs9700`, `hd630vdlp`, `hd630vdlp24`, `fs200vdsp`, `fs200vdlp`, `betacamsp`, `betamax`) - Adding templates (VCRs) for deconvolution and VBI viewing.   
+```
+teletext vbiview -f hd630sp test.vbi   
+```
+```
+teletext deconvolve -f hd630lp test.vbi > test.t42  
+```
+
+# Future Functions
+* **Ignore Line (record/deconvolve)** - ✅ realized
+* **Line numbering (vbiview)** - ✅ realized
+
 # Installation
 ### Installation VHSTT2
 The entire installation was performed on Ubuntu 24.04 LTS.
@@ -53,30 +77,6 @@ sudo modprobe -v bttv card=16 tuner=0 radio=0
 sudo touch /etc/modprobe.d/bttv.conf
 ```
 In a folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
-
-# Functions
-* **Ignore Line** (`record/deconvolve`) - Ignoring lines when writing to VBI and deconvolving to t42.   
-```
-teletext record --ignore-line 1,2,20 test.vbi
-```
-```
-teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42
-```
-   
-* **Line numbering** (`vbiview`) - Line numbering in VBI Viewer.   
-   
-* **Templates** (`vbiview/deconvolve`)    
-(`fs200sp`, `fs200lp`, `hd630lp`, `hd630sp`, `grundig_2x4`, `hrs9700`, `hd630vdlp`, `hd630vdlp24`, `fs200vdsp`, `fs200vdlp`, `betacamsp`, `betamax`) - Adding templates (VCRs) for deconvolution and VBI viewing.   
-```
-teletext vbiview -f hd630sp test.vbi   
-```
-```
-teletext deconvolve -f hd630lp test.vbi > test.t42  
-```
-
-# Future Functions
-* **Ignore Line (record/deconvolve)** - ✅ realized
-* **Line numbering (vbiview)** - ✅ realized
 
 # Changelog
 All previous versions are available in the repository: [VHSTT2_VER](https://github.com/KOTYA8/VHSTT2_VER)  
