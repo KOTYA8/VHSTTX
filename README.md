@@ -49,7 +49,7 @@ teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42
    
 * **Line numbering** (`vbiview`) - Line numbering in VBI Viewer.   
    
-* **Templates** (`fs200sp`, `fs200lp`, `hd630lp`, `hd630sp`, `grundig_2x4`, `hrs9700`, `hd630vdlp`, `hd630vdlp24`, `fs200vdsp`, `fs200vdlp`, `betacamsp`, `betamax`) - Adding templates (VCRs) for deconvolution.  
+* **Templates** (`vbiview/deconvolve`) (`fs200sp`, `fs200lp`, `hd630lp`, `hd630sp`, `grundig_2x4`, `hrs9700`, `hd630vdlp`, `hd630vdlp24`, `fs200vdsp`, `fs200vdlp`, `betacamsp`, `betamax`) - Adding templates (VCRs) for deconvolution and VBI viewing.   
 ```
 teletext vbiview -f hd630sp test.vbi   
 ```
