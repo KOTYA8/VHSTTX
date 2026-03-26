@@ -2,6 +2,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 
 
 DESKTOP_FILENAME = 'ttviewer.desktop'
@@ -46,6 +47,21 @@ def _write_text(path, content):
         handle.write(content)
 
 
+def resolve_exec_command(exec_command):
+    if os.path.sep in exec_command or (os.path.altsep and os.path.altsep in exec_command):
+        return exec_command
+
+    resolved = shutil.which(exec_command)
+    if resolved:
+        return resolved
+
+    sibling = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), exec_command)
+    if os.path.exists(sibling):
+        return sibling
+
+    return exec_command
+
+
 def _run_command(command, quiet=False):
     if not shutil.which(command[0]):
         return
@@ -59,6 +75,7 @@ def _run_command(command, quiet=False):
 def install_desktop_integration(data_home=None, exec_command='ttviewer', set_default=True):
     if data_home is None:
         data_home = os.environ.get('XDG_DATA_HOME', os.path.join(os.path.expanduser('~'), '.local', 'share'))
+    resolved_exec_command = resolve_exec_command(exec_command)
 
     applications_dir = os.path.join(data_home, 'applications')
     mime_packages_dir = os.path.join(data_home, 'mime', 'packages')
@@ -71,7 +88,7 @@ def install_desktop_integration(data_home=None, exec_command='ttviewer', set_def
     mime_path = os.path.join(mime_packages_dir, MIME_FILENAME)
     icon_path = os.path.join(icon_dir, ICON_FILENAME)
 
-    _write_text(desktop_path, desktop_entry(exec_command=exec_command))
+    _write_text(desktop_path, desktop_entry(exec_command=resolved_exec_command))
     _write_text(mime_path, mime_xml())
     shutil.copyfile(_resource_path(ICON_FILENAME), icon_path)
 
@@ -85,6 +102,7 @@ def install_desktop_integration(data_home=None, exec_command='ttviewer', set_def
         'desktop': desktop_path,
         'mime': mime_path,
         'icon': icon_path,
+        'exec': resolved_exec_command,
     }
 
 
