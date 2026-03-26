@@ -21,7 +21,7 @@ pipx install -e .[qt] --force
 ```
 pip install PyQt5
 ```
-2. In the terminal go to the folder   
+2. In the terminal go to the folder:   
 `cd VHSTTX/misc/ubuntu`
 3. Give permission and install   
 ```
