@@ -3,6 +3,10 @@ VHS Teletext 2 - advanced features of [vhs-teletext](https://github.com/ali1234/
    
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
+# Future Functions
+* **Ignore Line (record/deconvolve)** - ✅ realized
+* **Line numbering (vbiview)** - ✅ realized
+
 # Functions
 * **Ignore Line** (`record/deconvolve`) - Ignoring lines when writing to VBI and deconvolving to t42.   
 ```
@@ -22,10 +26,6 @@ teletext vbiview -f hd630sp test.vbi
 ```
 teletext deconvolve -f hd630lp test.vbi > test.t42  
 ```
-
-# Future Functions
-* **Ignore Line (record/deconvolve)** - ✅ realized
-* **Line numbering (vbiview)** - ✅ realized
 
 # Installation
 ### Installation VHSTT2
