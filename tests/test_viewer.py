@@ -96,6 +96,71 @@ class TestServiceNavigator(unittest.TestCase):
         self.navigator.go_prev_subpage()
         self.assertEqual(self.navigator.current_subpage_number, 0x0001)
 
+    def test_auto_advance_moves_to_next_page_after_last_subpage(self):
+        self.assertEqual(self.navigator.current_page_number, 0x100)
+        self.assertEqual(self.navigator.current_subpage_number, 0x0000)
+
+        self.assertEqual(self.navigator.auto_advance(subpages_enabled=True, pages_enabled=True), 'subpage')
+        self.assertEqual(self.navigator.current_page_number, 0x100)
+        self.assertEqual(self.navigator.current_subpage_number, 0x0001)
+
+        self.assertEqual(self.navigator.auto_advance(subpages_enabled=True, pages_enabled=True), 'page')
+        self.assertEqual(self.navigator.current_page_number, 0x101)
+        self.assertEqual(self.navigator.current_subpage_number, 0x0000)
+
+    def test_auto_advance_wraps_subpages_when_page_advance_disabled(self):
+        self.navigator.go_next_subpage()
+        self.assertEqual(self.navigator.current_subpage_number, 0x0001)
+
+        self.assertEqual(self.navigator.auto_advance(subpages_enabled=True, pages_enabled=False), 'subpage')
+        self.assertEqual(self.navigator.current_page_number, 0x100)
+        self.assertEqual(self.navigator.current_subpage_number, 0x0000)
+
+    def test_auto_advance_can_step_pages_without_subpages(self):
+        self.navigator.go_to_page(0x101)
+
+        self.assertEqual(self.navigator.auto_advance(subpages_enabled=False, pages_enabled=True), 'page')
+        self.assertEqual(self.navigator.current_page_number, 0x200)
+
+    def test_overview_entries_include_all_pages_and_subpages(self):
+        entries = self.navigator.overview_entries()
+
+        self.assertEqual(
+            [(entry.page_label, entry.subpage_number) for entry in entries],
+            [('P100', 0x0000), ('P100', 0x0001), ('P101', 0x0000), ('P200', 0x0000)],
+        )
+        self.assertEqual(entries[0].subpage_label, '01/02 (0000)')
+        self.assertEqual(entries[1].subpage_label, '02/02 (0001)')
+
+    def test_overview_entries_follow_hex_page_filter(self):
+        self.service.insert_page(make_subpage(1, 0xAF, 0x0000))
+        navigator = ServiceNavigator(self.service)
+        navigator.set_hex_pages_enabled(False)
+
+        self.assertEqual(
+            [entry.page_label for entry in navigator.overview_entries()],
+            ['P100', 'P100', 'P101', 'P200'],
+        )
+
+    def test_overview_entries_can_hide_subpages(self):
+        entries = self.navigator.overview_entries(include_subpages=False)
+
+        self.assertEqual(
+            [(entry.page_label, entry.subpage_number) for entry in entries],
+            [('P100', 0x0000), ('P101', 0x0000), ('P200', 0x0000)],
+        )
+
+    def test_overview_entries_can_hide_hex_pages_without_global_filter(self):
+        self.service.insert_page(make_subpage(1, 0xAF, 0x0000))
+        navigator = ServiceNavigator(self.service)
+
+        entries = navigator.overview_entries(include_hex_pages=False)
+
+        self.assertEqual(
+            [entry.page_label for entry in entries],
+            ['P100', 'P100', 'P101', 'P200'],
+        )
+
     def test_go_to_page_text_accepts_plain_and_prefixed_hex(self):
         self.assertTrue(self.navigator.go_to_page_text('200'))
         self.assertEqual(self.navigator.current_page_number, 0x200)
