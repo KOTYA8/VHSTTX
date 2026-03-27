@@ -24,6 +24,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Display of teletext subpages and flags - ✅ realized
 * List of all pages - ✅ realized
 * Full screen - ✅ realized
+* Teletext service information - ❌ not realized
 
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
