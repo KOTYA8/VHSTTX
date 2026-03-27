@@ -135,8 +135,8 @@ if QtCore is not None:
             self._list.setSpacing(10)
             self._list.setUniformItemSizes(True)
             self._list.setWordWrap(True)
-            self._list.setIconSize(QtCore.QSize(160, 120))
-            self._list.setGridSize(QtCore.QSize(190, 160))
+            self._list.setIconSize(QtCore.QSize(192, 144))
+            self._list.setGridSize(QtCore.QSize(228, 188))
             self._list.itemActivated.connect(self._activate_item)
             self._list.itemDoubleClicked.connect(self._activate_item)
             self._stack.addWidget(self._list)
@@ -160,8 +160,8 @@ if QtCore is not None:
         def populate(self, entries, preview_callback, include_subpages=None, include_hex_pages=None, icon_cache=None):
             self._entries = tuple(entries)
             self._preview_callback = preview_callback
-            if icon_cache:
-                self._icon_cache.update(icon_cache)
+            if icon_cache is not None and icon_cache is not self._icon_cache:
+                self._icon_cache = icon_cache
             if include_subpages is not None:
                 blocked = self._subpages_toggle.blockSignals(True)
                 self._subpages_toggle.setChecked(include_subpages)
@@ -1075,6 +1075,7 @@ if QtCore is not None:
 
         def _update_overview_status_label(self):
             if self._overview_preload_total <= 0:
+                self._overview_status_label.setText('')
                 self._overview_status_label.hide()
                 return
             self._overview_status_label.setText(
@@ -1082,10 +1083,18 @@ if QtCore is not None:
             )
             self._overview_status_label.show()
 
+        def _stop_overview_preload(self, clear_progress=True):
+            self._overview_preload_timer.stop()
+            if clear_progress:
+                self._overview_preload_queue = []
+                self._overview_preload_total = 0
+                self._overview_preload_loaded = 0
+            self._overview_status_label.setText('')
+            self._overview_status_label.hide()
+
         def _start_overview_preload(self):
             if self._navigator is None or not self._load_overview_action.isChecked():
-                self._overview_preload_timer.stop()
-                self._overview_status_label.hide()
+                self._stop_overview_preload()
                 return
 
             entries = tuple(self._overview_entries_for_loading())
@@ -1097,7 +1106,7 @@ if QtCore is not None:
             self._overview_preload_loaded = self._overview_preload_total - len(self._overview_preload_queue)
 
             if not self._overview_preload_queue:
-                self._overview_status_label.hide()
+                self._stop_overview_preload()
                 return
 
             self._update_overview_status_label()
@@ -1105,15 +1114,13 @@ if QtCore is not None:
 
         def _preload_overview_batch(self):  # pragma: no cover - GUI timer path
             if self._navigator is None or not self._load_overview_action.isChecked():
-                self._overview_preload_timer.stop()
-                self._overview_status_label.hide()
+                self._stop_overview_preload()
                 return
 
-            icon_size = QtCore.QSize(160, 120)
+            icon_size = QtCore.QSize(192, 144)
             for _ in range(6):
                 if not self._overview_preload_queue:
-                    self._overview_preload_timer.stop()
-                    self._overview_status_label.hide()
+                    self._stop_overview_preload()
                     return
 
                 entry = self._overview_preload_queue.pop(0)
@@ -1262,10 +1269,18 @@ if QtCore is not None:
 
         def _set_load_overview(self, enabled):
             if enabled:
+                if self._overview_dialog is not None and self._overview_dialog.isVisible():
+                    self._stop_overview_preload()
+                    return
                 self._start_overview_preload()
             else:
-                self._overview_preload_timer.stop()
-                self._overview_status_label.hide()
+                self._stop_overview_preload()
+
+        def _resume_overview_preload(self, *_args):
+            if self._load_overview_action.isChecked():
+                self._start_overview_preload()
+            else:
+                self._stop_overview_preload()
 
         def _set_no_hex_pages(self, enabled):
             if self._navigator is None:
@@ -1288,12 +1303,8 @@ if QtCore is not None:
             self._decoder.crteffect = enabled
 
         def _invalidate_overview_cache(self):
-            self._overview_preload_timer.stop()
-            self._overview_preload_queue = []
-            self._overview_preload_total = 0
-            self._overview_preload_loaded = 0
+            self._stop_overview_preload()
             self._overview_icon_cache.clear()
-            self._overview_status_label.hide()
             self._overview_dirty = True
             self._overview_signature = None
             if self._overview_dialog is not None:
@@ -1475,11 +1486,13 @@ if QtCore is not None:
             if self._overview_dialog is None:
                 self._overview_dialog = PageOverviewDialog(self)
                 self._overview_dialog.selectionRequested.connect(self._open_overview_selection)
+                self._overview_dialog.finished.connect(self._resume_overview_preload)
                 include_subpages = True
                 include_hex_pages = not self._no_hex_pages_action.isChecked()
             else:
                 include_subpages = self._overview_dialog.include_subpages
                 include_hex_pages = self._overview_dialog.include_hex_pages and not self._no_hex_pages_action.isChecked()
+            self._stop_overview_preload()
             signature = self._overview_state_signature()
             self._overview_dialog.populate(
                 self._navigator.overview_entries(
