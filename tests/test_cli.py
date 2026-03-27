@@ -39,6 +39,10 @@ class TestCmdSpellcheck(TestCommandTeletext):
     cmd = teletext.cli.teletext.spellcheck
 
 
+class TestCmdSpellcheckAnalyze(TestCommandTeletext):
+    cmd = teletext.cli.teletext.spellcheck_analyze
+
+
 class TestCmdService(TestCommandTeletext):
     cmd = teletext.cli.teletext.service
 

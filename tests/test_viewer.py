@@ -307,6 +307,19 @@ class TestServiceMetadata(unittest.TestCase):
         self.assertIsNone(metadata.likely_country)
         self.assertEqual(metadata.confidence, 'low')
 
+    def test_metadata_does_not_use_numeric_split_filename_as_broadcaster(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x26, 0x0030, header_text='126 INDEX PAGE'))
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = os.path.join(tempdir, '126-0030-0001.t42')
+            with open(path, 'wb') as handle:
+                handle.write(b'\x00' * 42)
+            metadata = describe_service_metadata(service, path)
+
+        self.assertIsNone(metadata.likely_broadcaster)
+        self.assertIsNone(metadata.likely_language)
+        self.assertIsNone(metadata.likely_country)
+
     def test_metadata_infers_bbc2_and_english_from_ceefax_headers(self):
         service = Service()
         service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='CEEFAX 2 100 Fri 21 May 18:35/19'))

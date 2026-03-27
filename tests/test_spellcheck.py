@@ -34,7 +34,7 @@ if 'enchant' not in sys.modules:
 
 
 from teletext.coding import parity_encode
-from teletext.spellcheck import TeletextCodec, infer_localcodepage, spellcheck_page_packets
+from teletext.spellcheck import TeletextCodec, analyze_page_packets, infer_localcodepage, spellcheck_page_packets
 from teletext.subpage import Subpage
 
 
@@ -134,3 +134,25 @@ class TestTeletextSpellcheck(unittest.TestCase):
 
         self.assertEqual(corrected_line, 'KANALE')
         self.assertEqual(preserved_line, 'KANALE')
+
+
+class TestSpellcheckAnalysis(unittest.TestCase):
+    def test_analyze_page_packets_reports_variant_pairs(self):
+        reference_packets = make_subpage_with_lines('KANALE', 'SPORT')
+        noisy_packets = make_subpage_with_lines('QENALF', 'SPORT')
+
+        analysis = analyze_page_packets(
+            [reference_packets, noisy_packets],
+            min_word_length=3,
+            max_differences=3,
+        )
+
+        self.assertEqual(analysis['page_count'], 2)
+        self.assertEqual(analysis['variant_slot_count'], 1)
+        self.assertEqual(analysis['variant_words'][('kanale', 'qenalf')], 1)
+        self.assertEqual(analysis['char_pairs'][('a', 'e')], 1)
+
+        report = analysis['variant_reports'][0]
+        self.assertEqual(report.leader, 'KANALE')
+        self.assertEqual(report.variant, 'QENALF')
+        self.assertEqual(report.row, 1)
