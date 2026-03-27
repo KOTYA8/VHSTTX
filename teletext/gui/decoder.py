@@ -269,6 +269,29 @@ class Decoder(object):
         sf = self.widget.rootObject().size()
         return QSize(int(sf.width()), int(sf.height()))
 
+    @property
+    def fullscreenmode(self):
+        return self._root.property('fullscreenmode')
+
+    @fullscreenmode.setter
+    def fullscreenmode(self, enabled):
+        self._root.setProperty('fullscreenmode', bool(enabled))
+        self.widget.setFixedSize(self.size())
+
+    @property
+    def fullscreenstretch(self):
+        return self._root.property('fullscreenstretch')
+
+    @fullscreenstretch.setter
+    def fullscreenstretch(self, enabled):
+        self._root.setProperty('fullscreenstretch', bool(enabled))
+        self.widget.setFixedSize(self.size())
+
+    def set_viewport_size(self, width, height):
+        self._root.setProperty('viewportwidth', int(width))
+        self._root.setProperty('viewportheight', int(height))
+        self.widget.setFixedSize(self.size())
+
     def setEffect(self, e):
         self._effect = bool(e)
         self.widget.rootContext().setContextProperty('tteffect', self._effect)

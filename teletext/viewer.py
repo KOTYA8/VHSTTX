@@ -9,6 +9,14 @@ class FastextLinkInfo:
     enabled: bool
 
 
+@dataclass(frozen=True)
+class OverviewEntry:
+    page_number: int
+    subpage_number: int
+    page_label: str
+    subpage_label: str
+
+
 class DirectPageBuffer:
     valid_digits = '0123456789ABCDEF'
     valid_first_digits = '12345678'
@@ -99,7 +107,7 @@ class ServiceNavigator:
 
     @property
     def current_subpage(self):
-        return self._page(self._current_page_number).subpages[self._current_subpage_number]
+        return self.subpage(self._current_page_number, self._current_subpage_number)
 
     @property
     def current_subpage_index(self):
@@ -113,8 +121,18 @@ class ServiceNavigator:
     def current_subpage_position(self):
         return self.current_subpage_index + 1, self.current_subpage_count
 
+    @property
+    def page_count(self):
+        return len(self._navigable_pages())
+
     def go_to_page_text(self, text):
         return self.go_to_page(self.parse_page_number(text))
+
+    def subpage(self, page_number, subpage_number=None):
+        subpages = self._page(page_number).subpages
+        if subpage_number is None:
+            subpage_number = sorted(subpages)[0]
+        return subpages[subpage_number]
 
     @staticmethod
     def is_decimal_page(page_number):
@@ -165,6 +183,54 @@ class ServiceNavigator:
         index = subpages.index(self._current_subpage_number)
         self._current_subpage_number = subpages[(index - 1) % len(subpages)]
         return True
+
+    def can_auto_advance(self, subpages_enabled=True, pages_enabled=False):
+        if subpages_enabled and self.current_subpage_count > 1:
+            return True
+        return pages_enabled and self.page_count > 1
+
+    def auto_advance(self, subpages_enabled=True, pages_enabled=False):
+        if subpages_enabled and self.current_subpage_count > 1:
+            subpages = self._subpage_numbers(self._current_page_number)
+            index = subpages.index(self._current_subpage_number)
+            if index + 1 < len(subpages):
+                self._current_subpage_number = subpages[index + 1]
+                return 'subpage'
+            if pages_enabled and self.page_count > 1:
+                self.go_next_page()
+                return 'page'
+            self._current_subpage_number = subpages[0]
+            return 'subpage'
+
+        if pages_enabled and self.page_count > 1:
+            self.go_next_page()
+            return 'page'
+
+        return None
+
+    def overview_entries(self, include_subpages=True, include_hex_pages=None):
+        entries = []
+        if include_hex_pages is None:
+            page_numbers = self._navigable_pages()
+        elif include_hex_pages:
+            page_numbers = list(self._pages)
+        else:
+            page_numbers = [page_number for page_number in self._pages if self.is_decimal_page(page_number)]
+
+        for page_number in page_numbers:
+            page_label = self._page_label(page_number)
+            subpages = self._subpage_numbers(page_number)
+            total = len(subpages)
+            if not include_subpages:
+                subpages = subpages[:1]
+            for index, subpage_number in enumerate(subpages, start=1):
+                entries.append(OverviewEntry(
+                    page_number=page_number,
+                    subpage_number=subpage_number,
+                    page_label=page_label,
+                    subpage_label=f'{index:02d}/{total:02d} ({subpage_number:04X})',
+                ))
+        return tuple(entries)
 
     def fastext_links(self):
         subpage = self.current_subpage
@@ -225,3 +291,7 @@ class ServiceNavigator:
                 if page.subpages:
                     pages.append(ServiceNavigator.compose_page_number(magazine_number, page_number))
         return pages
+
+    def _page_label(self, page_number):
+        magazine, page = self.split_page_number(page_number)
+        return f'P{magazine}{page:02X}'
