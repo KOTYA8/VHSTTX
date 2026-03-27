@@ -9,6 +9,10 @@ source myvenv/bin/activate
 git clone https://github.com/KOTYA8/VHSTTX.git
 python3 setup.py install
 ```
+### Update
+```
+python3 setup.py install
+```
 ### Uninstalling the old version
 In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
 
