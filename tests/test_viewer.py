@@ -1,5 +1,6 @@
 import sys
 import os
+import pathlib
 import tempfile
 import types
 import unittest
@@ -12,6 +13,16 @@ sys.modules.setdefault('tqdm', tqdm_module)
 from teletext.service import Service
 from teletext.subpage import Subpage
 from teletext.viewer import DirectPageBuffer, ServiceNavigator, describe_service_metadata
+from teletext.viewer import (
+    build_split_pattern,
+    count_html_outputs,
+    count_split_t42_outputs,
+    export_html,
+    export_selected_html,
+    export_selected_t42,
+    export_split_t42,
+    render_subpage_text,
+)
 
 
 class TestDirectPageBuffer(unittest.TestCase):
@@ -235,6 +246,13 @@ class TestServiceNavigator(unittest.TestCase):
 
         self.assertEqual([link.enabled for link in links], [False, True, True, False])
 
+    def test_service_from_packets_handles_header_pagination_without_overflow(self):
+        subpage = make_subpage(1, 0x00, 0x0000, header_text='100 INDEX PAGE')
+        service = Service.from_packets(iter(subpage.packets))
+
+        navigator = ServiceNavigator(service)
+        self.assertEqual(navigator.current_page_label, 'P100')
+
 
 class TestServiceMetadata(unittest.TestCase):
     def make_temp_capture(self, stem='capture'):
@@ -277,3 +295,110 @@ class TestServiceMetadata(unittest.TestCase):
         self.assertEqual(metadata.likely_broadcaster, 'DEMO')
         self.assertIsNone(metadata.likely_language)
         self.assertEqual(metadata.confidence, 'low')
+
+    def test_metadata_does_not_infer_russia_from_single_weak_hint(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='100 TELEINF'))
+
+        metadata = describe_service_metadata(service, self.make_temp_capture('unknown'))
+
+        self.assertEqual(metadata.likely_broadcaster, 'UNKNOWN')
+        self.assertIsNone(metadata.likely_language)
+        self.assertIsNone(metadata.likely_country)
+        self.assertEqual(metadata.confidence, 'low')
+
+    def test_metadata_infers_bbc2_and_english_from_ceefax_headers(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='CEEFAX 2 100 Fri 21 May 18:35/19'))
+        service.insert_page(make_subpage(1, 0x01, 0x0000, header_text='CEEFAX 2 101 Fri 21 May 18:31/16'))
+
+        metadata = describe_service_metadata(service, self.make_temp_capture('BBC2-19990521-sq'))
+
+        self.assertFalse(metadata.broadcast_present)
+        self.assertEqual(metadata.likely_broadcaster, 'BBC2')
+        self.assertEqual(metadata.likely_language, 'English')
+        self.assertEqual(metadata.likely_country, 'United Kingdom')
+        self.assertEqual(metadata.confidence, 'medium')
+
+
+class TestServiceExportHelpers(unittest.TestCase):
+    def setUp(self):
+        self.service = Service()
+        self.service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='100 TELEINF 08:11:19'))
+        self.service.insert_page(make_subpage(1, 0x00, 0x0001, header_text='100 TELEINF 08:11:20'))
+        self.service.insert_page(make_subpage(1, 0x01, 0x0000, header_text='101 NOVOSTI 08:11:21'))
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+
+    def test_build_split_pattern_matches_flag_selection(self):
+        self.assertEqual(build_split_pattern(True, True, True, True), '{m}{p}-{s}-{c}.t42')
+        self.assertEqual(build_split_pattern(True, True, False, False), '{m}{p}.t42')
+        self.assertEqual(build_split_pattern(False, True, True, False), '{p}-{s}.t42')
+        self.assertEqual(build_split_pattern(False, False, False, False), 'capture.t42')
+
+    def test_export_split_t42_can_group_subpages_by_page(self):
+        paths = export_split_t42(
+            self.service,
+            self.tempdir.name,
+            include_magazine=True,
+            include_page=True,
+            include_subpage=False,
+            include_count=False,
+        )
+
+        self.assertEqual(
+            sorted(path.name for path in paths),
+            ['100.t42', '101.t42'],
+        )
+        self.assertTrue((pathlib.Path(self.tempdir.name) / '100.t42').stat().st_size > 0)
+
+    def test_export_selected_helpers_write_single_files(self):
+        t42_path = pathlib.Path(self.tempdir.name) / 'one-subpage.t42'
+        html_path = pathlib.Path(self.tempdir.name) / 'one-subpage.html'
+
+        export_selected_t42(self.service, t42_path, 0x100, subpage_number=0x0001)
+        export_selected_html(self.service, html_path, 0x100, subpage_number=0x0001, localcodepage='cyr')
+
+        self.assertTrue(t42_path.exists())
+        self.assertTrue(html_path.exists())
+        self.assertIn('Page 100-0001', html_path.read_text(encoding='utf-8'))
+
+    def test_export_html_can_split_subpages(self):
+        paths = export_html(self.service, self.tempdir.name, include_subpages=True)
+
+        self.assertEqual(
+            sorted(path.name for path in paths),
+            ['100-0000.html', '100-0001.html', '101-0000.html'],
+        )
+        self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext.css').exists())
+
+    def test_export_html_helpers_handle_duplicate_subpages(self):
+        duplicate = make_subpage(1, 0x00, 0x0000, header_text='100 TELEINF DUPLICATE')
+        self.service.magazines[1].pages[0x00].subpages[0x0000].duplicates.append(duplicate)
+
+        html_path = pathlib.Path(self.tempdir.name) / 'duplicates.html'
+        export_selected_html(self.service, html_path, 0x100)
+        paths = export_html(self.service, self.tempdir.name, include_subpages=False)
+
+        self.assertTrue(html_path.exists())
+        self.assertIn('Page 100', html_path.read_text(encoding='utf-8'))
+        self.assertIn(pathlib.Path(self.tempdir.name) / '100.html', paths)
+
+    def test_export_count_helpers_include_duplicate_subpages(self):
+        duplicate = make_subpage(1, 0x00, 0x0000, header_text='100 TELEINF DUPLICATE')
+        self.service.magazines[1].pages[0x00].subpages[0x0000].duplicates.append(duplicate)
+
+        self.assertEqual(count_split_t42_outputs(self.service), 4)
+        self.assertEqual(count_html_outputs(self.service, include_subpages=False), 2)
+        self.assertEqual(count_html_outputs(self.service, include_subpages=True), 4)
+
+    def test_render_subpage_text_includes_header_and_body(self):
+        subpage = self.service.magazines[1].pages[0x00].subpages[0x0000]
+        subpage.displayable.place_string('HELLO WORLD', y=0)
+
+        text = render_subpage_text(0x100, subpage)
+        lines = text.splitlines()
+
+        self.assertEqual(len(lines), 25)
+        self.assertIn('P100', lines[0])
+        self.assertIn('HELLO WORLD', lines[1])

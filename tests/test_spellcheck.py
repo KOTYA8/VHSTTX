@@ -117,3 +117,20 @@ class TestTeletextSpellcheck(unittest.TestCase):
 
         self.assertEqual(corrected_line, 'AVTOMOBILH')
         self.assertEqual(preserved_line, 'AVTOMOBILH')
+
+    def test_spellcheck_page_packets_allows_multi_error_slot_majority(self):
+        first_packets = make_subpage_with_lines('KANALE', 'SPORT')
+        second_packets = make_subpage_with_lines('KANALE', 'SPORT')
+        noisy_packets = make_subpage_with_lines('QENALF', 'SPORT')
+        codec = TeletextCodec()
+
+        corrected_pages = list(spellcheck_page_packets(
+            iter([first_packets, second_packets, noisy_packets]),
+            language='en_GB',
+        ))
+
+        corrected_line = ''.join(codec.decode_cells(corrected_pages[2][1].displayable, codepage=0)).strip()
+        preserved_line = ''.join(codec.decode_cells(corrected_pages[0][1].displayable, codepage=0)).strip()
+
+        self.assertEqual(corrected_line, 'KANALE')
+        self.assertEqual(preserved_line, 'KANALE')
