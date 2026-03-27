@@ -17,7 +17,15 @@ else:
 if IMPORT_ERROR is None:
     from teletext.gui.decoder import Decoder
     from teletext.service import Service
-    from teletext.viewer import DirectPageBuffer, ServiceNavigator
+    from teletext.viewer import (
+        DirectPageBuffer,
+        ServiceNavigator,
+        build_split_pattern,
+        export_html,
+        export_selected_html,
+        export_selected_t42,
+        export_split_t42,
+    )
 
 
 if QtCore is not None:
@@ -292,6 +300,195 @@ if QtCore is not None:
             QtWidgets.QApplication.clipboard().setText(self._report.toPlainText())
 
 
+    class SplitExportDialog(QtWidgets.QDialog):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle('Split Export')
+            self.resize(760, 460)
+
+            root = QtWidgets.QVBoxLayout(self)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(10)
+
+            single_group = QtWidgets.QGroupBox('Single Page / Subpage')
+            single_layout = QtWidgets.QGridLayout(single_group)
+
+            single_layout.addWidget(QtWidgets.QLabel('Page'), 0, 0)
+            self._single_page_input = QtWidgets.QLineEdit()
+            self._single_page_input.setMaxLength(3)
+            self._single_page_input.setPlaceholderText('100')
+            single_layout.addWidget(self._single_page_input, 0, 1)
+
+            single_layout.addWidget(QtWidgets.QLabel('Subpage'), 0, 2)
+            self._single_subpage_input = QtWidgets.QLineEdit()
+            self._single_subpage_input.setMaxLength(4)
+            self._single_subpage_input.setPlaceholderText('0000 or empty')
+            single_layout.addWidget(self._single_subpage_input, 0, 3)
+
+            hint = QtWidgets.QLabel('Leave subpage empty to export the whole page.')
+            single_layout.addWidget(hint, 1, 0, 1, 4)
+
+            button_row = QtWidgets.QHBoxLayout()
+            self.single_t42_button = QtWidgets.QPushButton('Save T42...')
+            button_row.addWidget(self.single_t42_button)
+            self.single_html_button = QtWidgets.QPushButton('Save HTML...')
+            button_row.addWidget(self.single_html_button)
+            self.current_t42_button = QtWidgets.QPushButton('Current T42...')
+            button_row.addWidget(self.current_t42_button)
+            self.current_html_button = QtWidgets.QPushButton('Current HTML...')
+            button_row.addWidget(self.current_html_button)
+            button_row.addStretch(1)
+            single_layout.addLayout(button_row, 2, 0, 1, 4)
+
+            root.addWidget(single_group)
+
+            bulk_group = QtWidgets.QGroupBox('Bulk Export')
+            bulk_layout = QtWidgets.QGridLayout(bulk_group)
+
+            self._export_t42_toggle = QtWidgets.QCheckBox('Export T42')
+            self._export_t42_toggle.setChecked(True)
+            bulk_layout.addWidget(self._export_t42_toggle, 0, 0)
+
+            self._t42_dir_input = QtWidgets.QLineEdit()
+            bulk_layout.addWidget(self._t42_dir_input, 0, 1)
+            t42_browse = QtWidgets.QPushButton('Browse...')
+            t42_browse.clicked.connect(lambda: self._browse_directory(self._t42_dir_input))
+            bulk_layout.addWidget(t42_browse, 0, 2)
+
+            flags_row = QtWidgets.QHBoxLayout()
+            flags_row.addWidget(QtWidgets.QLabel('T42 Flags'))
+            self._flag_m = QtWidgets.QCheckBox('m')
+            self._flag_m.setChecked(True)
+            self._flag_p = QtWidgets.QCheckBox('p')
+            self._flag_p.setChecked(True)
+            self._flag_s = QtWidgets.QCheckBox('s')
+            self._flag_s.setChecked(True)
+            self._flag_c = QtWidgets.QCheckBox('c')
+            self._flag_c.setChecked(True)
+            for checkbox in (self._flag_m, self._flag_p, self._flag_s, self._flag_c):
+                checkbox.toggled.connect(self._update_pattern_preview)
+                flags_row.addWidget(checkbox)
+            flags_row.addStretch(1)
+            bulk_layout.addLayout(flags_row, 1, 1, 1, 2)
+
+            self._pattern_preview = QtWidgets.QLabel()
+            bulk_layout.addWidget(self._pattern_preview, 2, 1, 1, 2)
+
+            self._export_html_toggle = QtWidgets.QCheckBox('Export HTML')
+            self._export_html_toggle.setChecked(True)
+            bulk_layout.addWidget(self._export_html_toggle, 3, 0)
+
+            self._html_dir_input = QtWidgets.QLineEdit()
+            bulk_layout.addWidget(self._html_dir_input, 3, 1)
+            html_browse = QtWidgets.QPushButton('Browse...')
+            html_browse.clicked.connect(lambda: self._browse_directory(self._html_dir_input))
+            bulk_layout.addWidget(html_browse, 3, 2)
+
+            html_mode_row = QtWidgets.QHBoxLayout()
+            html_mode_row.addWidget(QtWidgets.QLabel('HTML Mode'))
+            self._html_pages_radio = QtWidgets.QRadioButton('Pages only')
+            self._html_pages_radio.setChecked(True)
+            html_mode_row.addWidget(self._html_pages_radio)
+            self._html_subpages_radio = QtWidgets.QRadioButton('Pages + Subpages')
+            html_mode_row.addWidget(self._html_subpages_radio)
+            html_mode_row.addStretch(1)
+            bulk_layout.addLayout(html_mode_row, 4, 1, 1, 2)
+
+            codepage_row = QtWidgets.QHBoxLayout()
+            codepage_row.addWidget(QtWidgets.QLabel('HTML Language'))
+            self._html_codepage_combo = QtWidgets.QComboBox()
+            for key, label in (
+                ('', 'Default'),
+                ('cyr', 'Cyrillic'),
+                ('swe', 'Swedish'),
+                ('ita', 'Italian'),
+                ('deu', 'German'),
+                ('fra', 'French'),
+                ('pol', 'Polish'),
+                ('nld', 'Dutch'),
+            ):
+                self._html_codepage_combo.addItem(label, key)
+            codepage_row.addWidget(self._html_codepage_combo)
+            codepage_row.addStretch(1)
+            bulk_layout.addLayout(codepage_row, 5, 1, 1, 2)
+
+            export_row = QtWidgets.QHBoxLayout()
+            export_row.addStretch(1)
+            self.export_all_button = QtWidgets.QPushButton('Export All')
+            export_row.addWidget(self.export_all_button)
+            bulk_layout.addLayout(export_row, 6, 0, 1, 3)
+
+            root.addWidget(bulk_group)
+            self._update_pattern_preview()
+
+        def _browse_directory(self, line_edit):
+            directory = QtWidgets.QFileDialog.getExistingDirectory(self, 'Choose export directory', line_edit.text() or '')
+            if directory:
+                line_edit.setText(directory)
+
+        def _update_pattern_preview(self):
+            pattern = build_split_pattern(
+                include_magazine=self._flag_m.isChecked(),
+                include_page=self._flag_p.isChecked(),
+                include_subpage=self._flag_s.isChecked(),
+                include_count=self._flag_c.isChecked(),
+                extension='.t42',
+            )
+            self._pattern_preview.setText(f'Pattern: {pattern}')
+
+        def set_current_selection(self, page_text, subpage_number):
+            self._single_page_input.setText(page_text)
+            self._single_subpage_input.setText(f'{subpage_number:04X}')
+
+        def set_default_directories(self, t42_dir, html_dir):
+            if t42_dir:
+                self._t42_dir_input.setText(t42_dir)
+            if html_dir:
+                self._html_dir_input.setText(html_dir)
+
+        def set_html_localcodepage(self, localcodepage):
+            index = self._html_codepage_combo.findData(localcodepage or '')
+            if index >= 0:
+                self._html_codepage_combo.setCurrentIndex(index)
+
+        def single_page_number(self):
+            return ServiceNavigator.parse_page_number(self._single_page_input.text())
+
+        def single_subpage_number(self):
+            text = self._single_subpage_input.text().strip().upper()
+            if not text:
+                return None
+            return int(text, 16)
+
+        def t42_enabled(self):
+            return self._export_t42_toggle.isChecked()
+
+        def html_enabled(self):
+            return self._export_html_toggle.isChecked()
+
+        def t42_directory(self):
+            return self._t42_dir_input.text().strip()
+
+        def html_directory(self):
+            return self._html_dir_input.text().strip()
+
+        def html_include_subpages(self):
+            return self._html_subpages_radio.isChecked()
+
+        def html_localcodepage(self):
+            value = self._html_codepage_combo.currentData()
+            return value or None
+
+        def split_pattern(self):
+            return build_split_pattern(
+                include_magazine=self._flag_m.isChecked(),
+                include_page=self._flag_p.isChecked(),
+                include_subpage=self._flag_s.isChecked(),
+                include_count=self._flag_c.isChecked(),
+                extension='.t42',
+            )
+
+
     class TeletextViewerWindow(QtWidgets.QMainWindow):
         fastext_colours = (
             ('#c62828', '#ffffff'),
@@ -309,7 +506,10 @@ if QtCore is not None:
             self._loader = None
             self._overview_dialog = None
             self._info_dialog = None
+            self._split_dialog = None
             self._metadata_cache = None
+            self._user_t42_directory = None
+            self._user_html_directory = None
             self._overview_dirty = True
             self._overview_signature = None
             self._preview_widget = None
@@ -355,26 +555,63 @@ if QtCore is not None:
             toolbar.setContentsMargins(0, 0, 0, 0)
             toolbar.setSpacing(8)
 
-            self._open_button = QtWidgets.QPushButton('Open .t42')
-            self._open_button.clicked.connect(self.open_dialog)
+            self._open_action = QtWidgets.QAction('Open .t42...', self)
+            self._open_action.triggered.connect(self.open_dialog)
+            self._open_t42_folder_action = QtWidgets.QAction('Open T42 Folder', self)
+            self._open_t42_folder_action.triggered.connect(self.open_t42_folder)
+            self._open_html_folder_action = QtWidgets.QAction('Open HTML Folder', self)
+            self._open_html_folder_action.triggered.connect(self.open_html_folder)
+            self._open_html_file_action = QtWidgets.QAction('Open HTML File...', self)
+            self._open_html_file_action.triggered.connect(self.open_html_file)
+
+            self._open_button = QtWidgets.QToolButton()
+            self._open_button.setText('Open')
+            self._open_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._open_menu = QtWidgets.QMenu(self._open_button)
+            self._open_menu.addAction(self._open_action)
+            self._open_menu.addSeparator()
+            self._open_menu.addAction(self._open_t42_folder_action)
+            self._open_menu.addAction(self._open_html_folder_action)
+            self._open_menu.addAction(self._open_html_file_action)
+            self._open_button.setMenu(self._open_menu)
             toolbar.addWidget(self._open_button)
 
-            self._screenshot_button = QtWidgets.QPushButton('Screenshot')
-            self._screenshot_button.clicked.connect(self.save_screenshot)
-            toolbar.addWidget(self._screenshot_button)
+            self._split_export_action = QtWidgets.QAction('Export...', self)
+            self._split_export_action.triggered.connect(self.show_split_dialog)
+            self._split_button = QtWidgets.QToolButton()
+            self._split_button.setText('Split')
+            self._split_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._split_menu = QtWidgets.QMenu(self._split_button)
+            self._split_menu.addAction(self._split_export_action)
+            self._split_button.setMenu(self._split_menu)
+            toolbar.addWidget(self._split_button)
 
-            self._overview_button = QtWidgets.QPushButton('Overview')
-            self._overview_button.clicked.connect(self.show_overview)
-            toolbar.addWidget(self._overview_button)
+            self._screenshot_action = QtWidgets.QAction('Screenshot...', self)
+            self._screenshot_action.triggered.connect(self.save_screenshot)
+            self._overview_action = QtWidgets.QAction('Overview', self)
+            self._overview_action.triggered.connect(self.show_overview)
+            self._info_action = QtWidgets.QAction('Info', self)
+            self._info_action.triggered.connect(self.show_info)
+            self._fullscreen_action = QtWidgets.QAction('Fullscreen', self)
+            self._fullscreen_action.setCheckable(True)
+            self._fullscreen_action.toggled.connect(self._toggle_fullscreen_from_action)
 
-            self._info_button = QtWidgets.QPushButton('Info')
-            self._info_button.clicked.connect(self.show_info)
-            toolbar.addWidget(self._info_button)
+            self._functions_button = QtWidgets.QToolButton()
+            self._functions_button.setText('Functions')
+            self._functions_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._functions_menu = QtWidgets.QMenu(self._functions_button)
+            self._functions_menu.addAction(self._screenshot_action)
+            self._functions_menu.addAction(self._overview_action)
+            self._functions_menu.addAction(self._info_action)
+            self._functions_menu.addSeparator()
+            self._functions_menu.addAction(self._fullscreen_action)
+            self._functions_button.setMenu(self._functions_menu)
+            toolbar.addWidget(self._functions_button)
 
             self._fullscreen_button = QtWidgets.QPushButton('Fullscreen')
             self._fullscreen_button.setCheckable(True)
             self._fullscreen_button.toggled.connect(self._set_fullscreen)
-            toolbar.addWidget(self._fullscreen_button)
+            self._fullscreen_button.hide()
 
             self._settings_button = QtWidgets.QToolButton()
             self._settings_button.setText('Settings')
@@ -592,7 +829,7 @@ if QtCore is not None:
         def _header_row(self, page_number, subpage):
             header = np.full((40,), fill_value=0x20, dtype=np.uint8)
             magazine, page = self._navigator.split_page_number(page_number)
-            header[3:7] = np.fromstring(f'P{magazine}{page:02X}', dtype=np.uint8)
+            header[3:7] = np.frombuffer(f'P{magazine}{page:02X}'.encode('ascii'), dtype=np.uint8)
             header[8:] = subpage.header.displayable[:]
             return header
 
@@ -707,6 +944,9 @@ if QtCore is not None:
             self._sync_decoder_size()
 
         def _set_fullscreen(self, enabled):
+            blocked = self._fullscreen_action.blockSignals(True)
+            self._fullscreen_action.setChecked(enabled)
+            self._fullscreen_action.blockSignals(blocked)
             if enabled:
                 self._windowed_pos = self.pos()
                 self._windowed_was_maximized = self.isMaximized()
@@ -744,6 +984,10 @@ if QtCore is not None:
                         self.move(windowed_pos)
 
                 QtCore.QTimer.singleShot(0, restore_window)
+
+        def _toggle_fullscreen_from_action(self, enabled):
+            if self._fullscreen_button.isChecked() != enabled:
+                self._fullscreen_button.setChecked(enabled)
 
         def _toggle_fullscreen_shortcut(self):
             if self._fullscreen_button.isEnabled() or self._fullscreen_button.isChecked():
@@ -812,9 +1056,8 @@ if QtCore is not None:
             if not enabled:
                 self._auto_scroll_timer.stop()
             for widget in (
-                self._screenshot_button,
-                self._overview_button,
-                self._info_button,
+                self._split_button,
+                self._functions_button,
                 self._settings_button,
                 self._go_button,
                 self._page_input,
@@ -828,6 +1071,17 @@ if QtCore is not None:
                 self._next_subpage_button,
             ):
                 widget.setEnabled(enabled)
+            for action in (
+                self._screenshot_action,
+                self._overview_action,
+                self._info_action,
+                self._fullscreen_action,
+                self._split_export_action,
+                self._open_t42_folder_action,
+                self._open_html_folder_action,
+                self._open_html_file_action,
+            ):
+                action.setEnabled(enabled)
             for action in (
                 self._single_height_action,
                 self._single_width_action,
@@ -865,6 +1119,8 @@ if QtCore is not None:
                 self._overview_dialog.hide()
             if self._info_dialog is not None:
                 self._info_dialog.hide()
+            if self._split_dialog is not None:
+                self._split_dialog.hide()
             self._reset_direct_page_buffer()
             self._set_navigation_enabled(False)
             self.statusBar().showMessage(f'Loading {os.path.basename(filename)}...')
@@ -904,6 +1160,8 @@ if QtCore is not None:
                 self._overview_dialog.hide()
             if self._info_dialog is not None:
                 self._info_dialog.hide()
+            if self._split_dialog is not None:
+                self._split_dialog.hide()
             QtWidgets.QMessageBox.critical(self, 'Teletext Viewer', message)
             self.statusBar().showMessage(message)
 
@@ -963,6 +1221,252 @@ if QtCore is not None:
             self._overview_dialog.show()
             self._overview_dialog.raise_()
             self._overview_dialog.activateWindow()
+
+        def _capture_directory(self):
+            return os.path.dirname(self._filename) if self._filename else os.getcwd()
+
+        def _t42_export_directory(self):
+            return self._user_t42_directory or os.path.join(self._capture_directory(), 't42')
+
+        def _html_export_directory(self):
+            return self._user_html_directory or os.path.join(self._capture_directory(), 'html')
+
+        def _set_t42_export_directory(self, path):
+            self._user_t42_directory = path or None
+
+        def _set_html_export_directory(self, path):
+            self._user_html_directory = path or None
+
+        def _default_localcodepage(self):
+            language = self._current_language_key()
+            return None if language == 'default' else language
+
+        def _open_local_path(self, path):
+            if not path or not os.path.exists(path):
+                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', f'Path does not exist yet:\n{path}')
+                return
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
+
+        def _choose_directory(self, title, start_path):
+            return QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                title,
+                start_path or self._capture_directory(),
+            )
+
+        def open_t42_folder(self):
+            directory = self._t42_export_directory()
+            if not directory or not os.path.exists(directory):
+                chosen = self._choose_directory('Choose T42 folder', directory)
+                if not chosen:
+                    return
+                directory = chosen
+                self._set_t42_export_directory(directory)
+            self._open_local_path(directory)
+
+        def open_html_folder(self):
+            directory = self._html_export_directory()
+            if not directory or not os.path.exists(directory):
+                chosen = self._choose_directory('Choose HTML folder', directory)
+                if not chosen:
+                    return
+                directory = chosen
+                self._set_html_export_directory(directory)
+            self._open_local_path(directory)
+
+        def open_html_file(self):
+            directory = self._html_export_directory()
+            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                'Open HTML file',
+                directory,
+                'HTML Files (*.html);;All Files (*)',
+            )
+            if filename:
+                self._set_html_export_directory(os.path.dirname(filename))
+                self._open_local_path(filename)
+
+        def _suggest_single_t42_path(self, page_number, subpage_number):
+            basename = _page_label = f'{page_number >> 8}{page_number & 0xff:02x}'
+            if subpage_number is None:
+                filename = f'{basename}.t42'
+            else:
+                filename = f'{basename}-{subpage_number:04x}.t42'
+            return os.path.join(self._t42_export_directory(), filename)
+
+        def _suggest_single_html_path(self, page_number, subpage_number):
+            basename = f'{page_number >> 8}{page_number & 0xff:02x}'
+            if subpage_number is None:
+                filename = f'{basename}.html'
+            else:
+                filename = f'{basename}-{subpage_number:04x}.html'
+            return os.path.join(self._html_export_directory(), filename)
+
+        def show_split_dialog(self):
+            if self._navigator is None:
+                return
+            if self._split_dialog is None:
+                self._split_dialog = SplitExportDialog(self)
+                self._split_dialog.single_t42_button.clicked.connect(self._export_selected_t42_from_dialog)
+                self._split_dialog.single_html_button.clicked.connect(self._export_selected_html_from_dialog)
+                self._split_dialog.current_t42_button.clicked.connect(self._export_current_t42)
+                self._split_dialog.current_html_button.clicked.connect(self._export_current_html)
+                self._split_dialog.export_all_button.clicked.connect(self._export_all_from_dialog)
+                self._split_dialog.set_html_localcodepage(self._default_localcodepage())
+            self._split_dialog.set_current_selection(
+                self._navigator.current_page_label[1:],
+                self._navigator.current_subpage_number,
+            )
+            self._split_dialog.set_default_directories(
+                self._t42_export_directory(),
+                self._html_export_directory(),
+            )
+            self._split_dialog.show()
+            self._split_dialog.raise_()
+            self._split_dialog.activateWindow()
+
+        def _dialog_page_selection(self):
+            page_number = self._split_dialog.single_page_number()
+            subpage_number = self._split_dialog.single_subpage_number()
+            return page_number, subpage_number
+
+        def _current_page_selection(self):
+            return self._navigator.current_page_number, self._navigator.current_subpage_number
+
+        def _export_selected_t42_from_dialog(self):
+            try:
+                page_number, subpage_number = self._dialog_page_selection()
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                return
+
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save teletext page',
+                self._suggest_single_t42_path(page_number, subpage_number),
+                'Teletext Files (*.t42)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.t42'):
+                filename += '.t42'
+
+            self._set_t42_export_directory(os.path.dirname(filename))
+            export_selected_t42(
+                self._navigator.service,
+                filename,
+                page_number,
+                subpage_number=subpage_number,
+            )
+            self.statusBar().showMessage(f'Saved T42 to {filename}', 5000)
+
+        def _export_selected_html_from_dialog(self):
+            try:
+                page_number, subpage_number = self._dialog_page_selection()
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                return
+
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save teletext HTML',
+                self._suggest_single_html_path(page_number, subpage_number),
+                'HTML Files (*.html)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.html'):
+                filename += '.html'
+
+            self._set_html_export_directory(os.path.dirname(filename))
+            export_selected_html(
+                self._navigator.service,
+                filename,
+                page_number,
+                subpage_number=subpage_number,
+                localcodepage=self._split_dialog.html_localcodepage(),
+            )
+            self.statusBar().showMessage(f'Saved HTML to {filename}', 5000)
+
+        def _export_current_t42(self):
+            page_number, subpage_number = self._current_page_selection()
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save current teletext view',
+                self._suggest_single_t42_path(page_number, subpage_number),
+                'Teletext Files (*.t42)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.t42'):
+                filename += '.t42'
+            self._set_t42_export_directory(os.path.dirname(filename))
+            export_selected_t42(
+                self._navigator.service,
+                filename,
+                page_number,
+                subpage_number=subpage_number,
+            )
+            self.statusBar().showMessage(f'Saved current T42 to {filename}', 5000)
+
+        def _export_current_html(self):
+            page_number, subpage_number = self._current_page_selection()
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save current teletext HTML',
+                self._suggest_single_html_path(page_number, subpage_number),
+                'HTML Files (*.html)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.html'):
+                filename += '.html'
+            self._set_html_export_directory(os.path.dirname(filename))
+            export_selected_html(
+                self._navigator.service,
+                filename,
+                page_number,
+                subpage_number=subpage_number,
+                localcodepage=self._split_dialog.html_localcodepage() if self._split_dialog is not None else self._default_localcodepage(),
+            )
+            self.statusBar().showMessage(f'Saved current HTML to {filename}', 5000)
+
+        def _export_all_from_dialog(self):
+            if self._split_dialog is None:
+                return
+            if not self._split_dialog.t42_enabled() and not self._split_dialog.html_enabled():
+                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', 'Enable T42 or HTML export first.')
+                return
+
+            written = []
+            try:
+                if self._split_dialog.t42_enabled():
+                    t42_dir = self._split_dialog.t42_directory()
+                    if not t42_dir:
+                        raise ValueError('Choose a T42 export directory.')
+                    self._set_t42_export_directory(t42_dir)
+                    written.extend(export_split_t42(
+                        self._navigator.service,
+                        t42_dir,
+                        pattern=self._split_dialog.split_pattern(),
+                    ))
+
+                if self._split_dialog.html_enabled():
+                    html_dir = self._split_dialog.html_directory()
+                    if not html_dir:
+                        raise ValueError('Choose an HTML export directory.')
+                    self._set_html_export_directory(html_dir)
+                    written.extend(export_html(
+                        self._navigator.service,
+                        html_dir,
+                        include_subpages=self._split_dialog.html_include_subpages(),
+                        localcodepage=self._split_dialog.html_localcodepage(),
+                    ))
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                return
+
+            self.statusBar().showMessage(f'Exported {len(written)} files.', 5000)
 
         def _format_file_size(self, size):
             if size is None:

@@ -221,7 +221,7 @@ class Subpage(Element):
 
         lines.append(f'<div class="subpage" id="{self.header.subpage:04x}">')
         buf = np.full((40,), fill_value=0x20, dtype=np.uint8)
-        buf[3:7] = np.fromstring(f'P{self.mrag.magazine}{self.header.page:02x}', dtype=np.uint8)
+        buf[3:7] = np.frombuffer(f'P{self.mrag.magazine}{self.header.page:02x}'.encode('ascii'), dtype=np.uint8)
         buf[8:] = self.header.displayable[:]
         p = PrinterHTML(buf, localcodepage=localcodepage, codepage=self.codepage)
         p.anchor = f'#{self.header.subpage:04x}'
@@ -237,4 +237,3 @@ class Subpage(Element):
         lines.append('</div>')
 
         return ''.join(lines)
-

@@ -401,33 +401,51 @@ def squash(packets, min_duplicates, threshold, pages, subpages, ignore_empty):
 
 @teletext.command()
 @click.option('-l', '--language', default='en_GB', help='Language. Default: en_GB')
+@click.option('--localcodepage', type=click.Choice(g0.keys()), default=None, help='Select teletext local codepage. Default: infer from language if possible.')
+@click.option('--mode', type=click.Choice(['teletext', 'legacy']), default='teletext', help='Spellcheck mode. Default: teletext.')
 @click.option('-b', '--both', is_flag=True, help='Show packet before and after corrections.')
 @click.option('-t', '--threads', type=int, default=multiprocessing.cpu_count(), help='Number of threads.')
 @packetwriter
+@paginated(always=True)
 @packetreader()
-def spellcheck(packets, language, both, threads):
+def spellcheck(packets, language, localcodepage, mode, both, threads, pages, subpages):
 
     """Spell check a t42 stream."""
 
     try:
-        from teletext.spellcheck import spellcheck_packets
+        from teletext.spellcheck import spellcheck_page_packets, spellcheck_packets
     except ModuleNotFoundError as e:
         if e.name == 'enchant':
             raise click.UsageError(f'{e.msg}. PyEnchant is not installed. Spelling checker is not available.')
         else:
             raise e
     else:
-        if both:
-            packets, orig_packets = itertools.tee(packets, 2)
-            packets = itermap(spellcheck_packets, packets, threads, language=language)
-            try:
-                while True:
-                    yield next(orig_packets)
-                    yield next(packets)
-            except StopIteration:
-                pass
+        if mode == 'legacy':
+            if both:
+                packets, orig_packets = itertools.tee(packets, 2)
+                packets = itermap(spellcheck_packets, packets, threads, language=language)
+                try:
+                    while True:
+                        yield next(orig_packets)
+                        yield next(packets)
+                except StopIteration:
+                    pass
+            else:
+                yield from itermap(spellcheck_packets, packets, threads, language=language)
         else:
-            yield from itermap(spellcheck_packets, packets, threads, language=language)
+            packet_lists = list(pipeline.paginate(packets, pages=pages, subpages=subpages))
+            corrected_packet_lists = list(spellcheck_page_packets(
+                packet_lists,
+                language=language,
+                localcodepage=localcodepage,
+            ))
+            if both:
+                for orig_packet_list, corrected_packet_list in zip(packet_lists, corrected_packet_lists):
+                    yield from orig_packet_list
+                    yield from corrected_packet_list
+            else:
+                for corrected_packet_list in corrected_packet_lists:
+                    yield from corrected_packet_list
 
 
 @teletext.command()

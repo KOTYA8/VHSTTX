@@ -58,6 +58,13 @@ def _make_weight_table():
     ):
         add_pair(0.30, pair[0], pair[1])
 
+    # Additional confusions observed in real .t42 captures.
+    for pair in (
+        'de', 'be', 'hp', 'ip', 'kr', 'ln', 'ov', 'pq', 'pu', 'sv', 'sw', 'su',
+        'gk', 'hl', 'ht', 'hu',
+    ):
+        add_pair(0.36, pair[0], pair[1])
+
     return table
 
 
@@ -232,6 +239,43 @@ class TeletextSpellChecker(object):
                 hard_errors += 1
         return total, hard_errors
 
+    @staticmethod
+    def support_counts(candidate, page_lexicon, service_lexicon=None, slot_lexicon=None):
+        lower_candidate = candidate.lower()
+        return (
+            page_lexicon.get(lower_candidate, 0),
+            0 if service_lexicon is None else service_lexicon.get(lower_candidate, 0),
+            0 if slot_lexicon is None else slot_lexicon.get(lower_candidate, 0),
+        )
+
+    def allowed_hard_errors(self, candidate, page_lexicon, service_lexicon=None, slot_lexicon=None):
+        page_count, service_count, slot_count = self.support_counts(
+            candidate,
+            page_lexicon,
+            service_lexicon=service_lexicon,
+            slot_lexicon=slot_lexicon,
+        )
+        allowed = 1
+        if slot_count >= 2 or page_count >= 2 or service_count >= 4:
+            allowed = 2
+        if slot_count >= 3 or service_count >= 8:
+            allowed = 3
+        return allowed
+
+    def max_candidate_score(self, candidate, page_lexicon, service_lexicon=None, slot_lexicon=None):
+        page_count, service_count, slot_count = self.support_counts(
+            candidate,
+            page_lexicon,
+            service_lexicon=service_lexicon,
+            slot_lexicon=slot_lexicon,
+        )
+        limit = self.max_cost
+        if page_count >= 2:
+            limit += 0.12
+        limit += min(0.40, 0.06 * service_count)
+        limit += min(0.70, 0.35 * slot_count)
+        return limit
+
     def build_page_lexicon(self, packet_list):
         lexicon = Counter()
         for token in self.page_tokens(packet_list):
@@ -348,7 +392,12 @@ class TeletextSpellChecker(object):
 
     def score_candidate(self, word, candidate, rank, page_lexicon, service_lexicon=None, slot_lexicon=None):
         total_cost, hard_errors = self.weighted_hamming(word.lower(), candidate.lower())
-        if hard_errors > 1:
+        if hard_errors > self.allowed_hard_errors(
+            candidate,
+            page_lexicon,
+            service_lexicon=service_lexicon,
+            slot_lexicon=slot_lexicon,
+        ):
             return None
 
         score = total_cost + (rank * 0.05)
@@ -362,6 +411,8 @@ class TeletextSpellChecker(object):
             score -= min(0.55, 0.08 * service_lexicon.get(candidate.lower(), 0))
         if slot_lexicon:
             score -= min(0.90, 0.40 * slot_lexicon.get(candidate.lower(), 0))
+        if hard_errors > 1:
+            score += 0.10 * (hard_errors - 1)
         return max(0.0, score)
 
     def suggest(self, word, page_lexicon, service_lexicon=None, slot_lexicon=None):
@@ -396,7 +447,12 @@ class TeletextSpellChecker(object):
 
         scored.sort()
         best_score, best_candidate = scored[0]
-        if best_score > self.max_cost:
+        if best_score > self.max_candidate_score(
+            best_candidate,
+            page_lexicon,
+            service_lexicon=service_lexicon,
+            slot_lexicon=slot_lexicon,
+        ):
             return word
 
         if len(scored) > 1 and (scored[1][0] - best_score) < self.min_margin:

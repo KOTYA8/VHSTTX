@@ -1,6 +1,9 @@
 import datetime
 import os
+import pathlib
 import re
+import shutil
+import textwrap
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -510,6 +513,220 @@ def describe_service_metadata(service, filename=None):
     )
 
 
+def build_split_pattern(include_magazine=True, include_page=True, include_subpage=True, include_count=True, extension='.t42'):
+    stem = ''
+    if include_magazine:
+        stem += '{m}'
+    if include_page:
+        stem += '{p}'
+    if include_subpage:
+        stem += ('-' if stem else '') + '{s}'
+    if include_count:
+        stem += ('-' if stem else '') + '{c}'
+    if not stem:
+        stem = 'capture'
+    if extension and not extension.startswith('.'):
+        extension = f'.{extension}'
+    return f'{stem}{extension}'
+
+
+def _iter_filtered_subpages(service, page_numbers=None, subpage_numbers=None):
+    allowed_pages = set(page_numbers) if page_numbers is not None else None
+    allowed_subpages = set(subpage_numbers) if subpage_numbers is not None else None
+
+    for magazine_number, full_page_number, subpage_number, subpage in _iter_service_subpages(service):
+        if allowed_pages is not None and full_page_number not in allowed_pages:
+            continue
+        if allowed_subpages is not None and subpage_number not in allowed_subpages:
+            continue
+        page_number = full_page_number & 0xff
+        yield magazine_number, page_number, full_page_number, subpage_number, subpage
+        for duplicate_count, duplicate in enumerate(subpage.duplicates, start=1):
+            yield magazine_number, page_number, full_page_number, subpage_number, duplicate
+
+
+def export_selected_t42(service, output_path, page_number, subpage_number=None):
+    output_path = pathlib.Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if subpage_number is None:
+        subpage_numbers = None
+    else:
+        subpage_numbers = {subpage_number}
+
+    with output_path.open('wb') as handle:
+        for _, _, current_page_number, current_subpage_number, subpage in _iter_filtered_subpages(
+            service,
+            page_numbers={page_number},
+            subpage_numbers=subpage_numbers,
+        ):
+            if current_page_number != page_number:
+                continue
+            if subpage_number is not None and current_subpage_number != subpage_number:
+                continue
+            handle.write(b''.join(packet.bytes for packet in subpage.packets))
+    return output_path
+
+
+def export_selected_html(service, output_path, page_number, subpage_number=None, localcodepage=None, template=None):
+    output_path = pathlib.Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    template = template or _default_html_template()
+    _copy_html_assets(output_path.parent)
+
+    page_numbers = {page_number}
+    subpage_numbers = None if subpage_number is None else {subpage_number}
+    pages_set = set(
+        f'{magazine}{page:02x}'
+        for magazine, page, full_page_number, current_subpage_number, subpage in _iter_filtered_subpages(
+            service,
+            page_numbers=page_numbers,
+            subpage_numbers=subpage_numbers,
+        )
+    )
+    selected = [
+        (current_subpage_number, subpage)
+        for magazine, page, full_page_number, current_subpage_number, subpage in _iter_filtered_subpages(
+            service,
+            page_numbers=page_numbers,
+            subpage_numbers=subpage_numbers,
+        )
+    ]
+    selected.sort()
+    if subpage_number is None:
+        body = '\n'.join(subpage.to_html(pages_set, localcodepage) for _, subpage in selected)
+        page_id = _page_label(page_number)[1:].lower()
+    else:
+        body = '\n'.join(subpage.to_html(pages_set, localcodepage) for _, subpage in selected)
+        page_id = f'{_page_label(page_number)[1:].lower()}-{subpage_number:04x}'
+    output_path.write_text(template.format(page=page_id, body=body), encoding='utf-8')
+    return output_path
+
+
+def export_split_t42(
+    service,
+    output_dir,
+    pattern=None,
+    include_magazine=True,
+    include_page=True,
+    include_subpage=True,
+    include_count=True,
+    page_numbers=None,
+    subpage_numbers=None,
+):
+    output_dir = pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pattern = pattern or build_split_pattern(
+        include_magazine=include_magazine,
+        include_page=include_page,
+        include_subpage=include_subpage,
+        include_count=include_count,
+        extension='.t42',
+    )
+    counts = Counter()
+    written_paths = []
+
+    for magazine_number, page, current_page_number, subpage_number, subpage in _iter_filtered_subpages(
+        service,
+        page_numbers=page_numbers,
+        subpage_numbers=subpage_numbers,
+    ):
+        key = (magazine_number, page, subpage_number)
+        count = counts[key]
+        counts[key] += 1
+        relative_path = pathlib.Path(pattern.format(
+            m=magazine_number,
+            p=f'{page:02x}',
+            s=f'{subpage_number:04x}',
+            c=f'{count:04d}',
+        ))
+        target = output_dir / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open('ab') as handle:
+            handle.write(b''.join(packet.bytes for packet in subpage.packets))
+        written_paths.append(target)
+
+    return tuple(dict.fromkeys(written_paths))
+
+
+def _default_html_template():
+    return textwrap.dedent("""\
+        <html>
+            <head>
+                <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+                <title>Page {page}</title>
+                <link rel="stylesheet" type="text/css" href="teletext.css" title="Default Style"/>
+                <link rel="alternative stylesheet" type="text/css" href="teletext-noscanlines.css" title="No Scanlines"/>
+                <script type="text/javascript" src="cssswitch.js"></script>
+            </head>
+            <body onload="set_style_from_cookie()">
+            {body}
+            </body>
+        </html>
+    """)
+
+
+def _copy_html_assets(output_dir):
+    output_dir = pathlib.Path(output_dir)
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    misc_dir = repo_root / 'misc'
+    for name in ('teletext.css', 'teletext-noscanlines.css'):
+        source = misc_dir / name
+        if source.exists():
+            shutil.copyfile(source, output_dir / name)
+
+
+def export_html(
+    service,
+    output_dir,
+    include_subpages=False,
+    page_numbers=None,
+    subpage_numbers=None,
+    localcodepage=None,
+    template=None,
+):
+    output_dir = pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    template = template or _default_html_template()
+    _copy_html_assets(output_dir)
+
+    pages_set = set(
+        f'{magazine}{page:02x}'
+        for magazine, page, full_page_number, subpage_number, subpage in _iter_filtered_subpages(
+            service,
+            page_numbers=page_numbers,
+            subpage_numbers=subpage_numbers,
+        )
+    )
+    grouped_subpages = defaultdict(list)
+    for magazine, page, full_page_number, subpage_number, subpage in _iter_filtered_subpages(
+        service,
+        page_numbers=page_numbers,
+        subpage_numbers=subpage_numbers,
+    ):
+        grouped_subpages[full_page_number].append((subpage_number, subpage))
+
+    written_paths = []
+    for full_page_number, items in sorted(grouped_subpages.items()):
+        magazine = full_page_number >> 8
+        page = full_page_number & 0xff
+        page_id = f'{magazine}{page:02x}'
+        items = sorted(items)
+        if include_subpages:
+            for subpage_number, subpage in items:
+                body = subpage.to_html(pages_set, localcodepage)
+                filename = f'{page_id}-{subpage_number:04x}.html'
+                target = output_dir / filename
+                target.write_text(template.format(page=f'{page_id}-{subpage_number:04x}', body=body), encoding='utf-8')
+                written_paths.append(target)
+        else:
+            body = '\n'.join(subpage.to_html(pages_set, localcodepage) for subpage_number, subpage in items)
+            target = output_dir / f'{page_id}.html'
+            target.write_text(template.format(page=page_id, body=body), encoding='utf-8')
+            written_paths.append(target)
+
+    return tuple(written_paths)
+
+
 class DirectPageBuffer:
     valid_digits = '0123456789ABCDEF'
     valid_first_digits = '12345678'
@@ -617,6 +834,10 @@ class ServiceNavigator:
     @property
     def page_count(self):
         return len(self._navigable_pages())
+
+    @property
+    def service(self):
+        return self._service
 
     def go_to_page_text(self, text):
         return self.go_to_page(self.parse_page_number(text))
