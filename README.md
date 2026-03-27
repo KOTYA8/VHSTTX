@@ -39,12 +39,12 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
 ### Installation Viewer
-1. Install QT and PyQt5   
-```
-pipx install -e .[qt] --force
-```
+1. Install PyQt5 and QT   
 ```
 pip install PyQt5
+```
+```
+pipx install -e .[qt] --force
 ```
 2. Install   
 ```
