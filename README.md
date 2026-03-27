@@ -17,7 +17,13 @@ python3 setup.py install
 In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
 
 # Future Apps
-* **Teletext Viewer** - ✅ realized
+## **Teletext Viewer** - ✅ realized
+* Opening from .t42 file - ✅ realized
+* FasText Buttons* - ✅ realized
+* Screenshot - ✅ realized
+* Display of teletext subpages and flags - ✅ realized
+* List of all pages - ✅ realized
+* Full screen - ✅ realized
 
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
