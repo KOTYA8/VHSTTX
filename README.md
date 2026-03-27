@@ -19,7 +19,8 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 # Future Apps
 ## **Teletext Viewer** - ✅ realized
 * Opening from .t42 file - ✅ realized
-* FasText Buttons* - ✅ realized
+* Language support - ✅ realized
+* FasText Buttons - ✅ realized
 * Screenshot - ✅ realized
 * Display of teletext subpages and flags - ✅ realized
 * List of all pages - ✅ realized
