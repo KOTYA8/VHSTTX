@@ -1,4 +1,6 @@
 import sys
+import os
+import tempfile
 import types
 import unittest
 
@@ -9,7 +11,7 @@ sys.modules.setdefault('tqdm', tqdm_module)
 
 from teletext.service import Service
 from teletext.subpage import Subpage
-from teletext.viewer import DirectPageBuffer, ServiceNavigator
+from teletext.viewer import DirectPageBuffer, ServiceNavigator, describe_service_metadata
 
 
 class TestDirectPageBuffer(unittest.TestCase):
@@ -43,11 +45,13 @@ class TestDirectPageBuffer(unittest.TestCase):
         self.assertEqual(buffer.text, '2')
 
 
-def make_subpage(magazine, page, subpage, fastext_links=()):
+def make_subpage(magazine, page, subpage, fastext_links=(), header_text=None):
     result = Subpage(prefill=True, magazine=magazine)
     result.mrag.magazine = magazine
     result.header.page = page
     result.header.subpage = subpage
+    if header_text is not None:
+        result.header.displayable.place_string(header_text[:32].ljust(32))
     result.init_packet(27, 0, magazine)
 
     for link, (link_magazine, link_page, link_subpage) in zip(result.fastext.links[:4], fastext_links):
@@ -230,3 +234,46 @@ class TestServiceNavigator(unittest.TestCase):
         links = navigator.fastext_links()
 
         self.assertEqual([link.enabled for link in links], [False, True, True, False])
+
+
+class TestServiceMetadata(unittest.TestCase):
+    def make_temp_capture(self, stem='capture'):
+        fd, path = tempfile.mkstemp(suffix=f'-{stem}.t42')
+        try:
+            with os.fdopen(fd, 'wb') as handle:
+                handle.write(b'\x00' * 42)
+        except Exception:
+            os.close(fd)
+            raise
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def test_metadata_infers_ort_from_filename_and_titles_without_830(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='100 TELEINF 00/01 08:11:19'))
+        service.insert_page(make_subpage(1, 0x01, 0x0000, header_text='101 NOVOSTI 08:11:20'))
+        service.insert_page(make_subpage(1, 0x05, 0x0000, header_text='105 BEZ POLITIKI 08:11:21'))
+        service.insert_page(make_subpage(1, 0x50, 0x0000, header_text='150 NOVOSTI SPORTA 08:11:22'))
+
+        metadata = describe_service_metadata(service, self.make_temp_capture('ort'))
+
+        self.assertEqual(metadata.page_count, 4)
+        self.assertEqual(metadata.subpage_count, 4)
+        self.assertFalse(metadata.broadcast_present)
+        self.assertEqual(metadata.likely_broadcaster, 'ORT')
+        self.assertEqual(metadata.likely_language, 'Russian')
+        self.assertEqual(metadata.likely_country, 'Russia')
+        self.assertEqual(metadata.confidence, 'medium')
+        self.assertTrue(any('filename stem: ORT' == item for item in metadata.evidence))
+        self.assertIn(('P101', 'NOVOSTI'), metadata.sample_titles)
+
+    def test_metadata_falls_back_to_filename_stem_for_unknown_service(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='100 INDEX PAGE'))
+
+        metadata = describe_service_metadata(service, self.make_temp_capture('demo'))
+
+        self.assertFalse(metadata.broadcast_present)
+        self.assertEqual(metadata.likely_broadcaster, 'DEMO')
+        self.assertIsNone(metadata.likely_language)
+        self.assertEqual(metadata.confidence, 'low')
