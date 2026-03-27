@@ -8,6 +8,7 @@ Rectangle {
     property bool doubleheight: true
     property bool doublewidth: true
     property bool flashenabled: true
+    property bool highlighttext: false
     property string localcodepage: ""
     property bool forcecodepage: false
     property int pagecodepage: 0
@@ -115,6 +116,8 @@ Rectangle {
                                             anchors.top: parent.top
                                             anchors.horizontalCenter: parent.horizontalCenter
                                             color: ttpalette[fg]
+                                            style: highlighttext ? Text.Outline : Text.Normal
+                                            styleColor: "#000000"
                                             text: c
                                             font: ttfonts[(mosaic && solid && text[0] > "\ue000") ? 1 : 0][dw ? 1 : 0][dh ? 1 : 0]
                                             visible: ((!flash) || flashsrc) && (conceal ? reveal : true)

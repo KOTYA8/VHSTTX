@@ -237,6 +237,14 @@ class Decoder(object):
             parser.parse()
 
     @property
+    def highlighttext(self):
+        return self._root.property('highlighttext')
+
+    @highlighttext.setter
+    def highlighttext(self, enabled):
+        self._root.setProperty('highlighttext', bool(enabled))
+
+    @property
     def language(self):
         value = self._root.property('localcodepage')
         return 'default' if value in (None, '') else str(value)

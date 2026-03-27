@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 import numpy as np
 
 from .packet import Packet
+from .parser import Parser
 
 
 @dataclass(frozen=True)
@@ -46,12 +47,47 @@ class ServiceMetadata:
     broadcast_country: str | None
     broadcast_date: str | None
     broadcast_time: str | None
+    broadcast_label: str | None
     likely_broadcaster: str | None
     likely_language: str | None
     likely_country: str | None
     confidence: str | None
     evidence: tuple[str, ...]
     sample_titles: tuple[tuple[str, str], ...]
+
+
+class _PlainTextRowParser(Parser):
+    def __init__(self, tt, localcodepage=None, codepage=0, *, doubleheight=True, doublewidth=True, flashenabled=True):
+        self._output = []
+        self._row_has_doubleheight = False
+        self._doubleheight_enabled = bool(doubleheight)
+        self._doublewidth_enabled = bool(doublewidth)
+        self._flash_enabled = bool(flashenabled)
+        super().__init__(tt, localcodepage=localcodepage, codepage=codepage)
+
+    def setstate(self, **kwargs):
+        if 'dh' in kwargs and not self._doubleheight_enabled:
+            kwargs['dh'] = False
+        if 'dw' in kwargs and not self._doublewidth_enabled:
+            kwargs['dw'] = False
+        if 'flash' in kwargs and not self._flash_enabled:
+            kwargs['flash'] = False
+        super().setstate(**kwargs)
+
+    def emitcharacter(self, c):
+        self._row_has_doubleheight |= self._state['dh']
+        if not self._state['rendered'] or self._state['conceal'] or self._state['flash']:
+            self._output.append(' ')
+        else:
+            self._output.append(c)
+
+    @property
+    def text(self):
+        return ''.join(self._output)
+
+    @property
+    def row_has_doubleheight(self):
+        return self._row_has_doubleheight
 
 
 _HEADER_TRANSLATION = str.maketrans({
@@ -99,11 +135,25 @@ _HEADER_TRANSLATION = str.maketrans({
 
 _BROADCASTER_PROFILES = (
     {
+        'name': 'BBC2',
+        'aliases': ('BBC', 'BBC1', 'BBC2', 'BBCNEWS', 'CEEFAX'),
+        'country': 'United Kingdom',
+        'language': 'English',
+        'keywords': ('CEEFAX', 'BBC', 'NEWS', 'WEATHER', 'SPORT'),
+    },
+    {
+        'name': 'SKYONE',
+        'aliases': ('SKY', 'SKYONE', 'SKYTEXT', 'SKYTELEVISION'),
+        'country': 'United Kingdom',
+        'language': 'English',
+        'keywords': ('SKYTEXT', 'SKYTELEVISION', 'SKY', 'SPORT', 'MOVIES'),
+    },
+    {
         'name': 'ORT',
         'aliases': ('ORT', '1TV', 'CHANNELONE', 'PERVIY'),
         'country': 'Russia',
         'language': 'Russian',
-        'keywords': ('NOVOSTI', 'SPORTA', 'POLITIKI', 'TELEINF', 'MOSKVA'),
+        'keywords': ('NOVOSTI', 'SPORTA', 'POLITIKI', 'TELEINF', 'MOSKVA', 'ELBINF'),
     },
     {
         'name': 'RTR',
@@ -164,7 +214,8 @@ _BROADCASTER_PROFILES = (
 )
 
 _LANGUAGE_KEYWORDS = {
-    'Russian': ('NOVOSTI', 'SPORTA', 'POLITIKI', 'MOSKVA', 'TELEINF', 'GAZETA', 'PROGRAMMA'),
+    'English': ('CEEFAX', 'SKYTEXT', 'NEWS', 'WEATHER', 'SPORT', 'MOVIES', 'TELETEXT'),
+    'Russian': ('NOVOSTI', 'SPORTA', 'POLITIKI', 'MOSKVA', 'TELEINF', 'VESTI', 'ROSSIYA'),
     'Polish': ('WIADOMOSCI', 'POLITYKI', 'SPORT', 'GAZETA', 'PROGRAM'),
     'German': ('NACHRICHTEN', 'SPORT', 'PROGRAMM', 'WETTER', 'FERNSEHEN'),
     'French': ('JOURNAL', 'INFOS', 'PROGRAMME', 'SPORT', 'METEO'),
@@ -174,6 +225,17 @@ _LANGUAGE_KEYWORDS = {
 }
 
 _PREFERRED_SAMPLE_PAGES = (0x100, 0x101, 0x102, 0x104, 0x105, 0x150, 0x151, 0x152, 0x153, 0x154)
+
+_LANGUAGE_TO_COUNTRY = {
+    'English': 'United Kingdom',
+    'Russian': 'Russia',
+    'Polish': 'Poland',
+    'German': 'Germany',
+    'French': 'France',
+    'Italian': 'Italy',
+    'Dutch': 'Netherlands',
+    'Swedish': 'Sweden',
+}
 
 
 def _compose_page_number(magazine, page):
@@ -193,6 +255,28 @@ def _clean_ascii_text(text):
         text = text.decode('ascii', errors='ignore')
     text = ''.join(character if 32 <= ord(character) < 127 else ' ' for character in text.upper())
     return re.sub(r'\s+', ' ', text).strip()
+
+
+def _filename_tokens(filename):
+    if not filename:
+        return ()
+    stem = os.path.splitext(os.path.basename(filename))[0].upper()
+    return tuple(token for token in re.findall(r'[A-Z0-9]+', stem) if token)
+
+
+def _preferred_filename_token(tokens):
+    if not tokens:
+        return ''
+    if (
+        len(tokens) >= 2
+        and len(tokens[0]) >= 3
+        and any(ch.isalpha() for ch in tokens[0])
+        and tokens[1].isdigit()
+        and len(tokens[1]) >= 6
+    ):
+        return tokens[0]
+    letter_tokens = [token for token in tokens if any(ch.isalpha() for ch in token) and len(token) >= 3]
+    return letter_tokens[-1] if letter_tokens else tokens[-1]
 
 
 def _header_topic(text):
@@ -245,7 +329,7 @@ def _header_score(text):
     letters = sum(character.isalpha() for character in topic)
     digits = sum(character.isdigit() for character in topic)
     noise = sum(not (character.isalnum() or character.isspace()) for character in topic)
-    bonus = len(_best_keyword_matches(_extract_tokens(topic), ('NOVOSTI', 'SPORTA', 'POLITIKI', 'TELEINF', 'PROGRAMMA', 'GAZETA')))
+    bonus = len(_best_keyword_matches(_extract_tokens(topic), ('NOVOSTI', 'SPORTA', 'POLITIKI', 'TELEINF', 'VESTI', 'CEEFAX', 'SKYTEXT')))
     return (letters * 2) + digits + (bonus * 8) - (noise * 2)
 
 
@@ -280,6 +364,7 @@ def _scan_capture_file(filename):
         'broadcast_country': None,
         'broadcast_date': None,
         'broadcast_time': None,
+        'broadcast_label': None,
         'file_name': None,
         'file_size': None,
         'modified_at': None,
@@ -296,6 +381,7 @@ def _scan_capture_file(filename):
         info['file_size'] = stat_result.st_size
         info['modified_at'] = datetime.datetime.fromtimestamp(stat_result.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
 
+    broadcast_labels = Counter()
     try:
         with open(filename, 'rb') as handle:
             while True:
@@ -313,6 +399,12 @@ def _scan_capture_file(filename):
                 except Exception:
                     continue
                 info['broadcast_present'] = True
+                try:
+                    label = _clean_ascii_text(broadcast.displayable.bytes_no_parity)
+                    if label:
+                        broadcast_labels[label] += 1
+                except Exception:
+                    pass
                 if info['initial_page'] is None:
                     try:
                         info['initial_page'] = f'P{broadcast.initial_page.magazine}{broadcast.initial_page.page:02X}'
@@ -350,42 +442,53 @@ def _scan_capture_file(filename):
     except OSError:
         pass
 
+    if broadcast_labels:
+        info['broadcast_label'] = max(
+            broadcast_labels.items(),
+            key=lambda item: (item[1], _header_score(item[0]), len(item[0])),
+        )[0]
+
     return info
 
 
-def _infer_from_titles(titles, filename=None):
+def _infer_from_titles(titles, filename=None, extra_texts=()):
     evidence = []
     best_broadcaster = None
     best_broadcaster_profile = None
     best_broadcaster_score = 0.0
-    filename_token = ''
-    filename_tokens = ()
-
-    if filename:
-        stem = os.path.splitext(os.path.basename(filename))[0]
-        filename_tokens = tuple(token for token in re.findall(r'[A-Z0-9]+', stem.upper()) if token)
-        if filename_tokens:
-            filename_token = filename_tokens[-1]
+    filename_tokens = _filename_tokens(filename)
+    filename_token = _preferred_filename_token(filename_tokens)
+    service_label_tokens = tuple(
+        token
+        for extra_text in extra_texts
+        for token in _extract_tokens(extra_text)
+    )
 
     title_tokens = []
     for title in titles.values():
         title_tokens.extend(_extract_tokens(title))
+    for extra_text in extra_texts:
+        title_tokens.extend(_extract_tokens(extra_text))
     title_tokens = tuple(title_tokens)
+    source_tokens = tuple(dict.fromkeys(filename_tokens + service_label_tokens))
 
     for profile in _BROADCASTER_PROFILES:
         score = 0.0
         alias_hit = None
-        for token in filename_tokens:
+        alias_source = None
+        for token in source_tokens:
             if token in profile['aliases']:
                 score += 3.5
                 alias_hit = token
+                alias_source = 'service label' if token in service_label_tokens and token not in filename_tokens else 'filename stem'
                 break
             if any(alias in token or token in alias for alias in profile['aliases']):
                 score += 2.5
                 alias_hit = token
+                alias_source = 'service label' if token in service_label_tokens and token not in filename_tokens else 'filename stem'
                 break
 
-        keyword_matches = _best_keyword_matches(title_tokens, profile['keywords'], threshold=0.78)
+        keyword_matches = _best_keyword_matches(title_tokens, profile['keywords'], threshold=0.84)
         score += sum(match_score for _, match_score in keyword_matches[:3])
 
         if score > best_broadcaster_score:
@@ -394,7 +497,7 @@ def _infer_from_titles(titles, filename=None):
             best_broadcaster_score = score
             evidence = []
             if alias_hit is not None:
-                evidence.append(f'filename stem: {alias_hit}')
+                evidence.append(f'{alias_source}: {alias_hit}')
             if keyword_matches:
                 evidence.append(
                     'header hints: ' + ', '.join(keyword for keyword, _ in keyword_matches[:3])
@@ -404,12 +507,18 @@ def _infer_from_titles(titles, filename=None):
     best_language_score = 0.0
     language_matches = ()
     for language, keywords in _LANGUAGE_KEYWORDS.items():
-        matches = _best_keyword_matches(title_tokens, keywords)
+        matches = _best_keyword_matches(title_tokens, keywords, threshold=0.84)
         score = sum(match_score for _, match_score in matches[:3])
         if score > best_language_score:
             best_language = language
             best_language_score = score
             language_matches = matches
+
+    minimum_language_score = 2.6 if best_language == 'Russian' else 2.35
+    if best_language_score < minimum_language_score:
+        best_language = None
+        best_language_score = 0.0
+        language_matches = ()
 
     likely_country = None
     confidence = None
@@ -428,30 +537,15 @@ def _infer_from_titles(titles, filename=None):
         confidence = 'low'
         evidence = [f'filename stem: {filename_token}']
 
-    if likely_country is None and best_language in {
-        'Russian': 'Russia',
-        'Polish': 'Poland',
-        'German': 'Germany',
-        'French': 'France',
-        'Italian': 'Italy',
-        'Dutch': 'Netherlands',
-        'Swedish': 'Sweden',
-    }:
-        likely_country = {
-            'Russian': 'Russia',
-            'Polish': 'Poland',
-            'German': 'Germany',
-            'French': 'France',
-            'Italian': 'Italy',
-            'Dutch': 'Netherlands',
-            'Swedish': 'Sweden',
-        }[best_language]
+    if likely_country is None and best_language in _LANGUAGE_TO_COUNTRY:
+        if best_language_score >= 2.8 and len(language_matches) >= 2:
+            likely_country = _LANGUAGE_TO_COUNTRY[best_language]
 
     if best_language is not None and language_matches and not any(item.startswith('header hints:') for item in evidence):
         evidence.append('header hints: ' + ', '.join(keyword for keyword, _ in language_matches[:3]))
 
     if confidence is None:
-        if best_language_score >= 2.2:
+        if best_language_score >= 2.6:
             confidence = 'low'
         elif best_broadcaster is not None or best_language is not None:
             confidence = 'low'
@@ -488,7 +582,8 @@ def describe_service_metadata(service, filename=None):
     sample_titles = tuple((_page_label(page_number), titles[page_number]) for page_number in sample_page_numbers[:8])
 
     file_info = _scan_capture_file(filename)
-    inferred = _infer_from_titles(titles, filename=filename)
+    extra_texts = tuple(text for text in (file_info['broadcast_label'],) if text)
+    inferred = _infer_from_titles(titles, filename=filename, extra_texts=extra_texts)
     return ServiceMetadata(
         file_path=filename,
         file_name=file_info['file_name'],
@@ -504,6 +599,7 @@ def describe_service_metadata(service, filename=None):
         broadcast_country=file_info['broadcast_country'],
         broadcast_date=file_info['broadcast_date'],
         broadcast_time=file_info['broadcast_time'],
+        broadcast_label=file_info['broadcast_label'],
         likely_broadcaster=inferred['likely_broadcaster'],
         likely_language=inferred['likely_language'],
         likely_country=inferred['likely_country'],
@@ -591,7 +687,7 @@ def export_selected_html(service, output_path, page_number, subpage_number=None,
             subpage_numbers=subpage_numbers,
         )
     ]
-    selected.sort()
+    selected.sort(key=lambda item: item[0])
     if subpage_number is None:
         body = '\n'.join(subpage.to_html(pages_set, localcodepage) for _, subpage in selected)
         page_id = _page_label(page_number)[1:].lower()
@@ -612,6 +708,7 @@ def export_split_t42(
     include_count=True,
     page_numbers=None,
     subpage_numbers=None,
+    progress_callback=None,
 ):
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -644,6 +741,8 @@ def export_split_t42(
         with target.open('ab') as handle:
             handle.write(b''.join(packet.bytes for packet in subpage.packets))
         written_paths.append(target)
+        if progress_callback is not None:
+            progress_callback(len(written_paths), target)
 
     return tuple(dict.fromkeys(written_paths))
 
@@ -683,6 +782,7 @@ def export_html(
     subpage_numbers=None,
     localcodepage=None,
     template=None,
+    progress_callback=None,
 ):
     output_dir = pathlib.Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -710,7 +810,7 @@ def export_html(
         magazine = full_page_number >> 8
         page = full_page_number & 0xff
         page_id = f'{magazine}{page:02x}'
-        items = sorted(items)
+        items = sorted(items, key=lambda item: item[0])
         if include_subpages:
             for subpage_number, subpage in items:
                 body = subpage.to_html(pages_set, localcodepage)
@@ -718,13 +818,77 @@ def export_html(
                 target = output_dir / filename
                 target.write_text(template.format(page=f'{page_id}-{subpage_number:04x}', body=body), encoding='utf-8')
                 written_paths.append(target)
+                if progress_callback is not None:
+                    progress_callback(len(written_paths), target)
         else:
             body = '\n'.join(subpage.to_html(pages_set, localcodepage) for subpage_number, subpage in items)
             target = output_dir / f'{page_id}.html'
             target.write_text(template.format(page=page_id, body=body), encoding='utf-8')
             written_paths.append(target)
+            if progress_callback is not None:
+                progress_callback(len(written_paths), target)
 
     return tuple(written_paths)
+
+
+def count_split_t42_outputs(service, page_numbers=None, subpage_numbers=None):
+    return sum(
+        1
+        for _ in _iter_filtered_subpages(
+            service,
+            page_numbers=page_numbers,
+            subpage_numbers=subpage_numbers,
+        )
+    )
+
+
+def count_html_outputs(service, include_subpages=False, page_numbers=None, subpage_numbers=None):
+    grouped_pages = set()
+    subpage_count = 0
+    for _, _, full_page_number, _, _ in _iter_filtered_subpages(
+        service,
+        page_numbers=page_numbers,
+        subpage_numbers=subpage_numbers,
+    ):
+        grouped_pages.add(full_page_number)
+        subpage_count += 1
+    return subpage_count if include_subpages else len(grouped_pages)
+
+
+def render_subpage_text(
+    page_number,
+    subpage,
+    *,
+    localcodepage=None,
+    doubleheight=True,
+    doublewidth=True,
+    flashenabled=True,
+):
+    rows = []
+    header = np.full((40,), fill_value=0x20, dtype=np.uint8)
+    magazine = int(page_number) >> 8
+    page = int(page_number) & 0xff
+    header[3:7] = np.frombuffer(f'P{magazine}{page:02X}'.encode('ascii'), dtype=np.uint8)
+    header[8:] = subpage.header.displayable[:]
+
+    next_row_hidden = False
+    data_rows = [header] + [subpage.displayable[index, :] for index in range(24)]
+    for row_data in data_rows:
+        parser = _PlainTextRowParser(
+            row_data,
+            localcodepage=localcodepage,
+            codepage=subpage.codepage,
+            doubleheight=doubleheight,
+            doublewidth=doublewidth,
+            flashenabled=flashenabled,
+        )
+        if next_row_hidden and doubleheight:
+            rows.append(' ' * 40)
+        else:
+            rows.append(parser.text[:40].ljust(40))
+        next_row_hidden = parser.row_has_doubleheight and bool(doubleheight)
+
+    return '\n'.join(rows)
 
 
 class DirectPageBuffer:

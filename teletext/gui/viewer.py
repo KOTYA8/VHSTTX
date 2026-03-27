@@ -1,5 +1,7 @@
 import os
+import subprocess
 import sys
+import time
 
 import numpy as np
 
@@ -16,11 +18,15 @@ else:
 
 if IMPORT_ERROR is None:
     from teletext.gui.decoder import Decoder
+    from teletext.file import FileChunker
+    from teletext.packet import Packet
     from teletext.service import Service
     from teletext.viewer import (
         DirectPageBuffer,
         ServiceNavigator,
         build_split_pattern,
+        count_html_outputs,
+        count_split_t42_outputs,
         export_html,
         export_selected_html,
         export_selected_t42,
@@ -32,6 +38,7 @@ if QtCore is not None:
     class ServiceLoader(QtCore.QThread):
         loaded = QtCore.pyqtSignal(object)
         failed = QtCore.pyqtSignal(str)
+        progress = QtCore.pyqtSignal(int, int, float)
 
         def __init__(self, filename):
             super().__init__()
@@ -40,7 +47,24 @@ if QtCore is not None:
         def run(self):
             try:
                 with open(self._filename, 'rb') as handle:
-                    service = Service.from_file(handle)
+                    chunks = FileChunker(handle, 42)
+                    total = len(chunks) if hasattr(chunks, '__len__') else 0
+                    started_at = time.monotonic()
+                    processed = 0
+                    last_emitted = 0
+
+                    def packets():
+                        nonlocal processed, last_emitted
+                        for number, data in chunks:
+                            processed += 1
+                            if total and (processed == 1 or processed - last_emitted >= 4096 or processed == total):
+                                last_emitted = processed
+                                self.progress.emit(processed, total, time.monotonic() - started_at)
+                            yield Packet(data, number)
+
+                    service = Service.from_packets(packets())
+                    if total:
+                        self.progress.emit(total, total, time.monotonic() - started_at)
             except Exception as exc:  # pragma: no cover - GUI error path
                 self.failed.emit(str(exc))
             else:
@@ -489,6 +513,127 @@ if QtCore is not None:
             )
 
 
+    class HtmlPreviewDialog(QtWidgets.QDialog):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle('HTML Preview')
+            self.resize(960, 700)
+
+            root = QtWidgets.QVBoxLayout(self)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(8)
+
+            self._path_label = QtWidgets.QLabel()
+            self._path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            root.addWidget(self._path_label)
+
+            self._browser = QtWidgets.QTextBrowser()
+            self._browser.setOpenExternalLinks(True)
+            root.addWidget(self._browser, 1)
+
+            buttons = QtWidgets.QHBoxLayout()
+            buttons.addStretch(1)
+            close_button = QtWidgets.QPushButton('Close')
+            close_button.clicked.connect(self.close)
+            buttons.addWidget(close_button)
+            root.addLayout(buttons)
+
+        def open_html(self, filename):
+            filename = os.path.abspath(filename)
+            self._path_label.setText(filename)
+            self.setWindowTitle(f'HTML Preview - {os.path.basename(filename)}')
+            self._browser.clear()
+            self._browser.setSearchPaths([os.path.dirname(filename)])
+            self._browser.setSource(QtCore.QUrl.fromLocalFile(filename))
+
+
+    class FileBrowserDialog(QtWidgets.QDialog):
+        fileRequested = QtCore.pyqtSignal(str)
+
+        def __init__(self, title, file_glob, parent=None):
+            super().__init__(parent)
+            self._directory = ''
+            self._file_glob = file_glob
+            self.setWindowTitle(title)
+            self.resize(760, 560)
+
+            root = QtWidgets.QVBoxLayout(self)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(8)
+
+            controls = QtWidgets.QHBoxLayout()
+            controls.addWidget(QtWidgets.QLabel('Filter'))
+            self._filter_input = QtWidgets.QLineEdit()
+            self._filter_input.setPlaceholderText('page, subpage, filename')
+            self._filter_input.textChanged.connect(self._rebuild_list)
+            controls.addWidget(self._filter_input, 1)
+            root.addLayout(controls)
+
+            self._location_label = QtWidgets.QLabel()
+            self._location_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            root.addWidget(self._location_label)
+
+            self._list = QtWidgets.QListWidget()
+            self._list.itemActivated.connect(self._open_current_item)
+            self._list.itemDoubleClicked.connect(self._open_current_item)
+            root.addWidget(self._list, 1)
+
+            buttons = QtWidgets.QHBoxLayout()
+            self._open_button = QtWidgets.QPushButton('Open')
+            self._open_button.clicked.connect(lambda: self._open_current_item(self._list.currentItem()))
+            buttons.addWidget(self._open_button)
+            buttons.addStretch(1)
+            close_button = QtWidgets.QPushButton('Close')
+            close_button.clicked.connect(self.close)
+            buttons.addWidget(close_button)
+            root.addLayout(buttons)
+
+        def set_directory(self, directory):
+            self._directory = os.path.abspath(directory)
+            self._location_label.setText(self._directory)
+            self._rebuild_list()
+
+        def _matching_files(self):
+            if not self._directory or not os.path.isdir(self._directory):
+                return []
+            entries = []
+            for path in sorted(
+                os.path.join(self._directory, name)
+                for name in os.listdir(self._directory)
+            ):
+                if not os.path.isfile(path):
+                    continue
+                if not QtCore.QDir.match(self._file_glob, os.path.basename(path)):
+                    continue
+                entries.append(path)
+            pattern = self._filter_input.text().strip().lower()
+            if not pattern:
+                return entries
+            return [path for path in entries if pattern in os.path.basename(path).lower()]
+
+        def _rebuild_list(self):
+            current = self._list.currentItem()
+            current_path = current.data(QtCore.Qt.UserRole) if current is not None else None
+            self._list.clear()
+            for path in self._matching_files():
+                name = os.path.basename(path)
+                item = QtWidgets.QListWidgetItem(name)
+                item.setData(QtCore.Qt.UserRole, path)
+                item.setToolTip(path)
+                self._list.addItem(item)
+                if current_path == path:
+                    self._list.setCurrentItem(item)
+            if self._list.count() and self._list.currentItem() is None:
+                self._list.setCurrentRow(0)
+            self._open_button.setEnabled(self._list.count() > 0)
+
+        def _open_current_item(self, item):
+            if item is None:
+                return
+            self.fileRequested.emit(item.data(QtCore.Qt.UserRole))
+            self.accept()
+
+
     class TeletextViewerWindow(QtWidgets.QMainWindow):
         fastext_colours = (
             ('#c62828', '#ffffff'),
@@ -507,6 +652,10 @@ if QtCore is not None:
             self._overview_dialog = None
             self._info_dialog = None
             self._split_dialog = None
+            self._html_preview_dialog = None
+            self._t42_browser_dialog = None
+            self._html_browser_dialog = None
+            self._selection_overlay = None
             self._metadata_cache = None
             self._user_t42_directory = None
             self._user_html_directory = None
@@ -516,6 +665,8 @@ if QtCore is not None:
             self._preview_decoder = None
             self._windowed_pos = None
             self._windowed_was_maximized = False
+            self._loading_started_at = None
+            self._selection_overlay_enabled = False
             self._normal_layout_margins = (12, 12, 12, 12)
             self._normal_layout_spacing = 10
             self._icon_path = self._resource_path('teletext.png')
@@ -626,6 +777,12 @@ if QtCore is not None:
             self._no_flash_action = self._settings_menu.addAction('No Flash')
             self._no_flash_action.setCheckable(True)
             self._no_flash_action.toggled.connect(self._set_no_flash)
+            self._highlight_text_action = self._settings_menu.addAction('Highlight Characters')
+            self._highlight_text_action.setCheckable(True)
+            self._highlight_text_action.toggled.connect(self._set_highlight_text)
+            self._mouse_wheel_pages_action = self._settings_menu.addAction('Mouse Wheel Pages')
+            self._mouse_wheel_pages_action.setCheckable(True)
+            self._mouse_wheel_pages_action.setChecked(True)
             self._settings_menu.addSeparator()
             self._auto_menu = self._settings_menu.addMenu('Auto')
             self._auto_subpages_action = self._auto_menu.addAction('Subpages')
@@ -723,17 +880,23 @@ if QtCore is not None:
             self._decoder.zoom = self.base_zoom
             self._decoder_widget.setFixedSize(self._decoder.size())
             self._decoder_area = QtWidgets.QWidget()
-            decoder_layout = QtWidgets.QVBoxLayout(self._decoder_area)
+            self._decoder_area.installEventFilter(self)
+            decoder_layout = QtWidgets.QGridLayout(self._decoder_area)
             decoder_layout.setContentsMargins(0, 0, 0, 0)
-            decoder_layout.addWidget(self._decoder_widget, 0, QtCore.Qt.AlignCenter)
+            decoder_layout.setSpacing(0)
+            self._decoder_layout = decoder_layout
+            decoder_layout.addWidget(self._decoder_widget, 0, 0, QtCore.Qt.AlignCenter)
+            self._decoder_widget.installEventFilter(self)
             root.addWidget(self._decoder_area, 0, QtCore.Qt.AlignCenter)
             self._decoder.doubleheight = False
             self._decoder.doublewidth = False
             self._decoder.flashenabled = False
+            self._decoder.highlighttext = False
             for action in (
                 self._single_height_action,
                 self._single_width_action,
                 self._no_flash_action,
+                self._mouse_wheel_pages_action,
                 self._language_actions['default'],
             ):
                 blocked = action.blockSignals(True)
@@ -837,6 +1000,7 @@ if QtCore is not None:
             decoder.doubleheight = not self._single_height_action.isChecked()
             decoder.doublewidth = not self._single_width_action.isChecked()
             decoder.flashenabled = not self._no_flash_action.isChecked()
+            decoder.highlighttext = self._highlight_text_action.isChecked()
             decoder.language = self._current_language_key()
             decoder.crteffect = False if preview else self._crt_toggle.isChecked()
 
@@ -888,6 +1052,43 @@ if QtCore is not None:
 
         def _clear_decoder(self):
             self._decoder[:] = np.full((25, 40), fill_value=0x20, dtype=np.uint8)
+            if self._selection_overlay is not None:
+                self._selection_overlay.clear()
+
+        def _ensure_selection_overlay(self):
+            if self._selection_overlay is not None:
+                return self._selection_overlay
+
+            overlay = QtWidgets.QPlainTextEdit()
+            overlay.setReadOnly(True)
+            overlay.setFrameShape(QtWidgets.QFrame.NoFrame)
+            overlay.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            overlay.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            overlay.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+            overlay.setWordWrapMode(QtGui.QTextOption.NoWrap)
+            overlay.document().setDocumentMargin(0)
+            overlay.setCursorWidth(0)
+            overlay_font = QtGui.QFont(self._font_family)
+            overlay_font.setStyleStrategy(QtGui.QFont.NoSubpixelAntialias)
+            overlay_font.setHintingPreference(QtGui.QFont.PreferNoHinting)
+            overlay_font.setPixelSize(self.base_zoom * 10)
+            overlay_font.setStretch(int(round(self._decoder.horizontalscale * 100)))
+            overlay.setFont(overlay_font)
+            overlay.setStyleSheet(
+                'QPlainTextEdit {'
+                'background: transparent;'
+                'color: transparent;'
+                'selection-background-color: rgba(120, 160, 255, 150);'
+                'selection-color: white;'
+                'border: none;'
+                'padding: 0;'
+                '}'
+            )
+            overlay.hide()
+            overlay.installEventFilter(self)
+            self._decoder_layout.addWidget(overlay, 0, 0, QtCore.Qt.AlignCenter)
+            self._selection_overlay = overlay
+            return overlay
 
         def _resize_window_to_content(self):
             if self._fullscreen_button.isChecked() or self.isMaximized():
@@ -907,14 +1108,50 @@ if QtCore is not None:
                 self._decoder.set_viewport_size(area_size.width(), area_size.height())
                 self._decoder_widget.setFixedSize(self._decoder.size())
                 self._decoder_area.setFixedSize(area_size)
+                self._sync_selection_overlay()
                 return
 
             self._decoder.fullscreenmode = False
             self._decoder.fullscreenstretch = False
             self._decoder_widget.setFixedSize(self._decoder.size())
             self._decoder_area.setFixedSize(self._decoder_widget.size())
+            self._sync_selection_overlay()
             if self.centralWidget() is not None:
                 self.centralWidget().adjustSize()
+
+        def _sync_selection_overlay(self):
+            if self._selection_overlay is None:
+                return
+            font = self._selection_overlay.font()
+            font.setPixelSize(self._decoder.zoom * 10)
+            font.setStretch(int(round(self._decoder.horizontalscale * 100)))
+            self._selection_overlay.setFont(font)
+            self._selection_overlay.setFixedSize(self._decoder_widget.size())
+            self._selection_overlay.setVisible(self._selection_overlay_enabled and self._navigator is not None)
+            if self._selection_overlay.isVisible():
+                self._selection_overlay.raise_()
+
+        def _update_selection_overlay_text(self):
+            if not self._selection_overlay_enabled:
+                if self._selection_overlay is not None:
+                    self._selection_overlay.clear()
+                return
+            overlay = self._ensure_selection_overlay()
+            if self._navigator is None:
+                overlay.clear()
+                return
+            subpage = self._navigator.current_subpage
+            text = render_subpage_text(
+                self._navigator.current_page_number,
+                subpage,
+                localcodepage=self._default_localcodepage(),
+                doubleheight=not self._single_height_action.isChecked(),
+                doublewidth=not self._single_width_action.isChecked(),
+                flashenabled=not self._no_flash_action.isChecked(),
+            )
+            if overlay.toPlainText() != text:
+                overlay.setPlainText(text)
+                overlay.moveCursor(QtGui.QTextCursor.Start)
 
         def _reset_direct_page_buffer(self):
             self._direct_page_buffer.clear()
@@ -1004,17 +1241,34 @@ if QtCore is not None:
 
         def _set_single_height(self, enabled):
             self._decoder.doubleheight = not enabled
+            self._update_selection_overlay_text()
             self._sync_decoder_size()
             self._invalidate_overview_cache()
 
         def _set_single_width(self, enabled):
             self._decoder.doublewidth = not enabled
+            self._update_selection_overlay_text()
             self._sync_decoder_size()
             self._invalidate_overview_cache()
 
         def _set_no_flash(self, enabled):
             self._decoder.flashenabled = not enabled
+            self._update_selection_overlay_text()
             self._invalidate_overview_cache()
+
+        def _set_highlight_text(self, enabled):
+            self._decoder.highlighttext = enabled
+            self._invalidate_overview_cache()
+
+        def _set_selection_overlay(self, enabled):
+            self._selection_overlay_enabled = bool(enabled)
+            if not self._selection_overlay_enabled:
+                if self._selection_overlay is not None:
+                    self._selection_overlay.setVisible(False)
+                    self._selection_overlay.clearFocus()
+            else:
+                self._update_selection_overlay_text()
+                self._sync_selection_overlay()
 
         def _set_no_hex_pages(self, enabled):
             if self._navigator is None:
@@ -1029,6 +1283,7 @@ if QtCore is not None:
             if not checked:
                 return
             self._decoder.language = language_key
+            self._update_selection_overlay_text()
             self._invalidate_overview_cache()
             if self._navigator is not None:
                 self._render_current_subpage()
@@ -1050,6 +1305,7 @@ if QtCore is not None:
                 self._single_width_action.isChecked(),
                 self._no_flash_action.isChecked(),
                 self._decoder.language,
+                self._highlight_text_action.isChecked(),
             )
 
         def _set_navigation_enabled(self, enabled):
@@ -1077,15 +1333,14 @@ if QtCore is not None:
                 self._info_action,
                 self._fullscreen_action,
                 self._split_export_action,
-                self._open_t42_folder_action,
-                self._open_html_folder_action,
-                self._open_html_file_action,
             ):
                 action.setEnabled(enabled)
             for action in (
                 self._single_height_action,
                 self._single_width_action,
                 self._no_flash_action,
+                self._highlight_text_action,
+                self._mouse_wheel_pages_action,
                 self._auto_subpages_action,
                 self._auto_pages_action,
                 self._fullscreen_43_action,
@@ -1112,6 +1367,7 @@ if QtCore is not None:
                 return
 
             self._filename = filename
+            self._loading_started_at = time.monotonic()
             self._metadata_cache = None
             self._overview_dirty = True
             self._overview_signature = None
@@ -1128,6 +1384,7 @@ if QtCore is not None:
             self._loader = ServiceLoader(filename)
             self._loader.loaded.connect(self._service_loaded)
             self._loader.failed.connect(self._service_failed)
+            self._loader.progress.connect(self._service_progress)
             self._loader.finished.connect(self._service_finished)
             self._loader.start()
 
@@ -1166,6 +1423,7 @@ if QtCore is not None:
             self.statusBar().showMessage(message)
 
         def _service_finished(self):
+            self._loading_started_at = None
             if self._loader is not None:
                 self._loader.deleteLater()
                 self._loader = None
@@ -1177,6 +1435,7 @@ if QtCore is not None:
                 self._navigator.current_page_number,
                 self._navigator.current_subpage_number,
             )
+            self._update_selection_overlay_text()
             self._sync_decoder_size()
 
             current_subpage, total_subpages = self._navigator.current_subpage_position
@@ -1244,8 +1503,27 @@ if QtCore is not None:
         def _open_local_path(self, path):
             if not path or not os.path.exists(path):
                 QtWidgets.QMessageBox.information(self, 'Teletext Viewer', f'Path does not exist yet:\n{path}')
-                return
-            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
+                return False
+
+            url = QtCore.QUrl.fromLocalFile(path)
+            if QtGui.QDesktopServices.openUrl(url):
+                return True
+
+            try:
+                if os.name == 'nt':  # pragma: no cover - platform-specific GUI path
+                    os.startfile(path)
+                elif sys.platform == 'darwin':  # pragma: no cover - platform-specific GUI path
+                    subprocess.Popen(['open', path])
+                else:  # pragma: no cover - platform-specific GUI path
+                    subprocess.Popen(['xdg-open', path])
+            except Exception as exc:  # pragma: no cover - GUI error path
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    'Teletext Viewer',
+                    f'Could not open path:\n{path}\n\n{exc}',
+                )
+                return False
+            return True
 
         def _choose_directory(self, title, start_path):
             return QtWidgets.QFileDialog.getExistingDirectory(
@@ -1253,6 +1531,40 @@ if QtCore is not None:
                 title,
                 start_path or self._capture_directory(),
             )
+
+        def _ensure_html_preview_dialog(self):
+            if self._html_preview_dialog is None:
+                self._html_preview_dialog = HtmlPreviewDialog(self)
+            return self._html_preview_dialog
+
+        def _ensure_t42_browser_dialog(self):
+            if self._t42_browser_dialog is None:
+                self._t42_browser_dialog = FileBrowserDialog('T42 Files', '*.t42', self)
+                self._t42_browser_dialog.fileRequested.connect(self.open_file)
+            return self._t42_browser_dialog
+
+        def _ensure_html_browser_dialog(self):
+            if self._html_browser_dialog is None:
+                self._html_browser_dialog = FileBrowserDialog('HTML Files', '*.html', self)
+                self._html_browser_dialog.fileRequested.connect(self._open_html_preview)
+            return self._html_browser_dialog
+
+        def _show_browser_dialog(self, dialog, directory):
+            dialog.set_directory(directory)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+
+        def _open_html_preview(self, filename):
+            if not filename or not os.path.exists(filename):
+                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', f'HTML file does not exist:\n{filename}')
+                return
+            self._set_html_export_directory(os.path.dirname(filename))
+            dialog = self._ensure_html_preview_dialog()
+            dialog.open_html(filename)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
 
         def open_t42_folder(self):
             directory = self._t42_export_directory()
@@ -1262,7 +1574,7 @@ if QtCore is not None:
                     return
                 directory = chosen
                 self._set_t42_export_directory(directory)
-            self._open_local_path(directory)
+            self._show_browser_dialog(self._ensure_t42_browser_dialog(), directory)
 
         def open_html_folder(self):
             directory = self._html_export_directory()
@@ -1272,7 +1584,7 @@ if QtCore is not None:
                     return
                 directory = chosen
                 self._set_html_export_directory(directory)
-            self._open_local_path(directory)
+            self._show_browser_dialog(self._ensure_html_browser_dialog(), directory)
 
         def open_html_file(self):
             directory = self._html_export_directory()
@@ -1283,8 +1595,7 @@ if QtCore is not None:
                 'HTML Files (*.html);;All Files (*)',
             )
             if filename:
-                self._set_html_export_directory(os.path.dirname(filename))
-                self._open_local_path(filename)
+                self._open_html_preview(filename)
 
         def _suggest_single_t42_path(self, page_number, subpage_number):
             basename = _page_label = f'{page_number >> 8}{page_number & 0xff:02x}'
@@ -1439,32 +1750,81 @@ if QtCore is not None:
                 return
 
             written = []
+            total_steps = 0
             try:
                 if self._split_dialog.t42_enabled():
                     t42_dir = self._split_dialog.t42_directory()
                     if not t42_dir:
                         raise ValueError('Choose a T42 export directory.')
                     self._set_t42_export_directory(t42_dir)
-                    written.extend(export_split_t42(
-                        self._navigator.service,
-                        t42_dir,
-                        pattern=self._split_dialog.split_pattern(),
-                    ))
+                    total_steps += count_split_t42_outputs(self._navigator.service)
 
                 if self._split_dialog.html_enabled():
                     html_dir = self._split_dialog.html_directory()
                     if not html_dir:
                         raise ValueError('Choose an HTML export directory.')
                     self._set_html_export_directory(html_dir)
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                return
+
+            total_steps += (
+                count_html_outputs(
+                    self._navigator.service,
+                    include_subpages=self._split_dialog.html_include_subpages(),
+                )
+                if self._split_dialog.html_enabled()
+                else 0
+            )
+
+            progress = QtWidgets.QProgressDialog('Exporting teletext...', None, 0, max(1, total_steps), self)
+            progress.setWindowTitle('Split Export')
+            progress.setCancelButton(None)
+            progress.setWindowModality(QtCore.Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+            completed = 0
+
+            def advance_progress(label, current, total):
+                progress.setLabelText(f'{label}\n{current}/{total}')
+                progress.setValue(current)
+                QtWidgets.QApplication.processEvents()
+
+            try:
+                if self._split_dialog.t42_enabled():
+                    t42_dir = self._split_dialog.t42_directory()
+                    written.extend(export_split_t42(
+                        self._navigator.service,
+                        t42_dir,
+                        pattern=self._split_dialog.split_pattern(),
+                        progress_callback=lambda current, path: advance_progress(
+                            f'Exporting T42: {path.name}',
+                            completed + current,
+                            total_steps,
+                        ),
+                    ))
+                    completed = len(written)
+
+                if self._split_dialog.html_enabled():
+                    html_dir = self._split_dialog.html_directory()
                     written.extend(export_html(
                         self._navigator.service,
                         html_dir,
                         include_subpages=self._split_dialog.html_include_subpages(),
                         localcodepage=self._split_dialog.html_localcodepage(),
+                        progress_callback=lambda current, path: advance_progress(
+                            f'Exporting HTML: {path.name}',
+                            completed + current,
+                            total_steps,
+                        ),
                     ))
             except Exception as exc:
+                progress.close()
                 QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
                 return
+
+            progress.setValue(total_steps)
+            progress.close()
 
             self.statusBar().showMessage(f'Exported {len(written)} files.', 5000)
 
@@ -1481,6 +1841,24 @@ if QtCore is not None:
             if unit == 'B':
                 return f'{int(value)} {unit}'
             return f'{value:.2f} {unit}'
+
+        def _format_duration(self, seconds):
+            seconds = max(0, int(seconds))
+            hours, remainder = divmod(seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if hours:
+                return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+            return f'{minutes:02d}:{seconds:02d}'
+
+        def _service_progress(self, current, total, elapsed):
+            if total <= 0:
+                self.statusBar().showMessage(f'Loading {os.path.basename(self._filename)}...')
+                return
+            percent = int((current * 100) / total)
+            remaining = ((total - current) * elapsed / current) if current else 0
+            self.statusBar().showMessage(
+                f'Loading teletext {percent}% | {current}/{total} [{self._format_duration(elapsed)}<{self._format_duration(remaining)}]'
+            )
 
         def _format_metadata_report(self, metadata):
             def display(value, missing='unavailable'):
@@ -1501,6 +1879,7 @@ if QtCore is not None:
                 f'Codepages: {codepages}',
                 f'Broadcast 8/30: {"present" if metadata.broadcast_present else "missing"}',
                 f'Initial Page: {display(metadata.initial_page)}',
+                f'Broadcast Label: {display(metadata.broadcast_label)}',
                 f'Broadcast Network: {display(metadata.broadcast_network)}',
                 f'Broadcast Country: {display(metadata.broadcast_country)}',
                 f'Broadcast Date: {display(metadata.broadcast_date)}',
@@ -1688,9 +2067,31 @@ if QtCore is not None:
                     return
 
         def eventFilter(self, watched, event):  # pragma: no cover - GUI event path
+            decoder_area = getattr(self, '_decoder_area', None)
+            decoder_widget = getattr(self, '_decoder_widget', None)
+            selection_overlay = getattr(self, '_selection_overlay', None)
+            page_input = getattr(self, '_page_input', None)
+            navigator = getattr(self, '_navigator', None)
+            mouse_wheel_action = getattr(self, '_mouse_wheel_pages_action', None)
             if (
-                watched is self._page_input
-                and self._navigator is not None
+                watched in (decoder_area, decoder_widget, selection_overlay)
+                and event.type() == QtCore.QEvent.Wheel
+                and navigator is not None
+                and mouse_wheel_action is not None
+                and mouse_wheel_action.isChecked()
+            ):
+                delta = event.angleDelta().y()
+                if delta > 0:
+                    self.next_page()
+                    event.accept()
+                    return True
+                if delta < 0:
+                    self.prev_page()
+                    event.accept()
+                    return True
+            if (
+                watched is page_input
+                and navigator is not None
                 and event.type() in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress)
             ):
                 key = event.key()
