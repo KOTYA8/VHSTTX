@@ -7,6 +7,7 @@ Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-t
 ```
 source myvenv/bin/activate
 git clone https://github.com/KOTYA8/VHSTTX.git
+cd VHSTTX
 python3 setup.py install
 ```
 ### Update
