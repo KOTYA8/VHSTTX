@@ -25,12 +25,13 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Display of teletext subpages and flags - ✅ realized
 * List of all pages - ✅ realized
 * Full screen - ✅ realized
-* Teletext service information - ❌ not realized
+* Teletext service information - ✅ not realized
 
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
 * **Used Line (record/deconvolve)** - ✅ realized
 * **Line numbering (vbiview)** - ✅ realized
+* **Spellcheck** - ❌ not realized
 
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
