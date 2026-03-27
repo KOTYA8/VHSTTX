@@ -1,9 +1,12 @@
 import itertools
 import unicodedata
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
-import enchant
+try:
+    import enchant
+except ModuleNotFoundError:
+    enchant = None
 
 from .charset import g0
 from .coding import parity_encode
@@ -88,6 +91,20 @@ class PageToken:
     codepage: int
 
 
+@dataclass(frozen=True)
+class VariantReport:
+    page_key: tuple[int, int, int]
+    row: int
+    start: int
+    end: int
+    total: int
+    leader: str
+    leader_count: int
+    variant: str
+    variant_count: int
+    differences: tuple[tuple[str, str], ...]
+
+
 class LineCellsParser(Parser):
     def __init__(self, tt, localcodepage=None, codepage=0):
         self.characters = []
@@ -124,6 +141,72 @@ class TeletextCodec(object):
         return None
 
 
+def require_enchant():
+    if enchant is None:
+        raise ModuleNotFoundError("No module named 'enchant'", name='enchant')
+    return enchant
+
+
+class TeletextWordAnalyzer(object):
+    def __init__(self, localcodepage=None, min_word_length=3):
+        self.localcodepage = localcodepage
+        self.min_word_length = min_word_length
+        self.codec = TeletextCodec()
+
+    def extract_tokens(self, characters):
+        tokens = []
+        start = None
+
+        for index, character in enumerate(characters):
+            if character.isalpha():
+                if start is None:
+                    start = index
+            elif start is not None:
+                token = ''.join(characters[start:index])
+                tokens.append(WordToken(start=start, end=index, text=token))
+                start = None
+
+        if start is not None:
+            token = ''.join(characters[start:])
+            tokens.append(WordToken(start=start, end=len(characters), text=token))
+
+        return tuple(tokens)
+
+    @staticmethod
+    def page_key(packet_list):
+        header_packet = packet_list[0]
+        return (
+            int(header_packet.mrag.magazine),
+            int(header_packet.header.page),
+            int(header_packet.header.subpage),
+        )
+
+    def page_tokens(self, packet_list):
+        page_key = self.page_key(packet_list)
+        page_codepage = packet_list[0].header.codepage if packet_list and packet_list[0].type == 'header' else 0
+
+        for packet in packet_list:
+            if packet.type == 'header':
+                displayable = packet.header.displayable
+                codepage = packet.header.codepage
+            elif packet.type == 'display':
+                displayable = packet.displayable
+                codepage = page_codepage
+            else:
+                continue
+
+            characters = self.codec.decode_cells(displayable, localcodepage=self.localcodepage, codepage=codepage)
+            for token in self.extract_tokens(characters):
+                yield PageToken(
+                    page_key=page_key,
+                    row=int(packet.mrag.row),
+                    start=token.start,
+                    end=token.end,
+                    text=token.text,
+                    codepage=codepage,
+                )
+
+
 class LegacySpellChecker(object):
     common_errors = set(itertools.chain.from_iterable(
         itertools.permutations(s, 2) for s in (
@@ -133,7 +216,7 @@ class LegacySpellChecker(object):
     ))
 
     def __init__(self, language='en_GB'):
-        self.dictionary = enchant.Dict(language)
+        self.dictionary = require_enchant().Dict(language)
 
     def check_pair(self, x, y):
         if x == y or (x, y) in self.common_errors:
@@ -166,7 +249,7 @@ class LegacySpellChecker(object):
                 displayable[index] = parity_encode(byte)
 
 
-class TeletextSpellChecker(object):
+class TeletextSpellChecker(TeletextWordAnalyzer):
     def __init__(
         self,
         language='en_GB',
@@ -176,13 +259,12 @@ class TeletextSpellChecker(object):
         max_cost=1.35,
         min_margin=0.20,
     ):
-        self.dictionary = enchant.Dict(language)
-        self.localcodepage = infer_localcodepage(language, localcodepage)
-        self.min_word_length = min_word_length
+        inferred_localcodepage = infer_localcodepage(language, localcodepage)
+        super().__init__(localcodepage=inferred_localcodepage, min_word_length=min_word_length)
+        self.dictionary = require_enchant().Dict(language)
         self.max_candidates = max_candidates
         self.max_cost = max_cost
         self.min_margin = min_margin
-        self.codec = TeletextCodec()
         self._suggestion_cache = {}
         self._trusted_service_frequency = 2
 
@@ -192,25 +274,6 @@ class TeletextSpellChecker(object):
 
     def is_valid_word(self, word):
         return len(word) >= self.min_word_length and self.dictionary.check(word.lower())
-
-    def extract_tokens(self, characters):
-        tokens = []
-        start = None
-
-        for index, character in enumerate(characters):
-            if character.isalpha():
-                if start is None:
-                    start = index
-            elif start is not None:
-                token = ''.join(characters[start:index])
-                tokens.append(WordToken(start=start, end=index, text=token))
-                start = None
-
-        if start is not None:
-            token = ''.join(characters[start:])
-            tokens.append(WordToken(start=start, end=len(characters), text=token))
-
-        return tuple(tokens)
 
     def substitution_cost(self, left, right):
         if left == right:
@@ -282,39 +345,6 @@ class TeletextSpellChecker(object):
             if self.is_valid_word(token.text):
                 lexicon[token.text.lower()] += 1
         return lexicon
-
-    def page_key(self, packet_list):
-        header_packet = packet_list[0]
-        return (
-            header_packet.mrag.magazine,
-            header_packet.header.page,
-            header_packet.header.subpage,
-        )
-
-    def page_tokens(self, packet_list):
-        page_key = self.page_key(packet_list)
-        page_codepage = packet_list[0].header.codepage if packet_list and packet_list[0].type == 'header' else 0
-
-        for packet in packet_list:
-            if packet.type == 'header':
-                displayable = packet.header.displayable
-                codepage = packet.header.codepage
-            elif packet.type == 'display':
-                displayable = packet.displayable
-                codepage = page_codepage
-            else:
-                continue
-
-            characters = self.codec.decode_cells(displayable, localcodepage=self.localcodepage, codepage=codepage)
-            for token in self.extract_tokens(characters):
-                yield PageToken(
-                    page_key=page_key,
-                    row=packet.mrag.row,
-                    start=token.start,
-                    end=token.end,
-                    text=token.text,
-                    codepage=codepage,
-                )
 
     def build_service_lexicon(self, page_tokens):
         lexicon = Counter()
@@ -562,3 +592,79 @@ def spellcheck_page_packets(packet_lists, language='en_GB', localcodepage=None):
             service_lexicon=service_lexicon,
             duplicate_slot_lexicon=duplicate_slot_lexicon,
         )
+
+
+def analyze_page_packets(packet_lists, localcodepage=None, min_word_length=3, max_differences=3):
+    analyzer = TeletextWordAnalyzer(localcodepage=localcodepage, min_word_length=min_word_length)
+    packet_lists = [list(packet_list) for packet_list in packet_lists]
+
+    page_tokens = [
+        token
+        for packet_list in packet_lists
+        for token in analyzer.page_tokens(packet_list)
+        if len(token.text) >= min_word_length
+    ]
+
+    slot_variants = defaultdict(Counter)
+    word_counts = Counter()
+    variant_words = Counter()
+    char_pairs = Counter()
+    variant_reports = []
+
+    for token in page_tokens:
+        word_counts[token.text.lower()] += 1
+        slot_key = (token.page_key, token.row, token.start, token.end)
+        slot_variants[slot_key][token.text] += 1
+
+    for slot_key, variants in slot_variants.items():
+        if len(variants) < 2:
+            continue
+
+        ordered = variants.most_common()
+        leader, leader_count = ordered[0]
+        total = sum(variants.values())
+
+        for variant, variant_count in ordered[1:]:
+            if len(leader) != len(variant):
+                continue
+
+            differences = tuple((left, right) for left, right in zip(leader, variant) if left != right)
+            if not differences or len(differences) > max_differences:
+                continue
+
+            variant_words[(leader.lower(), variant.lower())] += variant_count
+            for left, right in differences:
+                char_pairs[tuple(sorted((left.lower(), right.lower())))] += variant_count
+
+            variant_reports.append(VariantReport(
+                page_key=slot_key[0],
+                row=slot_key[1],
+                start=slot_key[2],
+                end=slot_key[3],
+                total=total,
+                leader=leader,
+                leader_count=leader_count,
+                variant=variant,
+                variant_count=variant_count,
+                differences=differences,
+            ))
+
+    variant_reports.sort(key=lambda report: (
+        -report.total,
+        -report.leader_count,
+        -report.variant_count,
+        report.page_key,
+        report.row,
+        report.start,
+    ))
+
+    return {
+        'page_count': len(packet_lists),
+        'token_count': len(page_tokens),
+        'slot_count': len(slot_variants),
+        'variant_slot_count': sum(1 for variants in slot_variants.values() if len(variants) > 1),
+        'word_counts': word_counts,
+        'variant_words': variant_words,
+        'char_pairs': char_pairs,
+        'variant_reports': tuple(variant_reports),
+    }

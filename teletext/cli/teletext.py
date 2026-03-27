@@ -414,12 +414,6 @@ def spellcheck(packets, language, localcodepage, mode, both, threads, pages, sub
 
     try:
         from teletext.spellcheck import spellcheck_page_packets, spellcheck_packets
-    except ModuleNotFoundError as e:
-        if e.name == 'enchant':
-            raise click.UsageError(f'{e.msg}. PyEnchant is not installed. Spelling checker is not available.')
-        else:
-            raise e
-    else:
         if mode == 'legacy':
             if both:
                 packets, orig_packets = itertools.tee(packets, 2)
@@ -446,6 +440,69 @@ def spellcheck(packets, language, localcodepage, mode, both, threads, pages, sub
             else:
                 for corrected_packet_list in corrected_packet_lists:
                     yield from corrected_packet_list
+    except ModuleNotFoundError as e:
+        if e.name == 'enchant':
+            raise click.UsageError(f'{e.msg}. PyEnchant is not installed. Spelling checker is not available.')
+        else:
+            raise e
+
+
+def _format_page_key(page_key):
+    magazine, page, subpage = (int(value) for value in page_key)
+    return f'P{magazine}{page:02X}:{subpage:04X}'
+
+
+@teletext.command(name='spellcheck-analyze')
+@click.option('--localcodepage', type=click.Choice(g0.keys()), default=None, help='Select teletext local codepage for decoding national characters.')
+@click.option('--min-word-length', type=int, default=3, show_default=True, help='Ignore shorter word tokens.')
+@click.option('--max-differences', type=int, default=3, show_default=True, help='Ignore slot variants with more than N differing characters.')
+@click.option('--top-slots', type=int, default=20, show_default=True, help='Show the top N conflicting word slots.')
+@click.option('--top-pairs', type=int, default=20, show_default=True, help='Show the top N character confusion pairs.')
+@click.option('--top-words', type=int, default=20, show_default=True, help='Show the top N word-variant pairs.')
+@paginated(always=True)
+@packetreader(progress=False)
+def spellcheck_analyze(packets, localcodepage, min_word_length, max_differences, top_slots, top_pairs, top_words, pages, subpages):
+
+    """Analyze noisy word variants in a t42 stream."""
+
+    from teletext.spellcheck import analyze_page_packets
+
+    packet_lists = list(pipeline.paginate(
+        (packet for packet in packets if not packet.is_padding()),
+        pages=pages,
+        subpages=subpages,
+    ))
+    analysis = analyze_page_packets(
+        packet_lists,
+        localcodepage=localcodepage,
+        min_word_length=min_word_length,
+        max_differences=max_differences,
+    )
+
+    click.echo(f"Pages: {analysis['page_count']}")
+    click.echo(f"Tokens: {analysis['token_count']}")
+    click.echo(f"Word slots: {analysis['slot_count']}")
+    click.echo(f"Conflicting slots: {analysis['variant_slot_count']}")
+
+    click.echo()
+    click.echo('Top Character Pairs')
+    for (left, right), count in analysis['char_pairs'].most_common(top_pairs):
+        click.echo(f'{count:4d} {left}/{right}')
+
+    click.echo()
+    click.echo('Top Word Variants')
+    for (leader, variant), count in analysis['variant_words'].most_common(top_words):
+        click.echo(f'{count:4d} {leader} -> {variant}')
+
+    click.echo()
+    click.echo('Top Variant Slots')
+    for report in analysis['variant_reports'][:top_slots]:
+        differences = ', '.join(f'{left}->{right}' for left, right in report.differences)
+        click.echo(
+            f"{_format_page_key(report.page_key)} row={report.row:02d} cols={report.start}-{report.end} "
+            f"total={report.total} {report.leader}:{report.leader_count} vs {report.variant}:{report.variant_count} "
+            f"diffs={differences}"
+        )
 
 
 @teletext.command()

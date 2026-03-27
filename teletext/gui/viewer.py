@@ -157,9 +157,11 @@ if QtCore is not None:
         def clear_icon_cache(self):
             self._icon_cache.clear()
 
-        def populate(self, entries, preview_callback, include_subpages=None, include_hex_pages=None):
+        def populate(self, entries, preview_callback, include_subpages=None, include_hex_pages=None, icon_cache=None):
             self._entries = tuple(entries)
             self._preview_callback = preview_callback
+            if icon_cache:
+                self._icon_cache.update(icon_cache)
             if include_subpages is not None:
                 blocked = self._subpages_toggle.blockSignals(True)
                 self._subpages_toggle.setChecked(include_subpages)
@@ -655,10 +657,13 @@ if QtCore is not None:
             self._html_preview_dialog = None
             self._t42_browser_dialog = None
             self._html_browser_dialog = None
-            self._selection_overlay = None
             self._metadata_cache = None
             self._user_t42_directory = None
             self._user_html_directory = None
+            self._overview_icon_cache = {}
+            self._overview_preload_queue = []
+            self._overview_preload_total = 0
+            self._overview_preload_loaded = 0
             self._overview_dirty = True
             self._overview_signature = None
             self._preview_widget = None
@@ -666,7 +671,6 @@ if QtCore is not None:
             self._windowed_pos = None
             self._windowed_was_maximized = False
             self._loading_started_at = None
-            self._selection_overlay_enabled = False
             self._normal_layout_margins = (12, 12, 12, 12)
             self._normal_layout_spacing = 10
             self._icon_path = self._resource_path('teletext.png')
@@ -679,6 +683,9 @@ if QtCore is not None:
             self._auto_scroll_timer = QtCore.QTimer(self)
             self._auto_scroll_timer.setInterval(3500)
             self._auto_scroll_timer.timeout.connect(self._auto_advance_subpage)
+            self._overview_preload_timer = QtCore.QTimer(self)
+            self._overview_preload_timer.setInterval(0)
+            self._overview_preload_timer.timeout.connect(self._preload_overview_batch)
 
             self.setWindowTitle('Teletext Viewer')
             self.setAcceptDrops(True)
@@ -746,6 +753,9 @@ if QtCore is not None:
             self._fullscreen_action = QtWidgets.QAction('Fullscreen', self)
             self._fullscreen_action.setCheckable(True)
             self._fullscreen_action.toggled.connect(self._toggle_fullscreen_from_action)
+            self._load_overview_action = QtWidgets.QAction('Load Overview', self)
+            self._load_overview_action.setCheckable(True)
+            self._load_overview_action.toggled.connect(self._set_load_overview)
 
             self._functions_button = QtWidgets.QToolButton()
             self._functions_button.setText('Functions')
@@ -756,6 +766,7 @@ if QtCore is not None:
             self._functions_menu.addAction(self._info_action)
             self._functions_menu.addSeparator()
             self._functions_menu.addAction(self._fullscreen_action)
+            self._functions_menu.addAction(self._load_overview_action)
             self._functions_button.setMenu(self._functions_menu)
             toolbar.addWidget(self._functions_button)
 
@@ -850,7 +861,7 @@ if QtCore is not None:
 
             self._auto_toggle = QtWidgets.QCheckBox('Auto')
             self._auto_toggle.toggled.connect(self._set_auto_scroll)
-            self._auto_toggle.setChecked(True)
+            self._auto_toggle.setChecked(False)
             toolbar.addWidget(self._auto_toggle)
 
             self._stretch_toggle = QtWidgets.QCheckBox('Zoom')
@@ -884,7 +895,6 @@ if QtCore is not None:
             decoder_layout = QtWidgets.QGridLayout(self._decoder_area)
             decoder_layout.setContentsMargins(0, 0, 0, 0)
             decoder_layout.setSpacing(0)
-            self._decoder_layout = decoder_layout
             decoder_layout.addWidget(self._decoder_widget, 0, 0, QtCore.Qt.AlignCenter)
             self._decoder_widget.installEventFilter(self)
             root.addWidget(self._decoder_area, 0, QtCore.Qt.AlignCenter)
@@ -954,6 +964,11 @@ if QtCore is not None:
                 self._fastext_buttons.append(button)
                 fastext.addWidget(button)
             root.addWidget(self._fastext_widget)
+
+            self._overview_status_label = QtWidgets.QLabel('')
+            self._overview_status_label.setAlignment(QtCore.Qt.AlignCenter)
+            self._overview_status_label.hide()
+            root.addWidget(self._overview_status_label)
 
             self.setCentralWidget(central)
             self.statusBar().showMessage('Open a .t42 file to start.')
@@ -1050,45 +1065,69 @@ if QtCore is not None:
                 return None
             return QtGui.QIcon(pixmap)
 
+        def _overview_entries_for_loading(self):
+            if self._navigator is None:
+                return ()
+            return self._navigator.overview_entries(
+                include_subpages=True,
+                include_hex_pages=not self._no_hex_pages_action.isChecked(),
+            )
+
+        def _update_overview_status_label(self):
+            if self._overview_preload_total <= 0:
+                self._overview_status_label.hide()
+                return
+            self._overview_status_label.setText(
+                f'Loading previews {self._overview_preload_loaded}/{self._overview_preload_total}'
+            )
+            self._overview_status_label.show()
+
+        def _start_overview_preload(self):
+            if self._navigator is None or not self._load_overview_action.isChecked():
+                self._overview_preload_timer.stop()
+                self._overview_status_label.hide()
+                return
+
+            entries = tuple(self._overview_entries_for_loading())
+            self._overview_preload_total = len(entries)
+            self._overview_preload_queue = [
+                entry for entry in entries
+                if (entry.page_number, entry.subpage_number) not in self._overview_icon_cache
+            ]
+            self._overview_preload_loaded = self._overview_preload_total - len(self._overview_preload_queue)
+
+            if not self._overview_preload_queue:
+                self._overview_status_label.hide()
+                return
+
+            self._update_overview_status_label()
+            self._overview_preload_timer.start()
+
+        def _preload_overview_batch(self):  # pragma: no cover - GUI timer path
+            if self._navigator is None or not self._load_overview_action.isChecked():
+                self._overview_preload_timer.stop()
+                self._overview_status_label.hide()
+                return
+
+            icon_size = QtCore.QSize(160, 120)
+            for _ in range(6):
+                if not self._overview_preload_queue:
+                    self._overview_preload_timer.stop()
+                    self._overview_status_label.hide()
+                    return
+
+                entry = self._overview_preload_queue.pop(0)
+                key = (entry.page_number, entry.subpage_number)
+                if key not in self._overview_icon_cache:
+                    icon = self._make_overview_icon(entry.page_number, entry.subpage_number, icon_size)
+                    if icon is not None:
+                        self._overview_icon_cache[key] = icon
+                self._overview_preload_loaded += 1
+
+            self._update_overview_status_label()
+
         def _clear_decoder(self):
             self._decoder[:] = np.full((25, 40), fill_value=0x20, dtype=np.uint8)
-            if self._selection_overlay is not None:
-                self._selection_overlay.clear()
-
-        def _ensure_selection_overlay(self):
-            if self._selection_overlay is not None:
-                return self._selection_overlay
-
-            overlay = QtWidgets.QPlainTextEdit()
-            overlay.setReadOnly(True)
-            overlay.setFrameShape(QtWidgets.QFrame.NoFrame)
-            overlay.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-            overlay.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-            overlay.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
-            overlay.setWordWrapMode(QtGui.QTextOption.NoWrap)
-            overlay.document().setDocumentMargin(0)
-            overlay.setCursorWidth(0)
-            overlay_font = QtGui.QFont(self._font_family)
-            overlay_font.setStyleStrategy(QtGui.QFont.NoSubpixelAntialias)
-            overlay_font.setHintingPreference(QtGui.QFont.PreferNoHinting)
-            overlay_font.setPixelSize(self.base_zoom * 10)
-            overlay_font.setStretch(int(round(self._decoder.horizontalscale * 100)))
-            overlay.setFont(overlay_font)
-            overlay.setStyleSheet(
-                'QPlainTextEdit {'
-                'background: transparent;'
-                'color: transparent;'
-                'selection-background-color: rgba(120, 160, 255, 150);'
-                'selection-color: white;'
-                'border: none;'
-                'padding: 0;'
-                '}'
-            )
-            overlay.hide()
-            overlay.installEventFilter(self)
-            self._decoder_layout.addWidget(overlay, 0, 0, QtCore.Qt.AlignCenter)
-            self._selection_overlay = overlay
-            return overlay
 
         def _resize_window_to_content(self):
             if self._fullscreen_button.isChecked() or self.isMaximized():
@@ -1108,50 +1147,14 @@ if QtCore is not None:
                 self._decoder.set_viewport_size(area_size.width(), area_size.height())
                 self._decoder_widget.setFixedSize(self._decoder.size())
                 self._decoder_area.setFixedSize(area_size)
-                self._sync_selection_overlay()
                 return
 
             self._decoder.fullscreenmode = False
             self._decoder.fullscreenstretch = False
             self._decoder_widget.setFixedSize(self._decoder.size())
             self._decoder_area.setFixedSize(self._decoder_widget.size())
-            self._sync_selection_overlay()
             if self.centralWidget() is not None:
                 self.centralWidget().adjustSize()
-
-        def _sync_selection_overlay(self):
-            if self._selection_overlay is None:
-                return
-            font = self._selection_overlay.font()
-            font.setPixelSize(self._decoder.zoom * 10)
-            font.setStretch(int(round(self._decoder.horizontalscale * 100)))
-            self._selection_overlay.setFont(font)
-            self._selection_overlay.setFixedSize(self._decoder_widget.size())
-            self._selection_overlay.setVisible(self._selection_overlay_enabled and self._navigator is not None)
-            if self._selection_overlay.isVisible():
-                self._selection_overlay.raise_()
-
-        def _update_selection_overlay_text(self):
-            if not self._selection_overlay_enabled:
-                if self._selection_overlay is not None:
-                    self._selection_overlay.clear()
-                return
-            overlay = self._ensure_selection_overlay()
-            if self._navigator is None:
-                overlay.clear()
-                return
-            subpage = self._navigator.current_subpage
-            text = render_subpage_text(
-                self._navigator.current_page_number,
-                subpage,
-                localcodepage=self._default_localcodepage(),
-                doubleheight=not self._single_height_action.isChecked(),
-                doublewidth=not self._single_width_action.isChecked(),
-                flashenabled=not self._no_flash_action.isChecked(),
-            )
-            if overlay.toPlainText() != text:
-                overlay.setPlainText(text)
-                overlay.moveCursor(QtGui.QTextCursor.Start)
 
         def _reset_direct_page_buffer(self):
             self._direct_page_buffer.clear()
@@ -1241,34 +1244,28 @@ if QtCore is not None:
 
         def _set_single_height(self, enabled):
             self._decoder.doubleheight = not enabled
-            self._update_selection_overlay_text()
             self._sync_decoder_size()
             self._invalidate_overview_cache()
 
         def _set_single_width(self, enabled):
             self._decoder.doublewidth = not enabled
-            self._update_selection_overlay_text()
             self._sync_decoder_size()
             self._invalidate_overview_cache()
 
         def _set_no_flash(self, enabled):
             self._decoder.flashenabled = not enabled
-            self._update_selection_overlay_text()
             self._invalidate_overview_cache()
 
         def _set_highlight_text(self, enabled):
             self._decoder.highlighttext = enabled
             self._invalidate_overview_cache()
 
-        def _set_selection_overlay(self, enabled):
-            self._selection_overlay_enabled = bool(enabled)
-            if not self._selection_overlay_enabled:
-                if self._selection_overlay is not None:
-                    self._selection_overlay.setVisible(False)
-                    self._selection_overlay.clearFocus()
+        def _set_load_overview(self, enabled):
+            if enabled:
+                self._start_overview_preload()
             else:
-                self._update_selection_overlay_text()
-                self._sync_selection_overlay()
+                self._overview_preload_timer.stop()
+                self._overview_status_label.hide()
 
         def _set_no_hex_pages(self, enabled):
             if self._navigator is None:
@@ -1283,7 +1280,6 @@ if QtCore is not None:
             if not checked:
                 return
             self._decoder.language = language_key
-            self._update_selection_overlay_text()
             self._invalidate_overview_cache()
             if self._navigator is not None:
                 self._render_current_subpage()
@@ -1292,10 +1288,18 @@ if QtCore is not None:
             self._decoder.crteffect = enabled
 
         def _invalidate_overview_cache(self):
+            self._overview_preload_timer.stop()
+            self._overview_preload_queue = []
+            self._overview_preload_total = 0
+            self._overview_preload_loaded = 0
+            self._overview_icon_cache.clear()
+            self._overview_status_label.hide()
             self._overview_dirty = True
             self._overview_signature = None
             if self._overview_dialog is not None:
                 self._overview_dialog.clear_icon_cache()
+            if self._navigator is not None and self._load_overview_action.isChecked():
+                QtCore.QTimer.singleShot(0, self._start_overview_preload)
 
         def _overview_state_signature(self):
             return (
@@ -1369,6 +1373,12 @@ if QtCore is not None:
             self._filename = filename
             self._loading_started_at = time.monotonic()
             self._metadata_cache = None
+            self._overview_preload_timer.stop()
+            self._overview_preload_queue = []
+            self._overview_preload_total = 0
+            self._overview_preload_loaded = 0
+            self._overview_icon_cache.clear()
+            self._overview_status_label.hide()
             self._overview_dirty = True
             self._overview_signature = None
             if self._overview_dialog is not None:
@@ -1403,12 +1413,20 @@ if QtCore is not None:
                 self._navigator.set_hex_pages_enabled(not self._no_hex_pages_action.isChecked())
                 self._render_current_subpage()
                 self._set_navigation_enabled(True)
+                if self._load_overview_action.isChecked():
+                    self._start_overview_preload()
                 self.setWindowTitle(f'Teletext Viewer - {os.path.basename(self._filename)}')
                 self.statusBar().showMessage(self._filename)
 
         def _service_failed(self, message):  # pragma: no cover - GUI error path
             self._navigator = None
             self._metadata_cache = None
+            self._overview_preload_timer.stop()
+            self._overview_preload_queue = []
+            self._overview_preload_total = 0
+            self._overview_preload_loaded = 0
+            self._overview_icon_cache.clear()
+            self._overview_status_label.hide()
             self._overview_dirty = True
             self._overview_signature = None
             self._clear_decoder()
@@ -1435,7 +1453,6 @@ if QtCore is not None:
                 self._navigator.current_page_number,
                 self._navigator.current_subpage_number,
             )
-            self._update_selection_overlay_text()
             self._sync_decoder_size()
 
             current_subpage, total_subpages = self._navigator.current_subpage_position
@@ -1464,18 +1481,18 @@ if QtCore is not None:
                 include_subpages = self._overview_dialog.include_subpages
                 include_hex_pages = self._overview_dialog.include_hex_pages and not self._no_hex_pages_action.isChecked()
             signature = self._overview_state_signature()
-            if self._overview_dirty or self._overview_signature != signature:
-                self._overview_dialog.populate(
-                    self._navigator.overview_entries(
-                        include_subpages=True,
-                        include_hex_pages=not self._no_hex_pages_action.isChecked(),
-                    ),
-                    self._make_overview_icon,
-                    include_subpages=include_subpages,
-                    include_hex_pages=include_hex_pages,
-                )
-                self._overview_dirty = False
-                self._overview_signature = signature
+            self._overview_dialog.populate(
+                self._navigator.overview_entries(
+                    include_subpages=True,
+                    include_hex_pages=not self._no_hex_pages_action.isChecked(),
+                ),
+                self._make_overview_icon,
+                include_subpages=include_subpages,
+                include_hex_pages=include_hex_pages,
+                icon_cache=self._overview_icon_cache,
+            )
+            self._overview_dirty = False
+            self._overview_signature = signature
 
             self._overview_dialog.show()
             self._overview_dialog.raise_()
@@ -2069,12 +2086,11 @@ if QtCore is not None:
         def eventFilter(self, watched, event):  # pragma: no cover - GUI event path
             decoder_area = getattr(self, '_decoder_area', None)
             decoder_widget = getattr(self, '_decoder_widget', None)
-            selection_overlay = getattr(self, '_selection_overlay', None)
             page_input = getattr(self, '_page_input', None)
             navigator = getattr(self, '_navigator', None)
             mouse_wheel_action = getattr(self, '_mouse_wheel_pages_action', None)
             if (
-                watched in (decoder_area, decoder_widget, selection_overlay)
+                watched in (decoder_area, decoder_widget)
                 and event.type() == QtCore.QEvent.Wheel
                 and navigator is not None
                 and mouse_wheel_action is not None

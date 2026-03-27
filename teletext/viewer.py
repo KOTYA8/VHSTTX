@@ -275,8 +275,13 @@ def _preferred_filename_token(tokens):
         and len(tokens[1]) >= 6
     ):
         return tokens[0]
-    letter_tokens = [token for token in tokens if any(ch.isalpha() for ch in token) and len(token) >= 3]
-    return letter_tokens[-1] if letter_tokens else tokens[-1]
+    letter_tokens = [
+        token for token in tokens
+        if any(ch.isalpha() for ch in token)
+        and len(token) >= 3
+        and not all(ch in '0123456789ABCDEF' for ch in token)
+    ]
+    return letter_tokens[-1] if letter_tokens else ''
 
 
 def _header_topic(text):
