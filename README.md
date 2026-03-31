@@ -19,7 +19,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 
 # Future Apps
 ## **Teletext Viewer** - ✅ realized
-* Opening T42 and HTML files and folders - ✅ not realized
+* Opening T42 and HTML files and folders - ✅ realized
 * Split individual pages in HTML and T42 - ✅ realized
 * Opening from .t42 file - ✅ realized
 * Language support - ✅ realized
@@ -28,7 +28,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Display of teletext subpages and flags - ✅ realized
 * List of all pages - ✅ realized
 * Full screen - ✅ realized
-* Teletext service information - ⚠️
+* Teletext service information - ⚠️ bugs
 
 ## **VBI Tune/VBI Tune Live** - ✅ realized
 * Signal Controls (Brightness/Sharpness/Gain/Contrast) - ✅ realized
@@ -46,7 +46,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * **Ignore Line (record/deconvolve)** - ✅ realized
 * **Used Line (record/deconvolve)** - ✅ realized
 * **Line numbering (vbiview)** - ✅ realized
-* **Spellcheck** - ⚠️
+* **Spellcheck** - ⚠️ bugs
 
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
