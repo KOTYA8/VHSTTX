@@ -967,6 +967,31 @@ class LiveTunerHandle:
             'device': DEFAULT_FIX_CAPTURE_CARD['device'],
         }
 
+    def is_alive(self):
+        return self._process.is_alive()
+
+    def apply(self, values=None, decoder_tuning=None, line_selection=None, fix_capture_card=None):
+        if values is not None:
+            for index, value in enumerate(values):
+                self._shared_values[index] = float(value)
+        if self._tape_formats and decoder_tuning is not None:
+            tape_format = decoder_tuning['tape_format']
+            if tape_format in self._tape_formats:
+                self._shared_values[8] = float(self._tape_formats.index(tape_format))
+            self._shared_values[9] = float(decoder_tuning['extra_roll'])
+            self._shared_values[10] = float(decoder_tuning['line_start_range'][0])
+            self._shared_values[11] = float(decoder_tuning['line_start_range'][1])
+        if line_selection is not None:
+            selected = _normalise_line_selection(line_selection, line_count=self._line_count)
+            for line in range(1, self._line_count + 1):
+                self._shared_values[11 + line] = 1.0 if line in selected else 0.0
+        if fix_capture_card is not None:
+            settings = normalise_fix_capture_card(fix_capture_card)
+            fix_offset = 12 + self._line_count
+            self._shared_values[fix_offset] = 1.0 if settings['enabled'] else 0.0
+            self._shared_values[fix_offset + 1] = float(settings['seconds'])
+            self._shared_values[fix_offset + 2] = float(settings['interval_minutes'])
+
     def close(self):
         if self._process.is_alive():
             self._process.terminate()

@@ -3,6 +3,8 @@ import multiprocessing
 import os
 import pathlib
 import platform
+import shutil
+import subprocess
 import threading
 
 import sys
@@ -95,6 +97,74 @@ def fixcaptureparams(f):
         type=(click.IntRange(1), click.IntRange(1)),
         default=None,
         help='Run ffmpeg on /dev/video0 for N seconds every M minutes to keep capture card levels stable.',
+    )(f)
+
+
+URXVT_ENV_GUARD = 'TELETEXT_URXVT_ACTIVE'
+
+
+def build_urxvt_command(argv, executable=None):
+    if not argv:
+        raise click.UsageError('Could not determine the current teletext command line.')
+
+    stripped_args = []
+    skipped = False
+    for arg in argv[1:]:
+        if not skipped and arg in ('-u', '--urxvt'):
+            skipped = True
+            continue
+        stripped_args.append(arg)
+
+    if executable is None:
+        program = argv[0]
+        if str(program).lower().endswith('.py'):
+            executable = [sys.executable, program]
+        else:
+            executable = [program]
+    elif isinstance(executable, str):
+        executable = [executable]
+
+    return [
+        'urxvt',
+        '-fg', 'white',
+        '-bg', 'black',
+        '-fn', 'teletext',
+        '-fb', 'teletext',
+        '-e',
+        *executable,
+        *stripped_args,
+    ]
+
+
+def launch_urxvt_command(argv):
+    urxvt_path = shutil.which('urxvt')
+    if urxvt_path is None:
+        raise click.UsageError('urxvt is not installed or not available in PATH.')
+
+    command = build_urxvt_command(argv)
+    command[0] = urxvt_path
+    env = os.environ.copy()
+    env[URXVT_ENV_GUARD] = '1'
+    subprocess.Popen(command, cwd=os.getcwd(), env=env)
+
+
+def urxvt_callback(ctx, param, value):
+    if not value or ctx.resilient_parsing:
+        return value
+    if os.environ.get(URXVT_ENV_GUARD) == '1':
+        return False
+    launch_urxvt_command(sys.argv)
+    ctx.exit()
+
+
+def urxvtparam(f):
+    return click.option(
+        '-u', '--urxvt',
+        is_flag=True,
+        is_eager=True,
+        expose_value=False,
+        callback=urxvt_callback,
+        help='Run this deconvolve command inside urxvt with the teletext font preset.',
     )(f)
 
 
@@ -371,6 +441,82 @@ def current_fix_capture_card(fix_capture_card):
         'seconds': int(fix_capture_card[0]),
         'interval_minutes': int(fix_capture_card[1]),
     })
+
+
+def current_signal_controls(
+    brightness,
+    sharpness,
+    gain,
+    contrast,
+    brightness_coeff,
+    sharpness_coeff,
+    gain_coeff,
+    contrast_coeff,
+):
+    return (
+        int(brightness),
+        int(sharpness),
+        int(gain),
+        int(contrast),
+        float(brightness_coeff),
+        float(sharpness_coeff),
+        float(gain_coeff),
+        float(contrast_coeff),
+    )
+
+
+def frame_size_for_config(config):
+    return config.line_bytes * config.field_lines * 2
+
+
+def count_complete_frames(input_path, config):
+    frame_size = frame_size_for_config(config)
+    file_size = os.path.getsize(input_path)
+    return file_size // frame_size
+
+
+def save_cropped_vbi(
+    input_path,
+    output_path,
+    config,
+    start_frame,
+    end_frame,
+    controls,
+    line_selection=None,
+):
+    from teletext.vbi.line import process_frame_bytes
+
+    frame_size = frame_size_for_config(config)
+    start_frame = max(int(start_frame), 0)
+    end_frame = max(int(end_frame), start_frame)
+    preserve_tail = 4 if config.card == 'bt8x8' else 0
+    all_lines = frozenset(range(1, useful_frame_lines(config) + 1))
+    selected_lines = current_line_selection(config) if line_selection is None else frozenset(int(line) for line in line_selection)
+    ignored_lines = all_lines - selected_lines
+    ignored_ranges = ignored_frame_line_byte_ranges(config, ignored_lines)
+
+    with open(input_path, 'rb') as source, open(output_path, 'wb') as output:
+        source.seek(start_frame * frame_size)
+        for _ in range(start_frame, end_frame + 1):
+            frame = source.read(frame_size)
+            if len(frame) < frame_size:
+                break
+            frame = process_frame_bytes(
+                frame,
+                config,
+                brightness=controls[0],
+                sharpness=controls[1],
+                gain=controls[2],
+                contrast=controls[3],
+                brightness_coeff=controls[4],
+                sharpness_coeff=controls[5],
+                gain_coeff=controls[6],
+                contrast_coeff=controls[7],
+                preserve_tail=preserve_tail,
+            )
+            if ignored_ranges:
+                frame = blank_ignored_frame_lines(frame, ignored_ranges, preserve_tail=preserve_tail)
+            output.write(frame)
 
 
 def start_live_fix_capture_card(live_tuner, initial_settings):
@@ -1087,6 +1233,197 @@ def vbiview(chunker, config, pause, tape_format, n_lines, ignore_lines, used_lin
 
 
 @teletext.command()
+@click.argument('input_path', type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option('-p', '--pause/--play', default=True, help='Start playback paused.')
+@click.option('-f', '--tape-format', type=click.Choice(Config.tape_formats), default='vhs', help='Source VCR format.')
+@click.option('-n', '--n-lines', type=int, default=None, help='Number of lines to display. Overrides card config.')
+@click.option('-il', '--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
+              help='Ignore 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 23,24,25.')
+@click.option('-ul', '--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
+              help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
+@signalcontrolparams
+@fixcaptureparams
+@previewtuneparams
+@carduser(extended=True)
+def vbicrop(input_path, config, pause, tape_format, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff, fix_capture_card, vbi_tune, vbi_tune_live):
+
+    """Open the VBI crop editor for a recorded .vbi file."""
+
+    if vbi_tune and vbi_tune_live:
+        raise click.UsageError("Use either -vtn or -vtnl, not both.")
+
+    try:
+        from teletext.gui.vbicrop import create_crop_state, run_crop_window, DEFAULT_FRAME_RATE
+    except ModuleNotFoundError as e:
+        if e.name == 'PyQt5':
+            raise click.UsageError(f'{e.msg}. PyQt5 is not installed. VBI crop window is not available.')
+        raise
+
+    try:
+        from teletext.vbi.cropviewer import launch_crop_viewer
+    except ModuleNotFoundError as e:
+        if e.name.startswith('OpenGL'):
+            raise click.UsageError(f'{e.msg}. PyOpenGL is not installed. VBI crop viewer is not available.')
+        raise
+
+    total_frames = count_complete_frames(input_path, config)
+    if total_frames <= 0:
+        raise click.UsageError('Input file does not contain any complete VBI frames.')
+
+    selected_lines = current_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
+    controls = current_signal_controls(
+        brightness,
+        sharpness,
+        gain,
+        contrast,
+        brightness_coeff,
+        sharpness_coeff,
+        gain_coeff,
+        contrast_coeff,
+    )
+    fix_capture_card_settings = current_fix_capture_card(fix_capture_card)
+    state = {
+        'config': config,
+        'tape_format': tape_format,
+        'controls': controls,
+        'selected_lines': frozenset(selected_lines),
+        'fix_capture_card': fix_capture_card_settings,
+    }
+
+    if vbi_tune:
+        result = open_tuning_dialog(
+            'VBI Tune - Crop',
+            *state['controls'],
+            decoder_tuning=current_decoder_tuning(state['config'], state['tape_format']),
+            tape_formats=Config.tape_formats,
+            line_selection=state['selected_lines'],
+            line_count=useful_frame_lines(state['config']),
+            fix_capture_card=state['fix_capture_card'],
+        )
+        if result is None:
+            return
+        state['controls'], decoder_tuning, state['selected_lines'], state['fix_capture_card'] = result
+        state['config'], state['tape_format'] = apply_decoder_tuning(state['config'], state['tape_format'], decoder_tuning)
+
+    crop_state = create_crop_state(total_frames=total_frames, current_frame=0, playing=not pause)
+
+    live_tuner = None
+    fixer = None
+    fixer_stop = None
+    fixer_thread = None
+    viewer_process = None
+    if vbi_tune_live:
+        live_tuner = open_live_tuner(
+            'VBI Tune Live - Crop',
+            *state['controls'],
+            decoder_tuning=current_decoder_tuning(state['config'], state['tape_format']),
+            tape_formats=Config.tape_formats,
+            line_selection=state['selected_lines'],
+            line_count=useful_frame_lines(state['config']),
+            fix_capture_card=state['fix_capture_card'],
+        )
+        fixer, fixer_stop, fixer_thread = start_live_fix_capture_card(live_tuner, state['fix_capture_card'])
+    else:
+        fixer = CaptureCardFixer()
+        fixer.update(state['fix_capture_card'])
+
+    def sync_state_from_live_tuner():
+        if live_tuner is None:
+            return
+        state['controls'] = live_tuner.values()
+        decoder_tuning = live_tuner.decoder_tuning()
+        if decoder_tuning is not None:
+            state['config'], state['tape_format'] = apply_decoder_tuning(state['config'], state['tape_format'], decoder_tuning)
+        state['selected_lines'] = live_tuner.line_selection()
+        state['fix_capture_card'] = live_tuner.fix_capture_card()
+
+    def stop_fix_capture_card_runtime():
+        nonlocal fixer, fixer_stop, fixer_thread
+        if fixer_stop is not None:
+            fixer_stop.set()
+            fixer_stop = None
+        if fixer_thread is not None:
+            fixer_thread.join(timeout=1)
+            fixer_thread = None
+        if fixer is not None:
+            fixer.close()
+            fixer = None
+
+    def restart_viewer():
+        nonlocal viewer_process
+        if viewer_process is not None and viewer_process.is_alive():
+            viewer_process.terminate()
+            viewer_process.join(timeout=1)
+        viewer_process = launch_crop_viewer(
+            input_path=input_path,
+            config=state['config'],
+            crop_state=crop_state,
+            total_frames=total_frames,
+            frame_rate=DEFAULT_FRAME_RATE,
+            pause=pause,
+            tape_format=state['tape_format'],
+            n_lines=n_lines,
+            live_tuner=live_tuner,
+            fixed_controls=state['controls'],
+            fixed_decoder_tuning=current_decoder_tuning(state['config'], state['tape_format']),
+            fixed_line_selection=state['selected_lines'],
+        )
+
+    restart_viewer()
+
+    def open_live_tune_callback():
+        nonlocal live_tuner, fixer, fixer_stop, fixer_thread
+        if live_tuner is not None and live_tuner.is_alive():
+            return
+        if live_tuner is not None:
+            sync_state_from_live_tuner()
+            live_tuner.close()
+            live_tuner = None
+        stop_fix_capture_card_runtime()
+        live_tuner = open_live_tuner(
+            'VBI Tune Live - Crop',
+            *state['controls'],
+            decoder_tuning=current_decoder_tuning(state['config'], state['tape_format']),
+            tape_formats=Config.tape_formats,
+            line_selection=state['selected_lines'],
+            line_count=useful_frame_lines(state['config']),
+            fix_capture_card=state['fix_capture_card'],
+        )
+        fixer, fixer_stop, fixer_thread = start_live_fix_capture_card(live_tuner, state['fix_capture_card'])
+        restart_viewer()
+
+    def save_callback(output_path, start_frame, end_frame):
+        current_controls_value = state['controls'] if live_tuner is None else live_tuner.values()
+        current_line_selection_value = state['selected_lines'] if live_tuner is None else live_tuner.line_selection()
+        save_cropped_vbi(
+            input_path=input_path,
+            output_path=output_path,
+            config=state['config'],
+            start_frame=start_frame,
+            end_frame=end_frame,
+            controls=current_controls_value,
+            line_selection=current_line_selection_value,
+        )
+
+    try:
+        run_crop_window(
+            state=crop_state,
+            total_frames=total_frames,
+            frame_rate=DEFAULT_FRAME_RATE,
+            save_callback=save_callback,
+            live_tune_callback=open_live_tune_callback,
+            viewer_process=lambda: viewer_process,
+        )
+    finally:
+        if viewer_process is not None and viewer_process.is_alive():
+            viewer_process.terminate()
+            viewer_process.join(timeout=1)
+        stop_fix_capture_card_runtime()
+        if live_tuner is not None:
+            live_tuner.close()
+
+
+@teletext.command()
 @click.option('-M', '--mode', type=click.Choice(['deconvolve', 'slice']), default='deconvolve', help='Deconvolution mode.')
 @click.option('-8', '--eight-bit', is_flag=True, help='Treat rows 1-25 as 8-bit data without parity check.')
 @click.option('-f', '--tape-format', type=click.Choice(Config.tape_formats), default='vhs', help='Source VCR format.')
@@ -1101,6 +1438,7 @@ def vbiview(chunker, config, pause, tape_format, n_lines, ignore_lines, used_lin
 @signalcontrolparams
 @fixcaptureparams
 @previewtuneparams
+@urxvtparam
 @carduser(extended=True)
 @packetwriter
 @chunkreader()
