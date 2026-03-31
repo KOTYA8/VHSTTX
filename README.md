@@ -46,12 +46,12 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Saving with VBI Tune Live - ✅ realized
 
 # Future Functions
-* **Ignore Line (record/deconvolve)** - ✅ realized
-* **Used Line (record/deconvolve)** - ✅ realized
+* **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
+* **Used Line (record/deconvolve/vbiview)** - ✅ realized
 * **Line numbering (vbiview)** - ✅ realized
-* **Brightness/Sharpness/Gain/Contrast** - ✅ realized
-* **Fix Capture Card** - ✅ realized
-* **URXVT Terminal** - ✅ realized
+* **Brightness/Sharpness/Gain/Contrast (record/deconvolve/vbiview)** - ✅ realized
+* **Fix Capture Card (record/deconvolve/vbiview)** - ✅ realized
+* **URXVT Terminal (deconvolve)** - ✅ realized
 * **Spellcheck** - ⚠️ bugs
 
 # Apps
