@@ -143,6 +143,16 @@ class Config(object):
     def __repr__(self):
         return f'{type(self).__name__}: {self.__dict__}'
 
+    def retuned(self, extra_roll=None, line_start_range=None):
+        return type(self)(
+            card=self.card,
+            line_length=self.line_length,
+            sample_rate=self.sample_rate,
+            sample_rate_adjust=0,
+            line_start_range=self.line_start_range if line_start_range is None else line_start_range,
+            extra_roll=self.extra_roll if extra_roll is None else extra_roll,
+        )
+
     @property
     def line_bytes(self):
         return self.line_length * np.dtype(self.dtype).itemsize

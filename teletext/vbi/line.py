@@ -31,6 +31,160 @@ def normalise(a, start=None, end=None):
     return np.clip((a.astype(np.float32) - mn) * (255.0/r), 0, 255)
 
 
+SIGNAL_CONTROL_NEUTRAL = 50
+BRIGHTNESS_COEFF_DEFAULT = 48.0
+GAIN_COEFF_DEFAULT = 0.5
+CONTRAST_COEFF_DEFAULT = 0.5
+SHARPNESS_SIGMA = 1.0
+SHARPNESS_COEFF_DEFAULT = 3.0
+
+
+def signal_controls_active(brightness=SIGNAL_CONTROL_NEUTRAL, sharpness=SIGNAL_CONTROL_NEUTRAL, gain=SIGNAL_CONTROL_NEUTRAL, contrast=SIGNAL_CONTROL_NEUTRAL):
+    return any(value != SIGNAL_CONTROL_NEUTRAL for value in (brightness, sharpness, gain, contrast))
+
+
+def _control_factor(value, coeff):
+    return 1.0 + ((float(value) - SIGNAL_CONTROL_NEUTRAL) / SIGNAL_CONTROL_NEUTRAL) * float(coeff)
+
+
+def samples_from_bytes(data, dtype):
+    samples = np.frombuffer(data, dtype=dtype).astype(np.float32)
+    samples /= 256 ** (np.dtype(dtype).itemsize - 1)
+    return samples
+
+
+def samples_to_bytes(samples, dtype):
+    scale = 256 ** (np.dtype(dtype).itemsize - 1)
+    clipped = np.clip(np.rint(samples * scale), np.iinfo(dtype).min, np.iinfo(dtype).max)
+    return clipped.astype(dtype).tobytes()
+
+
+def apply_signal_controls(
+    samples,
+    brightness=SIGNAL_CONTROL_NEUTRAL,
+    sharpness=SIGNAL_CONTROL_NEUTRAL,
+    gain=SIGNAL_CONTROL_NEUTRAL,
+    contrast=SIGNAL_CONTROL_NEUTRAL,
+    brightness_coeff=BRIGHTNESS_COEFF_DEFAULT,
+    sharpness_coeff=SHARPNESS_COEFF_DEFAULT,
+    gain_coeff=GAIN_COEFF_DEFAULT,
+    contrast_coeff=CONTRAST_COEFF_DEFAULT,
+):
+    adjusted = np.asarray(samples, dtype=np.float32).copy()
+    if adjusted.size == 0 or not signal_controls_active(brightness, sharpness, gain, contrast):
+        return adjusted
+
+    gain_factor = _control_factor(gain, gain_coeff)
+    if gain_factor != 1.0:
+        adjusted *= gain_factor
+
+    contrast_factor = _control_factor(contrast, contrast_coeff)
+    if contrast_factor != 1.0:
+        centre = float(np.mean(adjusted))
+        adjusted = centre + ((adjusted - centre) * contrast_factor)
+
+    brightness_offset = ((float(brightness) - SIGNAL_CONTROL_NEUTRAL) / SIGNAL_CONTROL_NEUTRAL) * float(brightness_coeff)
+    if brightness_offset:
+        adjusted += brightness_offset
+
+    if sharpness != SIGNAL_CONTROL_NEUTRAL:
+        sharpen_blurred = gauss(adjusted, SHARPNESS_SIGMA)
+        if sharpness < SIGNAL_CONTROL_NEUTRAL:
+            soft_blur_sigma = SHARPNESS_SIGMA * max(float(sharpness_coeff) / SHARPNESS_COEFF_DEFAULT, 0.05)
+            softened = gauss(adjusted, soft_blur_sigma)
+            blend = (SIGNAL_CONTROL_NEUTRAL - float(sharpness)) / SIGNAL_CONTROL_NEUTRAL
+            adjusted = (adjusted * (1.0 - blend)) + (softened * blend)
+        else:
+            amount = ((float(sharpness) - SIGNAL_CONTROL_NEUTRAL) / SIGNAL_CONTROL_NEUTRAL) * float(sharpness_coeff)
+            adjusted = adjusted + ((adjusted - sharpen_blurred) * amount)
+
+    return np.clip(adjusted, 0, 255).astype(np.float32, copy=False)
+
+
+def process_line_bytes(
+    data,
+    config,
+    brightness=SIGNAL_CONTROL_NEUTRAL,
+    sharpness=SIGNAL_CONTROL_NEUTRAL,
+    gain=SIGNAL_CONTROL_NEUTRAL,
+    contrast=SIGNAL_CONTROL_NEUTRAL,
+    brightness_coeff=BRIGHTNESS_COEFF_DEFAULT,
+    sharpness_coeff=SHARPNESS_COEFF_DEFAULT,
+    gain_coeff=GAIN_COEFF_DEFAULT,
+    contrast_coeff=CONTRAST_COEFF_DEFAULT,
+    preserve_tail=0,
+):
+    if not signal_controls_active(brightness, sharpness, gain, contrast):
+        return data
+
+    payload = data[:-preserve_tail] if preserve_tail else data
+    if not payload:
+        return data
+
+    adjusted = apply_signal_controls(
+        samples_from_bytes(payload, config.dtype),
+        brightness=brightness,
+        sharpness=sharpness,
+        gain=gain,
+        contrast=contrast,
+        brightness_coeff=brightness_coeff,
+        sharpness_coeff=sharpness_coeff,
+        gain_coeff=gain_coeff,
+        contrast_coeff=contrast_coeff,
+    )
+    result = samples_to_bytes(adjusted, config.dtype)
+    if preserve_tail:
+        result += data[-preserve_tail:]
+    return result
+
+
+def process_frame_bytes(
+    data,
+    config,
+    brightness=SIGNAL_CONTROL_NEUTRAL,
+    sharpness=SIGNAL_CONTROL_NEUTRAL,
+    gain=SIGNAL_CONTROL_NEUTRAL,
+    contrast=SIGNAL_CONTROL_NEUTRAL,
+    brightness_coeff=BRIGHTNESS_COEFF_DEFAULT,
+    sharpness_coeff=SHARPNESS_COEFF_DEFAULT,
+    gain_coeff=GAIN_COEFF_DEFAULT,
+    contrast_coeff=CONTRAST_COEFF_DEFAULT,
+    preserve_tail=0,
+):
+    if not signal_controls_active(brightness, sharpness, gain, contrast):
+        return data
+
+    frame_lines = config.field_lines * 2
+    line_bytes = config.line_bytes
+    output = bytearray()
+
+    for line_number in range(frame_lines):
+        start = line_number * line_bytes
+        end = start + line_bytes
+        if end > len(data):
+            output.extend(data[start:])
+            break
+        line_tail = preserve_tail if preserve_tail and line_number == (frame_lines - 1) else 0
+        output.extend(process_line_bytes(
+            data[start:end],
+            config,
+            brightness=brightness,
+            sharpness=sharpness,
+            gain=gain,
+            contrast=contrast,
+            brightness_coeff=brightness_coeff,
+            sharpness_coeff=sharpness_coeff,
+            gain_coeff=gain_coeff,
+            contrast_coeff=contrast_coeff,
+            preserve_tail=line_tail,
+        ))
+
+    if len(output) < len(data):
+        output.extend(data[len(output):])
+
+    return bytes(output)
+
+
 # Line: Handles a single line of raw VBI samples.
 
 class Line(object):
@@ -39,6 +193,14 @@ class Line(object):
     config: Config
 
     configured = False
+    brightness = SIGNAL_CONTROL_NEUTRAL
+    sharpness = SIGNAL_CONTROL_NEUTRAL
+    gain = SIGNAL_CONTROL_NEUTRAL
+    contrast = SIGNAL_CONTROL_NEUTRAL
+    brightness_coeff = BRIGHTNESS_COEFF_DEFAULT
+    sharpness_coeff = SHARPNESS_COEFF_DEFAULT
+    gain_coeff = GAIN_COEFF_DEFAULT
+    contrast_coeff = CONTRAST_COEFF_DEFAULT
 
     @classmethod
     def configure_patterns(cls, method, tape_format):
@@ -56,8 +218,32 @@ class Line(object):
             return False
 
     @classmethod
-    def configure(cls, config, force_cpu=False, prefer_opencl=False, tape_format='vhs'):
+    def configure(
+        cls,
+        config,
+        force_cpu=False,
+        prefer_opencl=False,
+        tape_format='vhs',
+        brightness=SIGNAL_CONTROL_NEUTRAL,
+        sharpness=SIGNAL_CONTROL_NEUTRAL,
+        gain=SIGNAL_CONTROL_NEUTRAL,
+        contrast=SIGNAL_CONTROL_NEUTRAL,
+        brightness_coeff=BRIGHTNESS_COEFF_DEFAULT,
+        sharpness_coeff=SHARPNESS_COEFF_DEFAULT,
+        gain_coeff=GAIN_COEFF_DEFAULT,
+        contrast_coeff=CONTRAST_COEFF_DEFAULT,
+    ):
         cls.config = config
+        cls.set_signal_controls(
+            brightness=brightness,
+            sharpness=sharpness,
+            gain=gain,
+            contrast=contrast,
+            brightness_coeff=brightness_coeff,
+            sharpness_coeff=sharpness_coeff,
+            gain_coeff=gain_coeff,
+            contrast_coeff=contrast_coeff,
+        )
         if force_cpu:
             methods = ['']
         elif prefer_opencl:
@@ -69,13 +255,44 @@ class Line(object):
         else:
             raise Exception('Could not initialize any deconvolution method.')
 
+    @classmethod
+    def set_signal_controls(
+        cls,
+        brightness=SIGNAL_CONTROL_NEUTRAL,
+        sharpness=SIGNAL_CONTROL_NEUTRAL,
+        gain=SIGNAL_CONTROL_NEUTRAL,
+        contrast=SIGNAL_CONTROL_NEUTRAL,
+        brightness_coeff=BRIGHTNESS_COEFF_DEFAULT,
+        sharpness_coeff=SHARPNESS_COEFF_DEFAULT,
+        gain_coeff=GAIN_COEFF_DEFAULT,
+        contrast_coeff=CONTRAST_COEFF_DEFAULT,
+    ):
+        cls.brightness = brightness
+        cls.sharpness = sharpness
+        cls.gain = gain
+        cls.contrast = contrast
+        cls.brightness_coeff = brightness_coeff
+        cls.sharpness_coeff = sharpness_coeff
+        cls.gain_coeff = gain_coeff
+        cls.contrast_coeff = contrast_coeff
+
     def __init__(self, data, number=None):
         if not self.configured:
             self.configure(Config())
 
         self._number = number
-        self._original = np.frombuffer(data, dtype=self.config.dtype).astype(np.float32)
-        self._original /= 256 ** (np.dtype(self.config.dtype).itemsize-1)
+        self._original = samples_from_bytes(data, self.config.dtype)
+        self._original = apply_signal_controls(
+            self._original,
+            brightness=self.brightness,
+            sharpness=self.sharpness,
+            gain=self.gain,
+            contrast=self.contrast,
+            brightness_coeff=self.brightness_coeff,
+            sharpness_coeff=self.sharpness_coeff,
+            gain_coeff=self.gain_coeff,
+            contrast_coeff=self.contrast_coeff,
+        )
         self._original_bytes = data
 
         resample_tmp = np.pad(self._original, (0, self.config.resample_pad), 'constant', constant_values=(0,0))
@@ -290,12 +507,108 @@ class Line(object):
         else:
             return 'filtered'
 
-def process_lines(chunks, mode, config, force_cpu=False, prefer_opencl=False, mags=range(9), rows=range(32), tape_format='vhs', eight_bit=False):
+def process_lines(
+    chunks,
+    mode,
+    config,
+    force_cpu=False,
+    prefer_opencl=False,
+    mags=range(9),
+    rows=range(32),
+    tape_format='vhs',
+    eight_bit=False,
+    brightness=SIGNAL_CONTROL_NEUTRAL,
+    sharpness=SIGNAL_CONTROL_NEUTRAL,
+    gain=SIGNAL_CONTROL_NEUTRAL,
+    contrast=SIGNAL_CONTROL_NEUTRAL,
+    brightness_coeff=BRIGHTNESS_COEFF_DEFAULT,
+    sharpness_coeff=SHARPNESS_COEFF_DEFAULT,
+    gain_coeff=GAIN_COEFF_DEFAULT,
+    contrast_coeff=CONTRAST_COEFF_DEFAULT,
+    signal_controls=None,
+    decoder_tuning=None,
+    line_selection=None,
+):
     if mode == 'slice':
         force_cpu = True
-    Line.configure(config, force_cpu, prefer_opencl, tape_format)
+    Line.configure(
+        config,
+        force_cpu,
+        prefer_opencl,
+        tape_format,
+        brightness=brightness,
+        sharpness=sharpness,
+        gain=gain,
+        contrast=contrast,
+        brightness_coeff=brightness_coeff,
+        sharpness_coeff=sharpness_coeff,
+        gain_coeff=gain_coeff,
+        contrast_coeff=contrast_coeff,
+    )
+    current_controls = (
+        brightness,
+        sharpness,
+        gain,
+        contrast,
+        brightness_coeff,
+        sharpness_coeff,
+        gain_coeff,
+        contrast_coeff,
+    )
+    current_decoder_tuning = (
+        tape_format,
+        int(config.extra_roll),
+        tuple(int(value) for value in config.line_start_range),
+    )
+    lines_per_frame = len(config.field_range) * 2
     for number, chunk in chunks:
         try:
+            if line_selection is not None:
+                selected_lines = line_selection()
+                if ((number % lines_per_frame) + 1) not in selected_lines:
+                    continue
+            if decoder_tuning is not None:
+                next_decoder_tuning = decoder_tuning()
+                next_tuning = (
+                    next_decoder_tuning['tape_format'],
+                    int(next_decoder_tuning['extra_roll']),
+                    tuple(int(value) for value in next_decoder_tuning['line_start_range']),
+                )
+                if next_tuning != current_decoder_tuning:
+                    current_decoder_tuning = next_tuning
+                    config = config.retuned(
+                        extra_roll=current_decoder_tuning[1],
+                        line_start_range=current_decoder_tuning[2],
+                    )
+                    Line.configure(
+                        config,
+                        force_cpu,
+                        prefer_opencl,
+                        current_decoder_tuning[0],
+                        brightness=current_controls[0],
+                        sharpness=current_controls[1],
+                        gain=current_controls[2],
+                        contrast=current_controls[3],
+                        brightness_coeff=current_controls[4],
+                        sharpness_coeff=current_controls[5],
+                        gain_coeff=current_controls[6],
+                        contrast_coeff=current_controls[7],
+                    )
+                    lines_per_frame = len(config.field_range) * 2
+            if signal_controls is not None:
+                next_controls = tuple(signal_controls())
+                if next_controls != current_controls:
+                    current_controls = next_controls
+                    Line.set_signal_controls(
+                        brightness=current_controls[0],
+                        sharpness=current_controls[1],
+                        gain=current_controls[2],
+                        contrast=current_controls[3],
+                        brightness_coeff=current_controls[4],
+                        sharpness_coeff=current_controls[5],
+                        gain_coeff=current_controls[6],
+                        contrast_coeff=current_controls[7],
+                    )
             yield getattr(Line(chunk, number), mode)(mags, rows, eight_bit)
         except Exception:
             sys.stderr.write(str(number) + '\n')

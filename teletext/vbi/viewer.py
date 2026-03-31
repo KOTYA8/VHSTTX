@@ -10,7 +10,7 @@ from OpenGL.GL import *
 
 class VBIViewer(object):
 
-    def __init__(self, lines, config, name = "VBI Viewer", width=800, height=512, nlines=32, tint=True, show_grid=True, show_slices=False, pause=False, show_line_numbers=True):
+    def __init__(self, lines, config, name = "VBI Viewer", width=800, height=512, nlines=32, tint=True, show_grid=True, show_slices=False, pause=False, show_line_numbers=True, signal_controls=None, decoder_tuning=None, tape_format='vhs', line_selection=None):
         self.config = config
         self.show_grid = show_grid
         self.tint = tint
@@ -21,6 +21,12 @@ class VBIViewer(object):
         self.label_margin = 56
         self.width = width
         self.height = height
+        self.signal_controls = signal_controls
+        self.decoder_tuning = decoder_tuning
+        self.tape_format = tape_format
+        self.line_selection = line_selection
+        self._current_signal_controls = None
+        self._current_decoder_tuning = None
 
         self.line_attr = 'resampled'
 
@@ -33,6 +39,8 @@ class VBIViewer(object):
 
         self.lines_src = lines
         self.lines = list(islice(self.lines_src, 0, self.nlines))
+        self._apply_live_decoder_tuning(rebuild=True)
+        self._apply_live_signal_controls(rebuild=True)
 
         glutInit(sys.argv)
         glutInitDisplayMode(GLUT_SINGLE | GLUT_RGB)
@@ -248,6 +256,8 @@ class VBIViewer(object):
         glEnable(GL_TEXTURE_2D)
         for n,l in enumerate(self.lines[::-1]):
             array = getattr(l, self.line_attr)
+            if self.line_selection is not None and self.line_number(l) not in self.line_selection():
+                array = np.zeros_like(array)
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, array.size, 1, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, np.clip(array, 0, 255).astype(np.uint8).tostring())
             if self.tint:
                 if l.is_teletext:
@@ -275,8 +285,80 @@ class VBIViewer(object):
 
         glDisable(GL_TEXTURE_2D)
 
+    def _apply_live_signal_controls(self, rebuild=False):
+        if self.signal_controls is None:
+            return
+
+        from teletext.vbi.line import Line
+
+        raw_controls = tuple(self.signal_controls())
+        controls = (
+            int(raw_controls[0]),
+            int(raw_controls[1]),
+            int(raw_controls[2]),
+            int(raw_controls[3]),
+            float(raw_controls[4]),
+            float(raw_controls[5]),
+            float(raw_controls[6]),
+            float(raw_controls[7]),
+        )
+        if not rebuild and controls == self._current_signal_controls:
+            return
+
+        self._current_signal_controls = controls
+        Line.set_signal_controls(
+            brightness=controls[0],
+            sharpness=controls[1],
+            gain=controls[2],
+            contrast=controls[3],
+            brightness_coeff=controls[4],
+            sharpness_coeff=controls[5],
+            gain_coeff=controls[6],
+            contrast_coeff=controls[7],
+        )
+
+        if self.lines:
+            self.lines = [Line(line._original_bytes, line._number) for line in self.lines]
+
+    def _apply_live_decoder_tuning(self, rebuild=False):
+        if self.decoder_tuning is None:
+            return
+
+        from teletext.vbi.line import Line
+
+        next_tuning = self.decoder_tuning()
+        tuning = (
+            next_tuning['tape_format'],
+            int(next_tuning['extra_roll']),
+            tuple(int(value) for value in next_tuning['line_start_range']),
+        )
+        if not rebuild and tuning == self._current_decoder_tuning:
+            return
+
+        self._current_decoder_tuning = tuning
+        self.tape_format = tuning[0]
+        self.config = self.config.retuned(extra_roll=tuning[1], line_start_range=tuning[2])
+        Line.configure(
+            self.config,
+            force_cpu=True,
+            tape_format=self.tape_format,
+            brightness=self._current_signal_controls[0] if self._current_signal_controls is not None else 50,
+            sharpness=self._current_signal_controls[1] if self._current_signal_controls is not None else 50,
+            gain=self._current_signal_controls[2] if self._current_signal_controls is not None else 50,
+            contrast=self._current_signal_controls[3] if self._current_signal_controls is not None else 50,
+            brightness_coeff=self._current_signal_controls[4] if self._current_signal_controls is not None else 48.0,
+            sharpness_coeff=self._current_signal_controls[5] if self._current_signal_controls is not None else 3.0,
+            gain_coeff=self._current_signal_controls[6] if self._current_signal_controls is not None else 0.5,
+            contrast_coeff=self._current_signal_controls[7] if self._current_signal_controls is not None else 0.5,
+        )
+        if self.lines:
+            self.lines = [Line(line._original_bytes, line._number) for line in self.lines]
+
     def display(self):
         glClear(GL_COLOR_BUFFER_BIT)
+
+        self._apply_live_decoder_tuning()
+        self._apply_live_signal_controls()
 
         self.set_plot_projection()
 
@@ -306,4 +388,5 @@ class VBIViewer(object):
 
             if len(next_lines) > 0:
                 self.lines = next_lines
+                self._apply_live_signal_controls(rebuild=True)
             self.single_step = False
