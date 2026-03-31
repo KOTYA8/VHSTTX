@@ -16,11 +16,16 @@ from teletext.viewer import DirectPageBuffer, ServiceNavigator, describe_service
 from teletext.viewer import (
     build_split_pattern,
     count_html_outputs,
+    ensure_html_assets,
     count_split_t42_outputs,
+    extract_html_preview_entries,
     export_html,
     export_selected_html,
     export_selected_t42,
     export_split_t42,
+    list_html_folder_entries,
+    load_service_from_t42_directory,
+    normalise_html_subpage_fragment,
     render_subpage_text,
 )
 
@@ -374,7 +379,9 @@ class TestServiceExportHelpers(unittest.TestCase):
 
         self.assertTrue(t42_path.exists())
         self.assertTrue(html_path.exists())
-        self.assertIn('Page 100-0001', html_path.read_text(encoding='utf-8'))
+        html = html_path.read_text(encoding='utf-8')
+        self.assertIn('Page 100-0001', html)
+        self.assertIn('teletext2.ttf', html)
 
     def test_export_html_can_split_subpages(self):
         paths = export_html(self.service, self.tempdir.name, include_subpages=True)
@@ -384,6 +391,16 @@ class TestServiceExportHelpers(unittest.TestCase):
             ['100-0000.html', '100-0001.html', '101-0000.html'],
         )
         self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext.css').exists())
+        self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext2.ttf').exists())
+        self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext4.ttf').exists())
+
+    def test_ensure_html_assets_copies_styles_and_fonts(self):
+        ensure_html_assets(self.tempdir.name)
+
+        self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext.css').exists())
+        self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext-noscanlines.css').exists())
+        self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext2.ttf').exists())
+        self.assertTrue((pathlib.Path(self.tempdir.name) / 'teletext4.ttf').exists())
 
     def test_export_html_helpers_handle_duplicate_subpages(self):
         duplicate = make_subpage(1, 0x00, 0x0000, header_text='100 TELEINF DUPLICATE')
@@ -415,3 +432,68 @@ class TestServiceExportHelpers(unittest.TestCase):
         self.assertEqual(len(lines), 25)
         self.assertIn('P100', lines[0])
         self.assertIn('HELLO WORLD', lines[1])
+
+    def test_render_subpage_text_can_reveal_concealed_text(self):
+        subpage = self.service.magazines[1].pages[0x00].subpages[0x0000]
+        subpage.displayable[0, 0] = 0x18
+        subpage.displayable[0, 1] = ord('A')
+
+        hidden = render_subpage_text(0x100, subpage)
+        revealed = render_subpage_text(0x100, subpage, reveal=True)
+
+        self.assertNotIn('A', hidden.splitlines()[1][:2])
+        self.assertIn('A', revealed.splitlines()[1][:2])
+
+    def test_extract_html_preview_entries_preserves_duplicate_labels(self):
+        html = '''
+            <html><body>
+            <div class="subpage" id="0000">A</div>
+            <div class="subpage" id="0000">B</div>
+            <div class="subpage" id="0001">C</div>
+            </body></html>
+        '''
+
+        entries = extract_html_preview_entries(html)
+
+        self.assertEqual([entry.label for entry in entries], ['0000', '0000 (2)', '0001'])
+        self.assertEqual(entries[0].identifier, '0000')
+        self.assertIn('A', entries[0].html)
+
+    def test_normalise_html_subpage_fragment_makes_rows_block_elements(self):
+        fragment = '''
+            <div class="subpage" id="0000">
+                <span class="row"><span class="f7">A</span><span class="f2">B</span></span>
+                <span class="row"><span class="f7">C</span></span>
+            </div>
+        '''
+
+        normalised = normalise_html_subpage_fragment(fragment)
+
+        self.assertNotIn('<span class="row">', normalised)
+        self.assertEqual(normalised.count('<div class="row">'), 2)
+        self.assertIn('<div class="subpage" id="0000">', normalised)
+        self.assertIn('<span class="f7">A</span><span class="f2">B</span></div>', normalised)
+
+    def test_list_html_folder_entries_sorts_pages_and_subpages(self):
+        directory = pathlib.Path(self.tempdir.name)
+        for name in ('101.html', '100-0001.html', '100.html', 'misc.html'):
+            (directory / name).write_text('<html></html>', encoding='utf-8')
+
+        entries = list_html_folder_entries(directory)
+
+        self.assertEqual(
+            [entry.file_name for entry in entries],
+            ['100.html', '100-0001.html', '101.html', 'misc.html'],
+        )
+        self.assertEqual(entries[0].label, 'P100')
+        self.assertEqual(entries[1].label, 'P100 / 0001')
+
+    def test_load_service_from_t42_directory_collects_all_pages(self):
+        directory = pathlib.Path(self.tempdir.name)
+        export_selected_t42(self.service, directory / '100.t42', 0x100)
+        export_selected_t42(self.service, directory / '101.t42', 0x101)
+
+        loaded = load_service_from_t42_directory(directory)
+
+        navigator = ServiceNavigator(loaded)
+        self.assertEqual(navigator.page_numbers, (0x100, 0x101))

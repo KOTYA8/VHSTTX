@@ -54,7 +54,10 @@ setup(
             'decoder.qml',
             'editor.ui',
             'teletext.png',
+            'teletext.css',
+            'teletext-noscanlines.css',
             'teletext2.ttf',
+            'teletext4.ttf',
         ]
     },
     entry_points={
@@ -77,7 +80,7 @@ setup(
         'OpenCL': ['pyopencl'],
         'viewer': ['PyOpenGL'],
         'profiler': ['plop'],
-        'qt': ['PyQt5'],
+        'qt': ['PyQt5', 'PyQtWebEngine'],
         'audio': ['spectrum', 'miniaudio'],
     }
 )
