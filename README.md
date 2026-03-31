@@ -30,6 +30,13 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Full screen - ✅ realized
 * Teletext service information - ⚠️
 
+## **VBI Tune/VBI Tune Live** - ✅ realized
+* Signal Controls (Brightness/Sharpness/Gain/Contrast) - ✅ realized
+* Decoder Tuning (Template/Extra Roll/Line Start Range) - ✅ realized
+* Line Selection - ✅ realized
+* Fix Capture Card - ✅ realized
+* Arguments - ✅ realized
+
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
 * **Used Line (record/deconvolve)** - ✅ realized
@@ -50,9 +57,22 @@ pipx install -e .[qt] --force
 ```
 ttviewer-install
 ```
+* **VBI Tune for **record/deconvolve**/**VBI Tune Live for **deconvolve/vbiview** (`-vtn/-vtnl`) - VBI Tune: simplifies VBI setup before recording. VBI Tune Live: selects real-time value for VBI. 
+```
+teletext record -vtn test.vbi
+teletext deconvolve -vtn test.vbi > test.t42
+```
+```
+teletext deconvolve -vtnl test.vbi > test.t42
+teletext vbiview -vtnl test.vbi
+```   
+1. Install QT
+```
+pipx install -e .[qt] --force
+```
 
 # Functions
-* **Ignore Line** (`record/deconvolve`) - Ignoring lines when writing to VBI and deconvolving to t42.   
+* **Ignore Line** for **record**/**deconvolve**/**vbiview** (`-il/--ignore-line`) - Ignoring lines when writing to VBI and deconvolving to t42.   
 ```
 teletext record --ignore-line 1,2,20 test.vbi
 ```
@@ -60,7 +80,7 @@ teletext record --ignore-line 1,2,20 test.vbi
 teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42
 ```
 
-* **Used Line** (`record/deconvolve`) - Using only selected lines when writing to VBI and deconvolving to t42.   
+* **Used Line** for **record**/**deconvolve**/**vbiview** (`-ul/--used-line`) - Using only selected lines when writing to VBI and deconvolving to t42.   
 ```
 teletext record --used-line 4,5 test.vbi
 ```
@@ -68,15 +88,45 @@ teletext record --used-line 4,5 test.vbi
 teletext deconvolve --used-line 4,5 test.vbi > test.t42
 ```
    
-* **Line numbering** (`vbiview`) - Line numbering in VBI Viewer.   
+* **Line numbering** for **vbiview** - Line numbering in VBI Viewer.   
    
-* **Templates** (`vbiview/deconvolve`)    
+* **Templates** for **vbiview/deconvolve** (`-f`)   
 (`fs200sp`, `fs200lp`, `hd630lp`, `hd630sp`, `grundig_2x4`, `hrs9700`, `hd630vdlp`, `hd630vdlp24`, `fs200vdsp`, `fs200vdlp`, `betacamsp`, `betamax`) - Adding templates (VCRs) for deconvolution and VBI viewing.   
 ```
 teletext vbiview -f hd630sp test.vbi   
 ```
 ```
 teletext deconvolve -f hd630lp test.vbi > test.t42  
+```
+* **Brightness/Sharpness/Gain/Contrast** for **record**/**deconvolve**/**vbiview** (`-bn/--brightness`/`-sp/--sharpness`/`-gn/--gain`/`-ct/--contrast`) - Adjusting Values ​​for VBI from **0** to **100**.   
+```
+teletext record -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
+```
+```
+teletext deconvolve -bn 25 -sp 30 -gn 50 -ct 0 test.vbi > test.t42
+```
+```
+teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
+```
+* **Brightness/Sharpness/Gain/Contrast Coefficients** for **record**/**deconvolve**/**vbiview** (`-bncf/--brightness-coeff`/`-spcf/--sharpness-coeff`/`-gncf/--gain-coeff`/`-ctcf/--contrast-coeff`) - Increasing coefficients for values from **0.00** to **100**.   
+```
+teletext record -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
+```
+```
+teletext deconvolve -bn 25 -sp 30 -gn 50 -ct -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 0 test.vbi > test.t42
+```
+```
+teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
+```
+* **Fix Capture Card** for **record**/**deconvolve**/**vbiview** (`-fcc/--fix-capture-card`) - Fixes bug with increasing brightness in vbi0, runs through ffmpeg. How long does it work in seconds and after how long will it turn on in minutes: (`-fcc 2 3`) - runs **2 seconds** every **3 minutes** 
+```
+teletext record -fcc 2 3 test.vbi
+```
+```
+teletext deconvolve -fcc 2 3 test.vbi > test.t42
+```
+```
+teletext vbiview -fcc 2 3 test.vbi
 ```
 
 # Guide for Functions
@@ -163,4 +213,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V1** - Support **--ignore-line** and **--used-line** for `record` and `deconvolve`. Numbering in `vbiview`. Templates: **fs200sp**, **fs200lp**, **hd630lp**, **hd630sp**, **grundig_2x4**, **hrs9700**, **hd630vdlp**, **hd630vdlp24**, **fs200vdsp**, **fs200vdlp**, **betacamsp**, **betamax**. New **Teletext viewer**. Language support for further functions: **Italian**, **German**, **French**, **Polish**, **Dutch**.
+* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Fixed auto-brightness on vbi0 (`-fcc`). Added: **VBI Tune** and **VBI Tune Live** application.
