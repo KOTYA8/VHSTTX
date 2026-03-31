@@ -12,6 +12,8 @@ python3 setup.py install
 ```
 ### Update
 ```
+cd VHSTTX
+git pull
 pipx install -e .[qt] --force
 python3 setup.py install
 ```
