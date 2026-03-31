@@ -74,18 +74,24 @@ teletext vbicrop test.vbi
 # Functions
 * **Ignore Line** for **record**/**deconvolve**/**vbiview** (`-il/--ignore-line`) - Ignoring lines when writing to VBI and deconvolving to t42.   
 ```
-teletext record --ignore-line 1,2,20 test.vbi
+teletext record -il 1,2,20 test.vbi
 ```
 ```
-teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42
+teletext deconvolve -il 1,2,20 test.vbi > test.t42
+```
+```
+teletext vbiview -il 4,5 test.vbi > test.t42
 ```
 
 * **Used Line** for **record**/**deconvolve**/**vbiview** (`-ul/--used-line`) - Using only selected lines when writing to VBI and deconvolving to t42.   
 ```
-teletext record --used-line 4,5 test.vbi
+teletext record -ul 4,5 test.vbi
 ```
 ```
-teletext deconvolve --used-line 4,5 test.vbi > test.t42
+teletext deconvolve -ul 4,5 test.vbi > test.t42
+```
+```
+teletext vbiview -ul 4,5 test.vbi > test.t42
 ```
    
 * **Line numbering** for **vbiview** - Line numbering in VBI Viewer.   
@@ -98,7 +104,7 @@ teletext vbiview -f hd630sp test.vbi
 ```
 teletext deconvolve -f hd630lp test.vbi > test.t42  
 ```
-* **Brightness/Sharpness/Gain/Contrast** for **record**/**deconvolve**/**vbiview** (`-bn/--brightness`/`-sp/--sharpness`/`-gn/--gain`/`-ct/--contrast`) - Adjusting Values ​​for VBI from **0** to **100**.   
+* **Brightness/Sharpness/Gain/Contrast** for **record**/**deconvolve**/**vbiview** (`-bn/--brightness`/`-sp/--sharpness`/`-gn/--gain`/`-ct/--contrast`) - Adjusting Values ​​for VBI from **0** to **100** (**50** - no change).   
 ```
 teletext record -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
 ```
@@ -128,7 +134,7 @@ teletext deconvolve -fcc 2 3 test.vbi > test.t42
 ```
 teletext vbiview -fcc 2 3 test.vbi
 ```
-* **URXVT Terminal** for **deconvolve** (`-u/--urxvt`) - Urxvt terminal for viewing teletext in real time.
+* **URXVT Terminal** for **deconvolve** (`-u/--urxvt`) - Urxvt terminal for **viewing individual teletext pages and filters in real time**.
 ```
 teletext deconvolve test.vbi -u -p 100
 teletext deconvolve test.vbi -u -r 0
@@ -205,7 +211,7 @@ sudo modprobe -v bttv card=16 tuner=0 radio=0
 sudo touch /etc/modprobe.d/bttv.conf
 ```
 3. In a folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
-### Install Terminal for Teletext
+### Install Terminal for Teletext (new Teletext Viewer made)
 ```
 sudo apt-get install tv-fonts rxvt-unicode
 cd /etc/fonts/conf.d
@@ -220,7 +226,7 @@ teletext service test.t42 | teletext interactive
 ```
 
 # Additional features
-### Fixing self-brightness on Capture Card
+### Fixing self-brightness on Capture Card (made in the version 2)
 1. Installing ffmpeg
 ```
 sudo apt install ffmpeg
