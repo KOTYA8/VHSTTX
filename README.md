@@ -49,6 +49,9 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * **Ignore Line (record/deconvolve)** - ✅ realized
 * **Used Line (record/deconvolve)** - ✅ realized
 * **Line numbering (vbiview)** - ✅ realized
+* **Brightness/Sharpness/Gain/Contrast** - ✅ realized
+* **Fix Capture Card** - ✅ realized
+* **URXVT Terminal** - ✅ realized
 * **Spellcheck** - ⚠️ bugs
 
 # Apps
