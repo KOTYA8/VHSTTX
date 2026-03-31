@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import pathlib
 import platform
+import threading
 
 import sys
 from collections import defaultdict
@@ -21,6 +22,7 @@ from teletext.subpage import Subpage
 from teletext import pipeline
 from teletext.cli.training import training
 from teletext.cli.vbi import vbi
+from teletext.capturefix import CaptureCardFixer, normalise_fix_capture_card
 from teletext.vbi.config import Config
 
 
@@ -51,6 +53,49 @@ def parse_ignore_lines(ctx, param, value):
 
 def parse_used_lines(ctx, param, value):
     return parse_frame_lines(ctx, param, value)
+
+
+def signalcontrolparams(f):
+    options = [
+        click.option('-bn', '--brightness', type=click.IntRange(0, 100), default=50, show_default=True,
+                     help='Software brightness control for VBI samples. 50 = unchanged.'),
+        click.option('-sp', '--sharpness', type=click.IntRange(0, 100), default=50, show_default=True,
+                     help='Software sharpness control for VBI samples. 50 = unchanged.'),
+        click.option('-gn', '--gain', type=click.IntRange(0, 100), default=50, show_default=True,
+                     help='Software gain control for VBI samples. 50 = unchanged.'),
+        click.option('-ct', '--contrast', type=click.IntRange(0, 100), default=50, show_default=True,
+                     help='Software contrast control for VBI samples. 50 = unchanged.'),
+        click.option('-bncf', '--brightness-coeff', type=click.FloatRange(0.0), default=48.0, show_default=True,
+                     help='Brightness response coefficient.'),
+        click.option('-spcf', '--sharpness-coeff', type=click.FloatRange(0.0), default=3.0, show_default=True,
+                     help='Sharpness response coefficient.'),
+        click.option('-gncf', '--gain-coeff', type=click.FloatRange(0.0), default=0.5, show_default=True,
+                     help='Gain response coefficient.'),
+        click.option('-ctcf', '--contrast-coeff', type=click.FloatRange(0.0), default=0.5, show_default=True,
+                     help='Contrast response coefficient.'),
+    ]
+    for decorator in reversed(options):
+        f = decorator(f)
+    return f
+
+
+def previewtuneparams(f):
+    options = [
+        click.option('-vtn', '--vbi-tune', is_flag=True, help='Open the VBI tuning window before starting processing.'),
+        click.option('-vtnl', '--vbi-tune-live', is_flag=True, help='Open the VBI tuning window and apply changes live.'),
+    ]
+    for decorator in reversed(options):
+        f = decorator(f)
+    return f
+
+
+def fixcaptureparams(f):
+    return click.option(
+        '-fcc', '--fix-capture-card',
+        type=(click.IntRange(1), click.IntRange(1)),
+        default=None,
+        help='Run ffmpeg on /dev/video0 for N seconds every M minutes to keep capture card levels stable.',
+    )(f)
 
 
 def useful_frame_lines(config):
@@ -136,6 +181,215 @@ def filter_ignored_chunks(chunks, config, ignore_lines):
         return LenWrapper(filtered, kept)
 
     return filtered
+
+
+def _extract_preview_lines_from_frame(frame, config):
+    field_range = list(config.field_range)
+    lines_per_field = len(field_range)
+    preview_lines = []
+
+    for line in range(lines_per_field * 2):
+        field, line_in_field = divmod(line, lines_per_field)
+        raw_line = (field * config.field_lines) + field_range[line_in_field]
+        start = raw_line * config.line_bytes
+        end = start + config.line_bytes
+        if end > len(frame):
+            break
+        preview_lines.append((line, frame[start:end]))
+
+    return preview_lines
+
+
+def make_record_preview_provider(device, config):
+    frame_size = config.line_bytes * config.field_lines * 2
+
+    def reset_if_possible():
+        try:
+            device.seek(0)
+            return True
+        except (AttributeError, OSError):
+            return False
+
+    def provider():
+        frame = device.read(frame_size)
+        if len(frame) < frame_size:
+            if not reset_if_possible():
+                return []
+            frame = device.read(frame_size)
+            if len(frame) < frame_size:
+                return []
+        return _extract_preview_lines_from_frame(frame, config)
+
+    return provider
+
+
+def make_line_preview_provider(chunker, config, n_lines=None):
+    preview_lines = n_lines or useful_frame_lines(config)
+
+    def line_iterator():
+        if n_lines is not None:
+            return iter(chunker(config.line_bytes, n_lines, range(n_lines)))
+        return iter(chunker(config.line_bytes, config.field_lines, config.field_range))
+
+    iterator = line_iterator()
+
+    def provider():
+        nonlocal iterator
+        lines = list(itertools.islice(iterator, preview_lines))
+        if len(lines) < preview_lines:
+            iterator = line_iterator()
+            if not lines:
+                lines = list(itertools.islice(iterator, preview_lines))
+        return lines
+
+    return provider
+
+
+def open_tuning_dialog(
+    title,
+    brightness,
+    sharpness,
+    gain,
+    contrast,
+    brightness_coeff,
+    sharpness_coeff,
+    gain_coeff,
+    contrast_coeff,
+    preview_provider=None,
+    config=None,
+    tape_format='vhs',
+    live=False,
+    decoder_tuning=None,
+    tape_formats=None,
+    line_selection=None,
+    line_count=None,
+    fix_capture_card=None,
+):
+    try:
+        from teletext.gui.vbituner import run_tuning_dialog
+    except ModuleNotFoundError as e:
+        if e.name == 'PyQt5':
+            raise click.UsageError(f'{e.msg}. PyQt5 is not installed. VBI tuning window is not available.')
+        raise
+
+    result = run_tuning_dialog(
+        title,
+        controls=(
+            brightness,
+            sharpness,
+            gain,
+            contrast,
+            brightness_coeff,
+            sharpness_coeff,
+            gain_coeff,
+            contrast_coeff,
+        ),
+        preview_provider=preview_provider,
+        config=config,
+        tape_format=tape_format,
+        live=live,
+        decoder_tuning=decoder_tuning,
+        tape_formats=tape_formats,
+        line_selection=line_selection,
+        line_count=useful_frame_lines(config) if line_count is None and config is not None else (line_count or 32),
+        fix_capture_card=fix_capture_card,
+    )
+    return result
+
+
+def open_live_tuner(
+    title,
+    brightness,
+    sharpness,
+    gain,
+    contrast,
+    brightness_coeff,
+    sharpness_coeff,
+    gain_coeff,
+    contrast_coeff,
+    decoder_tuning=None,
+    tape_formats=None,
+    line_selection=None,
+    line_count=32,
+    fix_capture_card=None,
+):
+    try:
+        from teletext.gui.vbituner import launch_live_tuner
+    except ModuleNotFoundError as e:
+        if e.name == 'PyQt5':
+            raise click.UsageError(f'{e.msg}. PyQt5 is not installed. VBI tuning window is not available.')
+        raise
+
+    return launch_live_tuner(
+        title,
+        controls=(
+            brightness,
+            sharpness,
+            gain,
+            contrast,
+            brightness_coeff,
+            sharpness_coeff,
+            gain_coeff,
+            contrast_coeff,
+        ),
+        decoder_tuning=decoder_tuning,
+        tape_formats=tape_formats,
+        line_selection=line_selection,
+        line_count=line_count,
+        fix_capture_card=fix_capture_card,
+    )
+
+
+def current_decoder_tuning(config, tape_format):
+    return {
+        'tape_format': tape_format,
+        'extra_roll': int(config.extra_roll),
+        'line_start_range': tuple(int(value) for value in config.line_start_range),
+    }
+
+
+def apply_decoder_tuning(config, tape_format, decoder_tuning):
+    if decoder_tuning is None:
+        return config, tape_format
+    updated_config = config.retuned(
+        extra_roll=int(decoder_tuning['extra_roll']),
+        line_start_range=tuple(int(value) for value in decoder_tuning['line_start_range']),
+    )
+    return updated_config, decoder_tuning['tape_format']
+
+
+def current_line_selection(config, ignore_lines=(), used_lines=()):
+    selected_lines, _ = resolve_frame_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
+    return frozenset(sorted(selected_lines))
+
+
+def current_fix_capture_card(fix_capture_card):
+    if fix_capture_card is None:
+        return normalise_fix_capture_card(None)
+    return normalise_fix_capture_card({
+        'enabled': True,
+        'seconds': int(fix_capture_card[0]),
+        'interval_minutes': int(fix_capture_card[1]),
+    })
+
+
+def start_live_fix_capture_card(live_tuner, initial_settings):
+    fixer = CaptureCardFixer()
+    fixer.update(initial_settings)
+    stop_event = threading.Event()
+
+    def poll():
+        last_settings = None
+        while not stop_event.is_set():
+            settings = normalise_fix_capture_card(live_tuner.fix_capture_card())
+            if settings != last_settings:
+                fixer.update(settings)
+                last_settings = settings
+            stop_event.wait(0.5)
+
+    thread = threading.Thread(target=poll, name='capture-card-fix-live', daemon=True)
+    thread.start()
+    return fixer, stop_event, thread
 
 
 @click.group(invoke_without_command=True, no_args_is_help=True)
@@ -654,17 +908,21 @@ def html(packets, outdir, template, localcodepage):
 @teletext.command()
 @click.argument('output', type=click.File('wb'), default='-')
 @click.option('-d', '--device', type=click.File('rb'), default='/dev/vbi0', help='Capture device.')
-@click.option('--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
+@click.option('-il', '--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
               help='Ignore 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 23,24,25.')
-@click.option('--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
+@click.option('-ul', '--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
               help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
+@signalcontrolparams
+@fixcaptureparams
+@click.option('-vtn', '--vbi-tune', is_flag=True, help='Open the VBI tuning window before starting capture.')
 @carduser()
-def record(output, device, ignore_lines, used_lines, config):
+def record(output, device, ignore_lines, used_lines, brightness, sharpness, gain, contrast, brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff, fix_capture_card, vbi_tune, config):
 
     """Record VBI samples from a capture device."""
 
     import struct
     import sys
+    from teletext.vbi.line import process_frame_bytes
 
     if output.name.startswith('/dev/vbi'):
         raise click.UsageError(f'Refusing to write output to VBI device. Did you mean -d?')
@@ -672,15 +930,58 @@ def record(output, device, ignore_lines, used_lines, config):
     _, ignore_lines = resolve_frame_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
     ignored_ranges = ignored_frame_line_byte_ranges(config, ignore_lines)
     preserve_tail = 4 if config.card == 'bt8x8' else 0
+    selected_lines = current_line_selection(config, ignore_lines=ignore_lines)
+    fix_capture_card_settings = current_fix_capture_card(fix_capture_card)
 
-    chunks = FileChunker(device, config.line_length*config.field_lines*2)
+    if vbi_tune:
+        result = open_tuning_dialog(
+            'VBI Tune - Record',
+            brightness,
+            sharpness,
+            gain,
+            contrast,
+            brightness_coeff,
+            sharpness_coeff,
+            gain_coeff,
+            contrast_coeff,
+            config=config,
+            line_selection=selected_lines,
+            fix_capture_card=fix_capture_card_settings,
+        )
+        if result is None:
+            return
+        values, _, selected_lines, fix_capture_card_settings = result
+        brightness, sharpness, gain, contrast, brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff = values
+        ignore_lines = frozenset(range(1, useful_frame_lines(config) + 1)) - frozenset(selected_lines)
+        ignored_ranges = ignored_frame_line_byte_ranges(config, ignore_lines)
+        try:
+            device.seek(0)
+        except (AttributeError, OSError):
+            pass
+
+    chunks = FileChunker(device, config.line_bytes*config.field_lines*2)
     bar = tqdm(chunks, unit=' Frames')
+    fixer = CaptureCardFixer()
+    fixer.update(fix_capture_card_settings)
 
     prev_seq = None
     dropped = 0
 
     try:
         for n, chunk in bar:
+            chunk = process_frame_bytes(
+                chunk,
+                config,
+                brightness=brightness,
+                sharpness=sharpness,
+                gain=gain,
+                contrast=contrast,
+                brightness_coeff=brightness_coeff,
+                sharpness_coeff=sharpness_coeff,
+                gain_coeff=gain_coeff,
+                contrast_coeff=contrast_coeff,
+                preserve_tail=preserve_tail,
+            )
             if ignored_ranges:
                 chunk = blank_ignored_frame_lines(chunk, ignored_ranges, preserve_tail=preserve_tail)
             output.write(chunk)
@@ -693,15 +994,24 @@ def record(output, device, ignore_lines, used_lines, config):
 
     except KeyboardInterrupt:
         pass
+    finally:
+        fixer.close()
 
 
 @teletext.command()
 @click.option('-p', '--pause', is_flag=True, help='Start the viewer paused.')
 @click.option('-f', '--tape-format', type=click.Choice(Config.tape_formats), default='vhs', help='Source VCR format.')
 @click.option('-n', '--n-lines', type=int, default=None, help='Number of lines to display. Overrides card config.')
+@click.option('-il', '--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
+              help='Ignore 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 23,24,25.')
+@click.option('-ul', '--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
+              help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
+@signalcontrolparams
+@fixcaptureparams
+@click.option('-vtnl', '--vbi-tune-live', is_flag=True, help='Open the VBI tuning window with live preview instead of the OpenGL viewer.')
 @carduser(extended=True)
 @chunkreader()
-def vbiview(chunker, config, pause, tape_format, n_lines):
+def vbiview(chunker, config, pause, tape_format, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff, fix_capture_card, vbi_tune_live):
 
     """Display raw VBI samples with OpenGL."""
 
@@ -715,7 +1025,19 @@ def vbiview(chunker, config, pause, tape_format, n_lines):
     else:
         from teletext.vbi.line import Line
 
-        Line.configure(config, force_cpu=True, tape_format=tape_format)
+        Line.configure(
+            config,
+            force_cpu=True,
+            tape_format=tape_format,
+            brightness=brightness,
+            sharpness=sharpness,
+            gain=gain,
+            contrast=contrast,
+            brightness_coeff=brightness_coeff,
+            sharpness_coeff=sharpness_coeff,
+            gain_coeff=gain_coeff,
+            contrast_coeff=contrast_coeff,
+        )
 
         if n_lines is not None:
             chunks = chunker(config.line_bytes, n_lines, range(n_lines))
@@ -723,8 +1045,45 @@ def vbiview(chunker, config, pause, tape_format, n_lines):
             chunks = chunker(config.line_bytes, config.field_lines, config.field_range)
 
         lines = (Line(chunk, number) for number, chunk in chunks)
+        live_tuner = None
+        signal_controls = None
+        selected_lines = current_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
+        line_selection = lambda: selected_lines
+        fix_capture_card_settings = current_fix_capture_card(fix_capture_card)
+        fixer = None
+        fixer_stop = None
+        fixer_thread = None
+        if vbi_tune_live:
+            live_tuner = open_live_tuner(
+                'VBI Tune Live',
+                brightness, sharpness, gain, contrast,
+                brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff,
+                decoder_tuning=current_decoder_tuning(config, tape_format),
+                tape_formats=Config.tape_formats,
+                line_selection=selected_lines,
+                line_count=useful_frame_lines(config),
+                fix_capture_card=fix_capture_card_settings,
+            )
+            signal_controls = live_tuner.values
+            decoder_tuning = live_tuner.decoder_tuning
+            line_selection = live_tuner.line_selection
+            fixer, fixer_stop, fixer_thread = start_live_fix_capture_card(live_tuner, fix_capture_card_settings)
+        else:
+            decoder_tuning = None
+            fixer = CaptureCardFixer()
+            fixer.update(fix_capture_card_settings)
 
-        VBIViewer(lines, config, pause=pause, nlines=n_lines)
+        try:
+            VBIViewer(lines, config, pause=pause, nlines=n_lines, signal_controls=signal_controls, decoder_tuning=decoder_tuning, tape_format=tape_format, line_selection=line_selection)
+        finally:
+            if fixer_stop is not None:
+                fixer_stop.set()
+            if fixer_thread is not None:
+                fixer_thread.join(timeout=1)
+            if fixer is not None:
+                fixer.close()
+            if live_tuner is not None:
+                live_tuner.close()
 
 
 @teletext.command()
@@ -735,10 +1094,13 @@ def vbiview(chunker, config, pause, tape_format, n_lines):
 @click.option('-O', '--prefer-opencl', is_flag=True, default=False, help='Use OpenCL even if CUDA is available.')
 @click.option('-t', '--threads', type=int, default=multiprocessing.cpu_count(), help='Number of threads.')
 @click.option('-k', '--keep-empty', is_flag=True, help='Insert empty packets in the output when line could not be deconvolved.')
-@click.option('--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
+@click.option('-il', '--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
               help='Ignore 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 23,24,25.')
-@click.option('--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
+@click.option('-ul', '--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
               help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
+@signalcontrolparams
+@fixcaptureparams
+@previewtuneparams
 @carduser(extended=True)
 @packetwriter
 @chunkreader()
@@ -746,55 +1108,138 @@ def vbiview(chunker, config, pause, tape_format, n_lines):
 @paginated()
 @progressparams(progress=True, mag_hist=True)
 @click.option('--rejects/--no-rejects', default=True, help='Display percentage of lines rejected.')
-def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eight_bit, force_cpu, prefer_opencl, threads, keep_empty, ignore_lines, used_lines, progress, mag_hist, row_hist, err_hist, rejects, tape_format):
+def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eight_bit, force_cpu, prefer_opencl, threads, keep_empty, ignore_lines, used_lines, brightness, sharpness, gain, contrast, brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff, fix_capture_card, vbi_tune, vbi_tune_live, progress, mag_hist, row_hist, err_hist, rejects, tape_format):
 
     """Deconvolve raw VBI samples into Teletext packets."""
 
     if keep_empty and paginate:
         raise click.UsageError("Can't keep empty packets when paginating.")
+    if vbi_tune and vbi_tune_live:
+        raise click.UsageError("Use either -vtn or -vtnl, not both.")
 
     from teletext.vbi.line import process_lines
 
     if force_cpu:
         sys.stderr.write('GPU disabled by user request.\n')
 
+    fix_capture_card_settings = current_fix_capture_card(fix_capture_card)
     _, ignore_lines = resolve_frame_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
+    selected_lines = current_line_selection(config, ignore_lines=ignore_lines)
     chunks = chunker(config.line_bytes, config.field_lines, config.field_range)
-    chunks = filter_ignored_chunks(chunks, config, ignore_lines)
+    if not vbi_tune_live:
+        chunks = filter_ignored_chunks(chunks, config, ignore_lines)
 
     if progress:
         chunks = tqdm(chunks, unit='L', dynamic_ncols=True)
         if any((mag_hist, row_hist, rejects)):
             chunks.postfix = StatsList()
 
-    packets = itermap(process_lines, chunks, threads,
-                      mode=mode, config=config,
-                      force_cpu=force_cpu, prefer_opencl=prefer_opencl,
-                      mags=mags, rows=rows,
-                      tape_format=tape_format,
-                      eight_bit=eight_bit)
+    if vbi_tune:
+        result = open_tuning_dialog(
+            'VBI Tune - Deconvolve',
+            brightness,
+            sharpness,
+            gain,
+            contrast,
+            brightness_coeff,
+            sharpness_coeff,
+            gain_coeff,
+            contrast_coeff,
+            decoder_tuning=current_decoder_tuning(config, tape_format),
+            tape_formats=Config.tape_formats,
+            line_selection=selected_lines,
+            line_count=useful_frame_lines(config),
+            fix_capture_card=fix_capture_card_settings,
+        )
+        if result is None:
+            return
+        values, decoder_tuning, selected_lines, fix_capture_card_settings = result
+        brightness, sharpness, gain, contrast, brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff = values
+        config, tape_format = apply_decoder_tuning(config, tape_format, decoder_tuning)
+        ignore_lines = frozenset(range(1, useful_frame_lines(config) + 1)) - frozenset(selected_lines)
+        chunks = chunker(config.line_bytes, config.field_lines, config.field_range)
+        chunks = filter_ignored_chunks(chunks, config, ignore_lines)
+        if progress:
+            chunks = tqdm(chunks, unit='L', dynamic_ncols=True)
+            if any((mag_hist, row_hist, rejects)):
+                chunks.postfix = StatsList()
 
-    if progress and rejects:
-        packets = Rejects(packets)
-        chunks.postfix.append(packets)
-
-    if keep_empty:
-        packets = (p if isinstance(p, Packet) else Packet() for p in packets)
+    live_tuner = None
+    signal_controls = None
+    fixer = None
+    fixer_stop = None
+    fixer_thread = None
+    if vbi_tune_live:
+        if threads != 1:
+            sys.stderr.write('Live VBI tuning forces --threads 1.\n')
+            threads = 1
+        live_tuner = open_live_tuner(
+            'VBI Tune Live - Deconvolve',
+            brightness, sharpness, gain, contrast,
+            brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff,
+            decoder_tuning=current_decoder_tuning(config, tape_format),
+            tape_formats=Config.tape_formats,
+            line_selection=selected_lines,
+            line_count=useful_frame_lines(config),
+            fix_capture_card=fix_capture_card_settings,
+        )
+        signal_controls = live_tuner.values
+        decoder_tuning = live_tuner.decoder_tuning
+        line_selection = live_tuner.line_selection
+        fixer, fixer_stop, fixer_thread = start_live_fix_capture_card(live_tuner, fix_capture_card_settings)
     else:
-        packets = (p for p in packets if isinstance(p, Packet))
+        decoder_tuning = None
+        line_selection = None
+        fixer = CaptureCardFixer()
+        fixer.update(fix_capture_card_settings)
 
-    if progress and mag_hist:
-        packets = MagHistogram(packets)
-        chunks.postfix.append(packets)
-    if progress and row_hist:
-        packets = RowHistogram(packets)
-        chunks.postfix.append(packets)
-    if progress and err_hist:
-        packets = ErrorHistogram(packets)
-        chunks.postfix.append(packets)
+    try:
+        packets = itermap(process_lines, chunks, threads,
+                          mode=mode, config=config,
+                          force_cpu=force_cpu, prefer_opencl=prefer_opencl,
+                          mags=mags, rows=rows,
+                          tape_format=tape_format,
+                          brightness=brightness, sharpness=sharpness,
+                          gain=gain, contrast=contrast,
+                          brightness_coeff=brightness_coeff,
+                          sharpness_coeff=sharpness_coeff,
+                          gain_coeff=gain_coeff,
+                          contrast_coeff=contrast_coeff,
+                          signal_controls=signal_controls,
+                          decoder_tuning=decoder_tuning,
+                          line_selection=line_selection,
+                          eight_bit=eight_bit)
 
-    if paginate:
-        for p in pipeline.paginate(packets, pages=pages, subpages=subpages):
-            yield from p
-    else:
-        yield from packets
+        if progress and rejects:
+            packets = Rejects(packets)
+            chunks.postfix.append(packets)
+
+        if keep_empty:
+            packets = (p if isinstance(p, Packet) else Packet() for p in packets)
+        else:
+            packets = (p for p in packets if isinstance(p, Packet))
+
+        if progress and mag_hist:
+            packets = MagHistogram(packets)
+            chunks.postfix.append(packets)
+        if progress and row_hist:
+            packets = RowHistogram(packets)
+            chunks.postfix.append(packets)
+        if progress and err_hist:
+            packets = ErrorHistogram(packets)
+            chunks.postfix.append(packets)
+
+        if paginate:
+            for p in pipeline.paginate(packets, pages=pages, subpages=subpages):
+                yield from p
+        else:
+            yield from packets
+    finally:
+        if fixer_stop is not None:
+            fixer_stop.set()
+        if fixer_thread is not None:
+            fixer_thread.join(timeout=1)
+        if fixer is not None:
+            fixer.close()
+        if live_tuner is not None:
+            live_tuner.close()
