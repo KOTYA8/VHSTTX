@@ -122,7 +122,7 @@ teletext deconvolve -fcc 2 3 test.vbi > test.t42
 ```
 teletext vbiview -fcc 2 3 test.vbi
 ```
-* **URXVT Terminal** for **deconvolve** (`-u/--urxvt) - Urxvt terminal for viewing teletext in real time.
+* **URXVT Terminal** for **deconvolve** (`-u/--urxvt`) - Urxvt terminal for viewing teletext in real time.
 ```
 teletext deconvolve test.vbi -u -p 100
 teletext deconvolve test.vbi -u -r 0
