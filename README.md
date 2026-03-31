@@ -37,6 +37,11 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Fix Capture Card - ✅ realized
 * Arguments - ✅ realized
 
+## **VBI Crop** - ✅ realized
+* Frame-by-frame viewing - ✅ realized
+* Frame marks - ✅ realized
+* Saving with VBI Tune Live - ✅ realized
+
 # Future Functions
 * **Ignore Line (record/deconvolve)** - ✅ realized
 * **Used Line (record/deconvolve)** - ✅ realized
@@ -45,18 +50,6 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
-### Installation Viewer
-1. Install PyQt5 and QT   
-```
-pip install PyQt5
-```
-```
-pipx install -e .[qt] --force
-```
-2. Install   
-```
-ttviewer-install
-```
 * **VBI Tune** for **record/deconvolve** (`-vtn/--vbi-tune`) - VBI Tune: simplifies VBI setup before recording.   
 **VBI Tune Live** for **deconvolve/vbiview** (`-vtnl/--vbi-tune-live`) - VBI Tune Live: selects real-time value for VBI.    
 ```
@@ -67,10 +60,9 @@ teletext deconvolve -vtn test.vbi > test.t42
 teletext deconvolve -vtnl test.vbi > test.t42
 teletext vbiview -vtnl test.vbi
 ``` 
-### Installation VBI Tune/VBI Tune Live
-1. Install QT
+* **VBI Crop** - Control panel for trimming VBI file.
 ```
-pipx install -e .[qt] --force
+teletext vbicrop test.vbi
 ```
 
 # Functions
@@ -130,6 +122,11 @@ teletext deconvolve -fcc 2 3 test.vbi > test.t42
 ```
 teletext vbiview -fcc 2 3 test.vbi
 ```
+* **URXVT Terminal** for **deconvolve** (`-u/--urxvt) - Urxvt terminal for viewing teletext in real time.
+```
+teletext deconvolve test.vbi -u -p 100
+teletext deconvolve test.vbi -u -r 0
+```
 
 # Guide for Functions
 [GUIDE](https://github.com/KOTYA8/VHSTTX/blob/main/examples/help-all.txt)
@@ -171,6 +168,23 @@ sudo apt install nvidia-cuda-toolkit nvidia-cuda-toolkit-gcc
 pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 pip install PyQt5
+```
+### Installation Teletext Viewer
+1. Install PyQt5 and QT   
+```
+pip install PyQt5
+```
+```
+pipx install -e .[qt] --force
+```
+2. Install   
+```
+ttviewer-install
+```
+### Installation Apps
+1. Install QT
+```
+pipx install -e .[qt] --force
 ```
 ### Preparing BT878
 1. Installing the QV4L2 Control Panel:
@@ -215,4 +229,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Fixed auto-brightness on vbi0 (`-fcc`). Added: **VBI Tune** and **VBI Tune Live** application.
+* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop** application. 
