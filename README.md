@@ -19,7 +19,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 
 # Future Apps
 ## **Teletext Viewer** - ✅ realized
-* Opening T42 and HTML files and folders - ❌ not realized
+* Opening T42 and HTML files and folders - ✅ not realized
 * Split individual pages in HTML and T42 - ✅ realized
 * Opening from .t42 file - ✅ realized
 * Language support - ✅ realized
@@ -229,4 +229,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop** application. 
+* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop** application. Fixed (**Teletext Viewer**): opening **folders from HTML/T42 files**, added **page scrolling speed**, added **All Symbols** and **No Subpages** flag, **HTML viewer**, **HTML fonts to Split**.
