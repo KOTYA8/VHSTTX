@@ -71,6 +71,62 @@ class TestCmdDeconvolve(TestCommandTeletext):
     cmd = teletext.cli.teletext.deconvolve
 
 
+class TestSignalControlOptions(TestCommandTeletext):
+
+    def test_record_help_lists_signal_controls(self):
+        result = self.runner.invoke(teletext.cli.teletext.record, ['--help'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('-il, --ignore-line', result.output)
+        self.assertIn('-ul, --used-line', result.output)
+        self.assertIn('-fcc, --fix-capture-card', result.output)
+        self.assertIn('-bn, --brightness', result.output)
+        self.assertIn('-sp, --sharpness', result.output)
+        self.assertIn('-gn, --gain', result.output)
+        self.assertIn('-ct, --contrast', result.output)
+        self.assertIn('-bncf, --brightness-coeff', result.output)
+        self.assertIn('-spcf, --sharpness-coeff', result.output)
+        self.assertIn('-gncf, --gain-coeff', result.output)
+        self.assertIn('-ctcf, --contrast-coeff', result.output)
+
+    def test_deconvolve_help_lists_signal_controls(self):
+        result = self.runner.invoke(teletext.cli.teletext.deconvolve, ['--help'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('-il, --ignore-line', result.output)
+        self.assertIn('-ul, --used-line', result.output)
+        self.assertIn('-fcc, --fix-capture-card', result.output)
+        self.assertIn('-bn, --brightness', result.output)
+        self.assertIn('-sp, --sharpness', result.output)
+        self.assertIn('-gn, --gain', result.output)
+        self.assertIn('-ct, --contrast', result.output)
+        self.assertIn('-bncf, --brightness-coeff', result.output)
+        self.assertIn('-spcf, --sharpness-coeff', result.output)
+        self.assertIn('-gncf, --gain-coeff', result.output)
+        self.assertIn('-ctcf, --contrast-coeff', result.output)
+        self.assertIn('-vtn, --vbi-tune', result.output)
+        self.assertIn('-vtnl, --vbi-tune-live', result.output)
+
+    def test_vbiview_help_lists_signal_controls(self):
+        result = self.runner.invoke(teletext.cli.teletext.vbiview, ['--help'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('-il, --ignore-line', result.output)
+        self.assertIn('-ul, --used-line', result.output)
+        self.assertIn('-fcc, --fix-capture-card', result.output)
+        self.assertIn('-bn, --brightness', result.output)
+        self.assertIn('-sp, --sharpness', result.output)
+        self.assertIn('-gn, --gain', result.output)
+        self.assertIn('-ct, --contrast', result.output)
+        self.assertIn('-bncf, --brightness-coeff', result.output)
+        self.assertIn('-spcf, --sharpness-coeff', result.output)
+        self.assertIn('-gncf, --gain-coeff', result.output)
+        self.assertIn('-ctcf, --contrast-coeff', result.output)
+        self.assertIn('-vtnl, --vbi-tune-live', result.output)
+
+    def test_record_help_lists_tuning_dialog_option(self):
+        result = self.runner.invoke(teletext.cli.teletext.record, ['--help'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('-vtn, --vbi-tune', result.output)
+
+
 class TestIgnoreLineHelpers(unittest.TestCase):
 
     def test_parse_ignore_lines_accepts_csv_and_repeated_options(self):
