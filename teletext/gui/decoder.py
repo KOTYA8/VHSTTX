@@ -190,6 +190,14 @@ class Decoder(object):
         self.widget.rootObject().setProperty('reveal', reveal)
 
     @property
+    def showallsymbols(self):
+        return self.widget.rootObject().property('showallsymbols')
+
+    @showallsymbols.setter
+    def showallsymbols(self, enabled):
+        self.widget.rootObject().setProperty('showallsymbols', bool(enabled))
+
+    @property
     def crteffect(self):
         return self.widget.rootObject().property('crteffect')
 

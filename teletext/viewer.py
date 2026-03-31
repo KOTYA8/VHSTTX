@@ -3,6 +3,7 @@ import os
 import pathlib
 import re
 import shutil
+import sys
 import textwrap
 
 from collections import Counter, defaultdict
@@ -11,8 +12,10 @@ from difflib import SequenceMatcher
 
 import numpy as np
 
+from .file import FileChunker
 from .packet import Packet
 from .parser import Parser
+from .service import Service
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,22 @@ class OverviewEntry:
     subpage_number: int
     page_label: str
     subpage_label: str
+
+
+@dataclass(frozen=True)
+class HtmlPreviewEntry:
+    label: str
+    identifier: str | None
+    html: str
+
+
+@dataclass(frozen=True)
+class HtmlFolderEntry:
+    path: str
+    file_name: str
+    page_number: int | None
+    subpage_number: int | None
+    label: str
 
 
 @dataclass(frozen=True)
@@ -57,12 +76,23 @@ class ServiceMetadata:
 
 
 class _PlainTextRowParser(Parser):
-    def __init__(self, tt, localcodepage=None, codepage=0, *, doubleheight=True, doublewidth=True, flashenabled=True):
+    def __init__(
+        self,
+        tt,
+        localcodepage=None,
+        codepage=0,
+        *,
+        doubleheight=True,
+        doublewidth=True,
+        flashenabled=True,
+        reveal=False,
+    ):
         self._output = []
         self._row_has_doubleheight = False
         self._doubleheight_enabled = bool(doubleheight)
         self._doublewidth_enabled = bool(doublewidth)
         self._flash_enabled = bool(flashenabled)
+        self._reveal = bool(reveal)
         super().__init__(tt, localcodepage=localcodepage, codepage=codepage)
 
     def setstate(self, **kwargs):
@@ -76,7 +106,11 @@ class _PlainTextRowParser(Parser):
 
     def emitcharacter(self, c):
         self._row_has_doubleheight |= self._state['dh']
-        if not self._state['rendered'] or self._state['conceal'] or self._state['flash']:
+        if not self._state['rendered']:
+            self._output.append(' ')
+        elif self._state['conceal'] and not self._reveal:
+            self._output.append(' ')
+        elif self._state['flash']:
             self._output.append(' ')
         else:
             self._output.append(c)
@@ -246,6 +280,108 @@ def _page_label(page_number):
     magazine = int(page_number) >> 8
     page = int(page_number) & 0xff
     return f'P{magazine}{page:02X}'
+
+
+def extract_html_preview_entries(html_text):
+    pattern = re.compile(
+        r'<div\s+class="subpage"(?P<attrs>[^>]*)>(?P<body>.*?)</div>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    entries = []
+    counts = Counter()
+
+    for index, match in enumerate(pattern.finditer(html_text), start=1):
+        attrs = match.group('attrs') or ''
+        identifier_match = re.search(r'\bid\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+        identifier = identifier_match.group(1).upper() if identifier_match else None
+        count_key = identifier or f'__index_{index}'
+        counts[count_key] += 1
+        label = identifier or f'{index:04d}'
+        if counts[count_key] > 1:
+            label = f'{label} ({counts[count_key]})'
+        entries.append(HtmlPreviewEntry(label=label, identifier=identifier, html=match.group(0)))
+
+    return tuple(entries)
+
+
+def normalise_html_subpage_fragment(fragment):
+    if not fragment:
+        return ''
+    fragment = re.sub(
+        r'<span(?P<attrs>[^>]*\bclass\s*=\s*["\'][^"\']*\brow\b[^"\']*["\'][^>]*)>',
+        r'<div\g<attrs>>',
+        fragment,
+        flags=re.IGNORECASE,
+    )
+    fragment = re.sub(
+        r'</span>(?=\s*(?:<div[^>]*\bclass\s*=\s*["\'][^"\']*\brow\b[^"\']*["\'][^>]*>|</div>))',
+        '</div>',
+        fragment,
+        flags=re.IGNORECASE,
+    )
+    return fragment
+
+
+def _parse_html_folder_name(path):
+    stem = pathlib.Path(path).stem.upper()
+    match = re.fullmatch(r'([1-8][0-9A-F]{2})(?:-([0-9A-F]{4}))?', stem)
+    if not match:
+        return None, None
+    page_number = int(match.group(1), 16)
+    subpage_number = int(match.group(2), 16) if match.group(2) is not None else None
+    return page_number, subpage_number
+
+
+def list_html_folder_entries(directory):
+    directory_path = pathlib.Path(directory)
+    if not directory_path.is_dir():
+        return ()
+
+    entries = []
+    for path in sorted(directory_path.glob('*.html')):
+        page_number, subpage_number = _parse_html_folder_name(path)
+        if page_number is not None:
+            label = _page_label(page_number)
+            if subpage_number is not None:
+                label = f'{label} / {subpage_number:04X}'
+            sort_key = (0, page_number, -1 if subpage_number is None else subpage_number, path.name.lower())
+        else:
+            label = path.name
+            sort_key = (1, path.name.lower())
+        entries.append((sort_key, HtmlFolderEntry(
+            path=str(path),
+            file_name=path.name,
+            page_number=page_number,
+            subpage_number=subpage_number,
+            label=label,
+        )))
+
+    entries.sort(key=lambda item: item[0])
+    return tuple(entry for _, entry in entries)
+
+
+def list_t42_files(directory):
+    directory_path = pathlib.Path(directory)
+    if not directory_path.is_dir():
+        return ()
+    return tuple(str(path) for path in sorted(directory_path.glob('*.t42')))
+
+
+def load_service_from_t42_directory(directory):
+    paths = list_t42_files(directory)
+    if not paths:
+        raise ValueError('Selected folder does not contain any .t42 files.')
+
+    def packets():
+        packet_number = 0
+        for path in paths:
+            with open(path, 'rb') as handle:
+                chunks = FileChunker(handle, 42)
+                for _, data in chunks:
+                    yield Packet(data, packet_number)
+                    packet_number += 1
+
+    return Service.from_packets(packets())
 
 
 def _clean_ascii_text(text):
@@ -753,30 +889,91 @@ def export_split_t42(
 
 
 def _default_html_template():
-    return textwrap.dedent("""\
+    misc_dir = None
+    for candidate in _html_asset_source_dirs():
+        if (candidate / 'teletext2.ttf').exists():
+            misc_dir = candidate
+            break
+    font_rules = []
+    if misc_dir is not None:
+        for filename in ('teletext2.ttf', 'teletext4.ttf'):
+            font_path = misc_dir / filename
+            if font_path.exists():
+                font_rules.append(
+                    f"@font-face {{font-family:{font_path.stem}; src:url('{font_path.resolve().as_uri()}');}}"
+                )
+    font_style = ''
+    if font_rules:
+        font_style = '<style>\n' + '\n'.join(font_rules) + '\n</style>\n'
+        font_style = font_style.replace('{', '{{').replace('}', '}}')
+    return textwrap.dedent(f"""\
         <html>
             <head>
                 <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-                <title>Page {page}</title>
+                <title>Page {{page}}</title>
+                {font_style}\
                 <link rel="stylesheet" type="text/css" href="teletext.css" title="Default Style"/>
                 <link rel="alternative stylesheet" type="text/css" href="teletext-noscanlines.css" title="No Scanlines"/>
                 <script type="text/javascript" src="cssswitch.js"></script>
             </head>
             <body onload="set_style_from_cookie()">
-            {body}
+            {{body}}
             </body>
         </html>
     """)
 
 
+def _html_asset_source_dirs(output_dir=None):
+    candidates = []
+    if output_dir is not None:
+        output_dir = pathlib.Path(output_dir).resolve()
+        candidates.append(output_dir)
+        candidates.append(output_dir / 'misc')
+        candidates.append(output_dir.parent / 'misc')
+    module_dir = pathlib.Path(__file__).resolve().parent
+    candidates.append(module_dir.parent / 'misc')
+    candidates.append(module_dir / 'gui')
+    candidates.append(pathlib.Path.cwd() / 'misc')
+    executable = pathlib.Path(sys.argv[0]).resolve() if sys.argv and sys.argv[0] else None
+    if executable is not None:
+        candidates.append(executable.parent / 'misc')
+        candidates.append(executable.parent.parent / 'misc')
+
+    seen = set()
+    result = []
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        key = str(resolved)
+        if key in seen or not resolved.exists():
+            continue
+        seen.add(key)
+        result.append(resolved)
+    return tuple(result)
+
+
 def _copy_html_assets(output_dir):
     output_dir = pathlib.Path(output_dir)
-    repo_root = pathlib.Path(__file__).resolve().parent.parent
-    misc_dir = repo_root / 'misc'
-    for name in ('teletext.css', 'teletext-noscanlines.css'):
-        source = misc_dir / name
-        if source.exists():
-            shutil.copyfile(source, output_dir / name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for name in ('teletext.css', 'teletext-noscanlines.css', 'teletext2.ttf', 'teletext4.ttf', 'cssswitch.js'):
+        target = output_dir / name
+        for source_dir in _html_asset_source_dirs(output_dir):
+            source = source_dir / name
+            if source.exists():
+                try:
+                    if source.resolve() == target.resolve():
+                        break
+                except Exception:
+                    pass
+                shutil.copyfile(source, target)
+                break
+
+
+def ensure_html_assets(output_dir):
+    _copy_html_assets(output_dir)
+    return pathlib.Path(output_dir)
 
 
 def export_html(
@@ -868,6 +1065,7 @@ def render_subpage_text(
     doubleheight=True,
     doublewidth=True,
     flashenabled=True,
+    reveal=False,
 ):
     rows = []
     header = np.full((40,), fill_value=0x20, dtype=np.uint8)
@@ -886,6 +1084,7 @@ def render_subpage_text(
             doubleheight=doubleheight,
             doublewidth=doublewidth,
             flashenabled=flashenabled,
+            reveal=reveal,
         )
         if next_row_hidden and doubleheight:
             rows.append(' ' * 40)

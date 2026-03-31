@@ -17,6 +17,7 @@ Rectangle {
     property bool crteffect: true
     property bool flashsrc: true
     property bool reveal: false
+    property bool showallsymbols: false
     property bool fullscreenmode: false
     property bool fullscreenstretch: false
     property int viewportwidth: naturalTeletextWidth + effectiveBorderSize * 2
@@ -115,12 +116,16 @@ Rectangle {
                                             renderType: Text.NativeRendering
                                             anchors.top: parent.top
                                             anchors.horizontalCenter: parent.horizontalCenter
-                                            color: ttpalette[fg]
-                                            style: highlighttext ? Text.Outline : Text.Normal
-                                            styleColor: "#000000"
+                                            color: showallsymbols
+                                                ? ((bg === 0 || bg === 4) ? "#ffffff" : "#000000")
+                                                : ttpalette[fg]
+                                            style: (highlighttext || showallsymbols) ? Text.Outline : Text.Normal
+                                            styleColor: showallsymbols
+                                                ? ((bg === 0 || bg === 4) ? "#000000" : "#ffffff")
+                                                : "#000000"
                                             text: c
                                             font: ttfonts[(mosaic && solid && text[0] > "\ue000") ? 1 : 0][dw ? 1 : 0][dh ? 1 : 0]
-                                            visible: ((!flash) || flashsrc) && (conceal ? reveal : true)
+                                            visible: showallsymbols || (((!flash) || flashsrc) && (conceal ? reveal : true))
                                         }
                                     }
                                 }
