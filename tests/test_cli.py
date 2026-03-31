@@ -67,6 +67,10 @@ class TestCmdVBIView(TestCommandTeletext):
     cmd = teletext.cli.teletext.vbiview
 
 
+class TestCmdVBICrop(TestCommandTeletext):
+    cmd = teletext.cli.teletext.vbicrop
+
+
 class TestCmdDeconvolve(TestCommandTeletext):
     cmd = teletext.cli.teletext.deconvolve
 
@@ -91,6 +95,7 @@ class TestSignalControlOptions(TestCommandTeletext):
     def test_deconvolve_help_lists_signal_controls(self):
         result = self.runner.invoke(teletext.cli.teletext.deconvolve, ['--help'])
         self.assertEqual(result.exit_code, 0)
+        self.assertIn('-u, --urxvt', result.output)
         self.assertIn('-il, --ignore-line', result.output)
         self.assertIn('-ul, --used-line', result.output)
         self.assertIn('-fcc, --fix-capture-card', result.output)
@@ -119,6 +124,19 @@ class TestSignalControlOptions(TestCommandTeletext):
         self.assertIn('-spcf, --sharpness-coeff', result.output)
         self.assertIn('-gncf, --gain-coeff', result.output)
         self.assertIn('-ctcf, --contrast-coeff', result.output)
+        self.assertIn('-vtnl, --vbi-tune-live', result.output)
+
+    def test_vbicrop_help_lists_signal_controls(self):
+        result = self.runner.invoke(teletext.cli.teletext.vbicrop, ['--help'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('-il, --ignore-line', result.output)
+        self.assertIn('-ul, --used-line', result.output)
+        self.assertIn('-fcc, --fix-capture-card', result.output)
+        self.assertIn('-bn, --brightness', result.output)
+        self.assertIn('-sp, --sharpness', result.output)
+        self.assertIn('-gn, --gain', result.output)
+        self.assertIn('-ct, --contrast', result.output)
+        self.assertIn('-vtn, --vbi-tune', result.output)
         self.assertIn('-vtnl, --vbi-tune-live', result.output)
 
     def test_record_help_lists_tuning_dialog_option(self):
@@ -187,6 +205,29 @@ class TestIgnoreLineHelpers(unittest.TestCase):
         numbers = [number for number, _ in filtered]
 
         self.assertEqual(numbers, [3, 4, 35, 36])
+
+
+class TestUrxvtHelpers(unittest.TestCase):
+
+    def test_build_urxvt_command_strips_flag_and_keeps_args(self):
+        command = teletext.cli.teletext.build_urxvt_command([
+            'teletext',
+            'deconvolve',
+            '-u',
+            '-p',
+            '100',
+            'test.vbi',
+        ])
+
+        self.assertEqual(command[:10], [
+            'urxvt',
+            '-fg', 'white',
+            '-bg', 'black',
+            '-fn', 'teletext',
+            '-fb', 'teletext',
+            '-e',
+        ])
+        self.assertEqual(command[10:], ['teletext', 'deconvolve', '-p', '100', 'test.vbi'])
 
 
 class TestCmdTraining(TestCommandTeletext):
