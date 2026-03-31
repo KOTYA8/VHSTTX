@@ -10,7 +10,7 @@ from OpenGL.GL import *
 
 class VBIViewer(object):
 
-    def __init__(self, lines, config, name = "VBI Viewer", width=800, height=512, nlines=32, tint=True, show_grid=True, show_slices=False, pause=False, show_line_numbers=True, signal_controls=None, decoder_tuning=None, tape_format='vhs', line_selection=None):
+    def __init__(self, lines, config, name = "VBI Viewer", width=800, height=512, nlines=32, tint=True, show_grid=True, show_slices=False, pause=False, show_line_numbers=True, signal_controls=None, decoder_tuning=None, tape_format='vhs', line_selection=None, external_playback=False):
         self.config = config
         self.show_grid = show_grid
         self.tint = tint
@@ -25,6 +25,7 @@ class VBIViewer(object):
         self.decoder_tuning = decoder_tuning
         self.tape_format = tape_format
         self.line_selection = line_selection
+        self.external_playback = external_playback
         self._current_signal_controls = None
         self._current_decoder_tuning = None
 
@@ -102,9 +103,9 @@ class VBIViewer(object):
             self.show_grid ^= True
         elif key == b'c':
             self.tint ^= True
-        elif key == b'p':
+        elif key == b'p' and not self.external_playback:
             self.pause ^= True
-        elif key == b'n':
+        elif key == b'n' and not self.external_playback:
             self.single_step = True
         elif key == b'r':
             self.dumpline(x, y, teletext=False)
@@ -381,7 +382,7 @@ class VBIViewer(object):
         glutSwapBuffers()
         glutPostRedisplay()
 
-        if self.pause and not self.single_step:
+        if self.pause and not self.single_step and not self.external_playback:
             time.sleep(0.1)
         else:
             next_lines = list(islice(self.lines_src, 0, self.nlines))
