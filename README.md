@@ -14,8 +14,8 @@ python3 setup.py install
 ```
 cd VHSTTX
 git pull
-pipx install -e .[qt] --force
 python3 setup.py install
+pipx install -e .[qt] --force
 ```
 ### Uninstalling the old version
 In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
