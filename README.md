@@ -115,7 +115,7 @@ teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
 teletext record -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
 ```
 ```
-teletext deconvolve -bn 25 -sp 30 -gn 50 -ct -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 0 test.vbi > test.t42
+teletext deconvolve -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi > test.t42
 ```
 ```
 teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
