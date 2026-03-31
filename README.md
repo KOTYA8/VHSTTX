@@ -12,6 +12,7 @@ python3 setup.py install
 ```
 ### Update
 ```
+pipx install -e .[qt] --force
 python3 setup.py install
 ```
 ### Uninstalling the old version
