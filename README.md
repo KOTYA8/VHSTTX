@@ -57,8 +57,8 @@ pipx install -e .[qt] --force
 ```
 ttviewer-install
 ```
-* **VBI Tune** for **record/deconvolve**   
-**VBI Tune Live** for **deconvolve/vbiview** (`-vtn/-vtnl`) - VBI Tune: simplifies VBI setup before recording. VBI Tune Live: selects real-time value for VBI. 
+* **VBI Tune** for **record/deconvolve** (`-vtn`) - VBI Tune: simplifies VBI setup before recording.   
+**VBI Tune Live** for **deconvolve/vbiview** (`-vtnl`) - VBI Tune Live: selects real-time value for VBI.    
 ```
 teletext record -vtn test.vbi
 teletext deconvolve -vtn test.vbi > test.t42
@@ -66,7 +66,8 @@ teletext deconvolve -vtn test.vbi > test.t42
 ```
 teletext deconvolve -vtnl test.vbi > test.t42
 teletext vbiview -vtnl test.vbi
-```   
+``` 
+### Installation VBI Tune/VBI Tune Live
 1. Install QT
 ```
 pipx install -e .[qt] --force
