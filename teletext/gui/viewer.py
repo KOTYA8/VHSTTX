@@ -416,6 +416,22 @@ if QtCore is not None:
             QtWidgets.QApplication.clipboard().setText(self._text.toPlainText())
 
 
+    class HtmlScanlineOverlay(QtWidgets.QWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            self.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
+            self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self.hide()
+
+        def paintEvent(self, event):  # pragma: no cover - GUI paint path
+            painter = QtGui.QPainter(self)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
+            for y in range(0, self.height(), 4):
+                painter.fillRect(0, y, self.width(), 1, QtGui.QColor(0, 0, 0, 112))
+            painter.end()
+
+
     class SplitExportDialog(QtWidgets.QDialog):
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -617,9 +633,12 @@ if QtCore is not None:
             self._filename = ''
             self._html_text = ''
             self._preview_entries = ()
+            self._all_folder_entries = ()
             self._folder_entries = ()
             self._folder_index = -1
             self._has_web_view = QtWebEngineWidgets is not None
+            self._windowed_geometry = None
+            self._raw_browser_zoom_steps = 0
             self._direct_page_buffer = DirectPageBuffer()
             self._direct_page_timer = QtCore.QTimer(self)
             self._direct_page_timer.setInterval(1500)
@@ -634,12 +653,14 @@ if QtCore is not None:
             root = QtWidgets.QVBoxLayout(self)
             root.setContentsMargins(10, 10, 10, 10)
             root.setSpacing(8)
+            self._root_layout = root
 
             self._path_label = QtWidgets.QLabel()
             self._path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             root.addWidget(self._path_label)
 
-            folder_controls = QtWidgets.QHBoxLayout()
+            self._folder_controls_widget = QtWidgets.QWidget()
+            folder_controls = QtWidgets.QHBoxLayout(self._folder_controls_widget)
             folder_controls.setContentsMargins(0, 0, 0, 0)
             folder_controls.setSpacing(8)
             self._folder_prev_button = QtWidgets.QPushButton('Prev')
@@ -661,9 +682,13 @@ if QtCore is not None:
             self._folder_combo = QtWidgets.QComboBox()
             self._folder_combo.currentIndexChanged.connect(self._open_folder_entry_from_combo)
             folder_controls.addWidget(self._folder_combo, 1)
-            root.addLayout(folder_controls)
+            self._no_hex_pages_toggle = QtWidgets.QCheckBox('No HEX')
+            self._no_hex_pages_toggle.toggled.connect(self._rebuild_folder_entries)
+            folder_controls.addWidget(self._no_hex_pages_toggle)
+            root.addWidget(self._folder_controls_widget)
 
-            controls = QtWidgets.QHBoxLayout()
+            self._controls_widget = QtWidgets.QWidget()
+            controls = QtWidgets.QHBoxLayout(self._controls_widget)
             controls.setContentsMargins(0, 0, 0, 0)
             controls.setSpacing(8)
             controls.addWidget(QtWidgets.QLabel('Mode'))
@@ -680,8 +705,11 @@ if QtCore is not None:
 
             controls.addWidget(QtWidgets.QLabel('Subpage'))
             self._subpage_combo = QtWidgets.QComboBox()
-            self._subpage_combo.currentIndexChanged.connect(self._refresh_preview)
+            self._subpage_combo.currentIndexChanged.connect(self._subpage_changed)
             controls.addWidget(self._subpage_combo)
+            self._subpage_count_label = QtWidgets.QLabel('--/--')
+            self._subpage_count_label.setMinimumWidth(56)
+            controls.addWidget(self._subpage_count_label)
 
             self._subpage_next_button = QtWidgets.QPushButton('→')
             self._subpage_next_button.clicked.connect(self.next_subpage)
@@ -710,12 +738,27 @@ if QtCore is not None:
             self._all_symbols_toggle.toggled.connect(self._refresh_preview)
             controls.addWidget(self._all_symbols_toggle)
 
+            self._crt_toggle = QtWidgets.QCheckBox('CRT')
+            self._crt_toggle.setCheckable(True)
+            self._crt_toggle.setChecked(True)
+            self._crt_toggle.toggled.connect(self._refresh_preview)
+            controls.addWidget(self._crt_toggle)
+
             self._mouse_wheel_toggle = QtWidgets.QCheckBox('Wheel Pages')
             self._mouse_wheel_toggle.setChecked(True)
             controls.addWidget(self._mouse_wheel_toggle)
 
+            self._window_toggle = QtWidgets.QCheckBox('Window')
+            self._window_toggle.toggled.connect(self._set_window_mode)
+            controls.addWidget(self._window_toggle)
+
             controls.addStretch(1)
-            root.addLayout(controls)
+            root.addWidget(self._controls_widget)
+
+            self._preview_container = QtWidgets.QWidget()
+            preview_layout = QtWidgets.QGridLayout(self._preview_container)
+            preview_layout.setContentsMargins(0, 0, 0, 0)
+            preview_layout.setSpacing(0)
 
             self._preview_stack = QtWidgets.QStackedWidget()
 
@@ -732,14 +775,18 @@ if QtCore is not None:
                 self._preview_stack.addWidget(self._page_browser)
                 self._page_browser.installEventFilter(self)
 
-            root.addWidget(self._preview_stack, 1)
+            preview_layout.addWidget(self._preview_stack, 0, 0)
+            self._scanline_overlay = HtmlScanlineOverlay(self._preview_container)
+            preview_layout.addWidget(self._scanline_overlay, 0, 0)
+            root.addWidget(self._preview_container, 1)
 
-            buttons = QtWidgets.QHBoxLayout()
+            self._buttons_widget = QtWidgets.QWidget()
+            buttons = QtWidgets.QHBoxLayout(self._buttons_widget)
             buttons.addStretch(1)
             close_button = QtWidgets.QPushButton('Close')
             close_button.clicked.connect(self.close)
             buttons.addWidget(close_button)
-            root.addLayout(buttons)
+            root.addWidget(self._buttons_widget)
             for widget in (
                 self._raw_browser,
                 self._page_input,
@@ -748,8 +795,11 @@ if QtCore is not None:
                 self._subpage_combo,
             ):
                 widget.installEventFilter(self)
+            QtWidgets.QShortcut(QtGui.QKeySequence('F11'), self, activated=self._toggle_window_shortcut)
+            QtWidgets.QShortcut(QtGui.QKeySequence('Escape'), self, activated=self._leave_fullscreen_shortcut)
             self._set_folder_mode_enabled(False)
             self._update_subpage_controls()
+            self._update_subpage_count_label()
 
         def _set_folder_mode_enabled(self, enabled):
             self._folder_prev_button.setVisible(enabled)
@@ -757,10 +807,13 @@ if QtCore is not None:
             self._page_input.setVisible(enabled)
             self._go_button.setVisible(enabled)
             self._folder_combo.setVisible(enabled)
+            self._no_hex_pages_toggle.setVisible(enabled)
             self._folder_prev_button.setEnabled(enabled and self._folder_index > 0)
             self._folder_next_button.setEnabled(enabled and self._folder_index + 1 < len(self._folder_entries))
             self._page_input.setEnabled(enabled)
             self._go_button.setEnabled(enabled)
+            self._folder_combo.setEnabled(enabled)
+            self._no_hex_pages_toggle.setEnabled(enabled)
 
         def _load_html_file(self, filename):
             filename = os.path.abspath(filename)
@@ -795,7 +848,12 @@ if QtCore is not None:
             self._subpage_combo.blockSignals(combo_blocked)
 
             self._reset_direct_page_buffer()
+            self._update_subpage_count_label()
 
+            self._refresh_preview()
+
+        def _subpage_changed(self, index):
+            self._update_subpage_count_label()
             self._refresh_preview()
 
         def _set_mode_key(self, mode_key):
@@ -901,6 +959,31 @@ if QtCore is not None:
             interval = getattr(parent, '_auto_interval_ms', None)
             return max(100, int(interval)) if interval else 3500
 
+        def _zoom_css(self):
+            return textwrap.dedent(
+                '''
+                body {
+                    padding: 12px !important;
+                }
+
+                .subpage {
+                    font-size: 30px !important;
+                    border: solid black 10px !important;
+                    border-bottom: solid black 20px !important;
+                    text-shadow: 0 0 0.05em !important;
+                }
+                '''
+            )
+
+        def _theme_css(self, include_crt=False):
+            css_parts = [self._base_preview_css()]
+            if include_crt and self._crt_toggle.isChecked():
+                crt_css = self._strip_css_imports(self._read_misc_text('teletext.css'))
+                if crt_css:
+                    css_parts.append(crt_css)
+            css_parts.append(self._zoom_css())
+            return '\n'.join(part for part in css_parts if part)
+
         def _preview_feature_css(self):
             rules = []
             if self._single_height_toggle.isChecked():
@@ -965,7 +1048,7 @@ if QtCore is not None:
             return '\n'.join(
                 part for part in (
                     font_css,
-                    self._base_preview_css(),
+                    self._theme_css(include_crt=True),
                     self._preview_feature_css(),
                     selection_css,
                 ) if part
@@ -988,11 +1071,11 @@ if QtCore is not None:
             fragment = normalise_html_subpage_fragment(
                 self._preview_entries[min(index, len(self._preview_entries) - 1)].html
             )
-            base_css = self._base_preview_css()
             fallback_css = '\n'.join(
                 part for part in (
                     self._misc_font_css(),
-                    base_css,
+                    self._theme_css(include_crt=False),
+                    self._fallback_crt_css(),
                     self._preview_feature_css(),
                     self._fallback_page_overrides(),
                 ) if part
@@ -1020,6 +1103,27 @@ if QtCore is not None:
 
         def _base_preview_css(self):
             return self._strip_css_imports(self._read_misc_text('teletext-noscanlines.css'))
+
+        def _fallback_crt_css(self):
+            if not self._crt_toggle.isChecked():
+                return textwrap.dedent(
+                    '''
+                    .subpage {
+                        filter: none !important;
+                    }
+
+                    .subpage:after {
+                        background-image: none !important;
+                    }
+                '''
+            )
+            return textwrap.dedent(
+                '''
+                .subpage {
+                    filter: blur(0.5px) brightness(120%) !important;
+                }
+                '''
+            )
 
         def _fallback_page_overrides(self):
             return textwrap.dedent(
@@ -1062,13 +1166,17 @@ if QtCore is not None:
             extra_css = '\n'.join(
                 part for part in (
                     self._misc_font_css(),
-                    self._base_preview_css(),
+                    self._theme_css(include_crt=False),
+                    self._fallback_crt_css(),
                     self._preview_feature_css(),
                 ) if part
             )
             if not extra_css:
                 return self._inject_misc_fonts(self._html_text)
-            return self._inject_into_head(self._html_text, f'<style>\n{extra_css}\n</style>')
+            return self._inject_into_head(
+                self._html_text,
+                f'<style>\n{extra_css}\n</style>',
+            )
 
         def _set_raw_browser_html(self, html_text):
             base_dir = os.path.dirname(self._filename) if self._filename else os.getcwd()
@@ -1076,6 +1184,12 @@ if QtCore is not None:
             self._raw_browser.setSearchPaths([base_dir] + [str(path) for path in self._misc_dirs()])
             self._raw_browser.document().setBaseUrl(QtCore.QUrl.fromLocalFile(os.path.join(base_dir, '')))
             self._raw_browser.setHtml(html_text)
+
+        def _update_crt_overlay(self):
+            use_overlay = bool(self._crt_toggle.isChecked())
+            self._scanline_overlay.setVisible(use_overlay)
+            if use_overlay:
+                self._scanline_overlay.raise_()
 
         def _replace_body(self, html_text, body_html):
             if re.search(r'<body\b[^>]*>.*?</body>', html_text, flags=re.IGNORECASE | re.DOTALL):
@@ -1136,6 +1250,7 @@ if QtCore is not None:
                 self._raw_browser.clear()
                 if self._page_browser is not None:
                     self._page_browser.setHtml('')
+                self._update_crt_overlay()
                 return
             page_mode = self._mode_combo.currentData() == 'page' and bool(self._preview_entries)
             self._subpage_combo.setEnabled(page_mode and len(self._preview_entries) > 1)
@@ -1147,6 +1262,7 @@ if QtCore is not None:
                     self._page_browser.load(QtCore.QUrl.fromLocalFile(self._filename))
                 self._update_subpage_controls()
                 self._sync_auto_timer()
+                self._update_crt_overlay()
                 return
 
             self._preview_stack.setCurrentWidget(self._raw_browser)
@@ -1154,9 +1270,38 @@ if QtCore is not None:
             self._set_raw_browser_html(html_text)
             self._update_subpage_controls()
             self._sync_auto_timer()
+            self._update_crt_overlay()
+
+        def _apply_window_mode(self):
+            immersive = self._window_toggle.isChecked()
+            self._path_label.setVisible(not immersive)
+            self._folder_controls_widget.setVisible(not immersive)
+            self._controls_widget.setVisible(not immersive)
+            self._buttons_widget.setVisible(not immersive)
+            if immersive:
+                self._root_layout.setContentsMargins(0, 0, 0, 0)
+                self._root_layout.setSpacing(0)
+            else:
+                self._root_layout.setContentsMargins(10, 10, 10, 10)
+                self._root_layout.setSpacing(8)
+
+        def _set_window_mode(self, enabled):
+            self._apply_window_mode()
+
+        def _toggle_window_shortcut(self):
+            self._window_toggle.toggle()
+
+        def _leave_fullscreen_shortcut(self):
+            if self._window_toggle.isChecked():
+                self._window_toggle.setChecked(False)
+
+        def resizeEvent(self, event):  # pragma: no cover - GUI event path
+            super().resizeEvent(event)
+            self._update_crt_overlay()
 
         def open_html(self, filename):
             self._set_mode_key('page')
+            self._all_folder_entries = ()
             self._folder_entries = ()
             self._folder_index = -1
             blocked = self._folder_combo.blockSignals(True)
@@ -1171,16 +1316,48 @@ if QtCore is not None:
             entries = list_html_folder_entries(directory)
             if not entries:
                 raise ValueError('Selected folder does not contain any .html files.')
-            self._folder_entries = entries
-            self._folder_index = 0
+            self._all_folder_entries = entries
+            self._rebuild_folder_entries(initial_index=0)
+
+        def _filtered_folder_entries(self):
+            entries = []
+            for entry in self._all_folder_entries:
+                if (
+                    self._no_hex_pages_toggle.isChecked()
+                    and entry.page_number is not None
+                    and not ServiceNavigator.is_decimal_page(entry.page_number)
+                ):
+                    continue
+                entries.append(entry)
+            return tuple(entries)
+
+        def _rebuild_folder_entries(self, checked=False, initial_index=None):
+            if not self._all_folder_entries:
+                return
+            current_path = None
+            if self._folder_entries and 0 <= self._folder_index < len(self._folder_entries):
+                current_path = self._folder_entries[self._folder_index].path
+            self._folder_entries = self._filtered_folder_entries()
             blocked = self._folder_combo.blockSignals(True)
             self._folder_combo.clear()
             for entry in self._folder_entries:
                 self._folder_combo.addItem(entry.label)
-            self._folder_combo.setCurrentIndex(0)
             self._folder_combo.blockSignals(blocked)
+            if not self._folder_entries:
+                self._folder_index = -1
+                self._set_folder_mode_enabled(True)
+                self._page_input.clear()
+                return
+            target_index = 0
+            if current_path is not None:
+                for index, entry in enumerate(self._folder_entries):
+                    if entry.path == current_path:
+                        target_index = index
+                        break
+            elif initial_index is not None:
+                target_index = max(0, min(int(initial_index), len(self._folder_entries) - 1))
             self._set_folder_mode_enabled(True)
-            self._open_folder_entry(0)
+            self._open_folder_entry(target_index)
 
         def _open_folder_entry(self, index):
             if index < 0 or index >= len(self._folder_entries):
@@ -1217,6 +1394,15 @@ if QtCore is not None:
             self._subpage_next_button.setEnabled(
                 (count > 1 and index + 1 < count) or (self._folder_index + 1 < len(self._folder_entries))
             )
+            self._update_subpage_count_label()
+
+        def _update_subpage_count_label(self):
+            count = self._subpage_combo.count()
+            index = self._subpage_combo.currentIndex()
+            if count > 0 and index >= 0:
+                self._subpage_count_label.setText(f'{index + 1:02d}/{count:02d}')
+            else:
+                self._subpage_count_label.setText('--/--')
 
         def _reset_direct_page_buffer(self):
             self._direct_page_buffer.clear()
@@ -1539,8 +1725,8 @@ if QtCore is not None:
             ('#f9a825', '#000000'),
             ('#00838f', '#ffffff'),
         )
-        base_zoom = 2
-        stretch_zoom = 3
+        base_zoom = 2.0
+        stretch_zoom = 3.0
 
         def __init__(self, filename=None):
             super().__init__()
@@ -1697,6 +1883,24 @@ if QtCore is not None:
             self._mouse_wheel_pages_action = self._settings_menu.addAction('Mouse Wheel Pages')
             self._mouse_wheel_pages_action.setCheckable(True)
             self._mouse_wheel_pages_action.setChecked(True)
+
+            zoom_widget = QtWidgets.QWidget()
+            zoom_layout = QtWidgets.QHBoxLayout(zoom_widget)
+            zoom_layout.setContentsMargins(8, 2, 8, 2)
+            zoom_layout.setSpacing(8)
+            zoom_layout.addWidget(QtWidgets.QLabel('Zoom'))
+            self._viewer_zoom_spin = QtWidgets.QDoubleSpinBox()
+            self._viewer_zoom_spin.setRange(1.0, 4.0)
+            self._viewer_zoom_spin.setDecimals(1)
+            self._viewer_zoom_spin.setSingleStep(0.1)
+            self._viewer_zoom_spin.setValue(self.base_zoom)
+            self._viewer_zoom_spin.valueChanged.connect(self._set_decoder_zoom)
+            zoom_layout.addWidget(self._viewer_zoom_spin)
+            zoom_layout.addStretch(1)
+            self._viewer_zoom_action = QtWidgets.QWidgetAction(self)
+            self._viewer_zoom_action.setDefaultWidget(zoom_widget)
+            self._settings_menu.addAction(self._viewer_zoom_action)
+
             self._settings_menu.addSeparator()
             self._auto_menu = self._settings_menu.addMenu('Auto')
             self._auto_subpages_action = self._auto_menu.addAction('Subpages')
@@ -2194,6 +2398,13 @@ if QtCore is not None:
             self._sync_decoder_size()
             self._resize_window_to_content()
 
+        def _set_decoder_zoom(self, value):
+            self.base_zoom = float(value)
+            self.stretch_zoom = min(4.0, self.base_zoom + 1.0)
+            self._decoder.zoom = self.stretch_zoom if self._stretch_toggle.isChecked() else self.base_zoom
+            self._sync_decoder_size()
+            self._resize_window_to_content()
+
         def _set_single_height(self, enabled):
             self._decoder.doubleheight = not enabled
             self._sync_decoder_size()
@@ -2330,6 +2541,7 @@ if QtCore is not None:
                 *self._language_actions.values(),
             ):
                 action.setEnabled(enabled)
+            self._viewer_zoom_action.setEnabled(enabled)
             if enabled:
                 self._auto_subpages_action.setEnabled(self._subpages_enabled())
             for button in self._fastext_buttons:
@@ -2887,6 +3099,50 @@ if QtCore is not None:
                 return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
             return f'{minutes:02d}:{seconds:02d}'
 
+        def _page_display_label(self, page_number):
+            if page_number is None:
+                return 'unavailable'
+            return f'P{int(page_number):03X}'
+
+        def _show_missing_page_dialog(self, requested_page_number):
+            previous_page, next_page = self._navigator.nearest_pages(requested_page_number)
+            message = QtWidgets.QMessageBox(self)
+            message.setWindowTitle('Teletext Viewer')
+            message.setIcon(QtWidgets.QMessageBox.Information)
+            message.setText(f'Page {self._page_display_label(requested_page_number)} is not present in this file.')
+            message.setInformativeText(
+                f'Closest before: {self._page_display_label(previous_page)}\n'
+                f'Closest after: {self._page_display_label(next_page)}'
+            )
+
+            previous_button = None
+            next_button = None
+            if previous_page is not None:
+                previous_button = message.addButton(
+                    f'Go to {self._page_display_label(previous_page)}',
+                    QtWidgets.QMessageBox.ActionRole,
+                )
+            if next_page is not None:
+                next_button = message.addButton(
+                    f'Go to {self._page_display_label(next_page)}',
+                    QtWidgets.QMessageBox.ActionRole,
+                )
+            message.addButton(QtWidgets.QMessageBox.Ok)
+            message.exec_()
+
+            clicked = message.clickedButton()
+            if clicked is previous_button and previous_page is not None:
+                self._navigator.go_to_page(previous_page)
+                self._direct_page_buffer.clear()
+                self._render_current_subpage()
+                return True
+            if clicked is next_button and next_page is not None:
+                self._navigator.go_to_page(next_page)
+                self._direct_page_buffer.clear()
+                self._render_current_subpage()
+                return True
+            return False
+
         def _update_auto_interval_from_controls(self):
             minutes_spin = getattr(self, '_auto_minutes_spin', None)
             seconds_spin = getattr(self, '_auto_seconds_spin', None)
@@ -3082,21 +3338,18 @@ if QtCore is not None:
                 return False
             self._direct_page_timer.stop()
             try:
-                success = self._navigator.go_to_page_text(self._page_input.text())
+                requested_page_number = self._navigator.parse_page_number(self._page_input.text())
+                success = self._navigator.go_to_page(requested_page_number)
             except ValueError as exc:
                 QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
                 self._reset_direct_page_buffer()
                 self._restore_navigation_focus()
                 return False
             if not success:
-                QtWidgets.QMessageBox.information(
-                    self,
-                    'Teletext Viewer',
-                    f'Page {self._page_input.text().strip().upper()} is not present in this file.',
-                )
+                navigated = self._show_missing_page_dialog(requested_page_number)
                 self._reset_direct_page_buffer()
                 self._restore_navigation_focus()
-                return False
+                return navigated
             self._direct_page_buffer.clear()
             self._render_current_subpage()
             self._restore_navigation_focus()

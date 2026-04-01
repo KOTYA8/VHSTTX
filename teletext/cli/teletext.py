@@ -16,6 +16,7 @@ from tqdm import tqdm
 from teletext.charset import g0
 from teletext.cli.clihelpers import packetreader, packetwriter, paginated, \
     progressparams, filterparams, carduser, chunkreader
+from teletext.cli.livepause import PauseController
 from teletext.file import FileChunker, LenWrapper
 from teletext.mp import itermap
 from teletext.packet import Packet, np
@@ -469,10 +470,41 @@ def frame_size_for_config(config):
     return config.line_bytes * config.field_lines * 2
 
 
+def estimate_vbi_size_megabytes(frame_count, config):
+    return (max(int(frame_count), 0) * frame_size_for_config(config)) / (1024 * 1024)
+
+
 def count_complete_frames(input_path, config):
     frame_size = frame_size_for_config(config)
     file_size = os.path.getsize(input_path)
     return file_size // frame_size
+
+
+def _processed_frame_for_output(frame, config, controls, line_selection=None):
+    from teletext.vbi.line import process_frame_bytes
+
+    preserve_tail = 4 if config.card == 'bt8x8' else 0
+    all_lines = frozenset(range(1, useful_frame_lines(config) + 1))
+    selected_lines = current_line_selection(config) if line_selection is None else frozenset(int(line) for line in line_selection)
+    ignored_lines = all_lines - selected_lines
+    ignored_ranges = ignored_frame_line_byte_ranges(config, ignored_lines)
+
+    frame = process_frame_bytes(
+        frame,
+        config,
+        brightness=controls[0],
+        sharpness=controls[1],
+        gain=controls[2],
+        contrast=controls[3],
+        brightness_coeff=controls[4],
+        sharpness_coeff=controls[5],
+        gain_coeff=controls[6],
+        contrast_coeff=controls[7],
+        preserve_tail=preserve_tail,
+    )
+    if ignored_ranges:
+        frame = blank_ignored_frame_lines(frame, ignored_ranges, preserve_tail=preserve_tail)
+    return frame
 
 
 def save_cropped_vbi(
@@ -484,16 +516,9 @@ def save_cropped_vbi(
     controls,
     line_selection=None,
 ):
-    from teletext.vbi.line import process_frame_bytes
-
     frame_size = frame_size_for_config(config)
     start_frame = max(int(start_frame), 0)
     end_frame = max(int(end_frame), start_frame)
-    preserve_tail = 4 if config.card == 'bt8x8' else 0
-    all_lines = frozenset(range(1, useful_frame_lines(config) + 1))
-    selected_lines = current_line_selection(config) if line_selection is None else frozenset(int(line) for line in line_selection)
-    ignored_lines = all_lines - selected_lines
-    ignored_ranges = ignored_frame_line_byte_ranges(config, ignored_lines)
 
     with open(input_path, 'rb') as source, open(output_path, 'wb') as output:
         source.seek(start_frame * frame_size)
@@ -501,22 +526,89 @@ def save_cropped_vbi(
             frame = source.read(frame_size)
             if len(frame) < frame_size:
                 break
-            frame = process_frame_bytes(
-                frame,
-                config,
-                brightness=controls[0],
-                sharpness=controls[1],
-                gain=controls[2],
-                contrast=controls[3],
-                brightness_coeff=controls[4],
-                sharpness_coeff=controls[5],
-                gain_coeff=controls[6],
-                contrast_coeff=controls[7],
-                preserve_tail=preserve_tail,
-            )
-            if ignored_ranges:
-                frame = blank_ignored_frame_lines(frame, ignored_ranges, preserve_tail=preserve_tail)
-            output.write(frame)
+            output.write(_processed_frame_for_output(frame, config, controls, line_selection=line_selection))
+
+
+def delete_cropped_vbi(
+    input_path,
+    output_path,
+    config,
+    start_frame,
+    end_frame,
+    controls,
+    line_selection=None,
+):
+    frame_size = frame_size_for_config(config)
+    start_frame = max(int(start_frame), 0)
+    end_frame = max(int(end_frame), start_frame)
+
+    with open(input_path, 'rb') as source, open(output_path, 'wb') as output:
+        frame_index = 0
+        while True:
+            frame = source.read(frame_size)
+            if len(frame) < frame_size:
+                break
+            if start_frame <= frame_index <= end_frame:
+                frame_index += 1
+                continue
+            output.write(_processed_frame_for_output(frame, config, controls, line_selection=line_selection))
+            frame_index += 1
+
+
+def save_edited_vbi(
+    input_path,
+    output_path,
+    config,
+    controls,
+    line_selection=None,
+    cut_ranges=(),
+    insertions=(),
+):
+    frame_size = frame_size_for_config(config)
+    cut_ranges = tuple(sorted(cut_ranges))
+    insertions = tuple(sorted(insertions, key=lambda item: (int(item['after_frame']), item['path'])))
+    cut_index = 0
+    insertion_index = 0
+
+    def write_insertions(output, after_frame):
+        nonlocal insertion_index
+        while insertion_index < len(insertions) and int(insertions[insertion_index]['after_frame']) == after_frame:
+            insertion = insertions[insertion_index]
+            with open(insertion['path'], 'rb') as insert_file:
+                while True:
+                    frame = insert_file.read(frame_size)
+                    if len(frame) < frame_size:
+                        break
+                    output.write(_processed_frame_for_output(frame, config, controls, line_selection=line_selection))
+            insertion_index += 1
+
+    with open(input_path, 'rb') as source, open(output_path, 'wb') as output:
+        frame_index = 0
+        while True:
+            frame = source.read(frame_size)
+            if len(frame) < frame_size:
+                break
+            while cut_index < len(cut_ranges) and frame_index > cut_ranges[cut_index][1]:
+                cut_index += 1
+            if cut_index < len(cut_ranges):
+                cut_start, cut_end = cut_ranges[cut_index]
+                if cut_start <= frame_index <= cut_end:
+                    write_insertions(output, frame_index)
+                    frame_index += 1
+                    continue
+            output.write(_processed_frame_for_output(frame, config, controls, line_selection=line_selection))
+            write_insertions(output, frame_index)
+            frame_index += 1
+
+        while insertion_index < len(insertions):
+            insertion = insertions[insertion_index]
+            with open(insertion['path'], 'rb') as insert_file:
+                while True:
+                    frame = insert_file.read(frame_size)
+                    if len(frame) < frame_size:
+                        break
+                    output.write(_processed_frame_for_output(frame, config, controls, line_selection=line_selection))
+            insertion_index += 1
 
 
 def start_live_fix_capture_card(live_tuner, initial_settings):
@@ -1106,7 +1198,8 @@ def record(output, device, ignore_lines, used_lines, brightness, sharpness, gain
             pass
 
     chunks = FileChunker(device, config.line_bytes*config.field_lines*2)
-    bar = tqdm(chunks, unit=' Frames')
+    pause_controller = PauseController('record')
+    bar = tqdm(pause_controller.wrap_iterable(chunks), unit=' Frames')
     fixer = CaptureCardFixer()
     fixer.update(fix_capture_card_settings)
 
@@ -1141,6 +1234,7 @@ def record(output, device, ignore_lines, used_lines, brightness, sharpness, gain
     except KeyboardInterrupt:
         pass
     finally:
+        pause_controller.close()
         fixer.close()
 
 
@@ -1392,17 +1486,17 @@ def vbicrop(input_path, config, pause, tape_format, n_lines, ignore_lines, used_
         fixer, fixer_stop, fixer_thread = start_live_fix_capture_card(live_tuner, state['fix_capture_card'])
         restart_viewer()
 
-    def save_callback(output_path, start_frame, end_frame):
+    def save_callback(output_path, cut_ranges, insertions):
         current_controls_value = state['controls'] if live_tuner is None else live_tuner.values()
         current_line_selection_value = state['selected_lines'] if live_tuner is None else live_tuner.line_selection()
-        save_cropped_vbi(
+        save_edited_vbi(
             input_path=input_path,
             output_path=output_path,
             config=state['config'],
-            start_frame=start_frame,
-            end_frame=end_frame,
             controls=current_controls_value,
             line_selection=current_line_selection_value,
+            cut_ranges=cut_ranges,
+            insertions=insertions,
         )
 
     try:
@@ -1413,6 +1507,7 @@ def vbicrop(input_path, config, pause, tape_format, n_lines, ignore_lines, used_
             save_callback=save_callback,
             live_tune_callback=open_live_tune_callback,
             viewer_process=lambda: viewer_process,
+            frame_size_bytes=frame_size_for_config(state['config']),
         )
     finally:
         if viewer_process is not None and viewer_process.is_alive():
@@ -1461,11 +1556,13 @@ def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eig
         sys.stderr.write('GPU disabled by user request.\n')
 
     fix_capture_card_settings = current_fix_capture_card(fix_capture_card)
+    pause_controller = PauseController('deconvolve')
     _, ignore_lines = resolve_frame_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
     selected_lines = current_line_selection(config, ignore_lines=ignore_lines)
     chunks = chunker(config.line_bytes, config.field_lines, config.field_range)
     if not vbi_tune_live:
         chunks = filter_ignored_chunks(chunks, config, ignore_lines)
+    chunks = pause_controller.wrap_iterable(chunks)
 
     if progress:
         chunks = tqdm(chunks, unit='L', dynamic_ncols=True)
@@ -1497,6 +1594,7 @@ def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eig
         ignore_lines = frozenset(range(1, useful_frame_lines(config) + 1)) - frozenset(selected_lines)
         chunks = chunker(config.line_bytes, config.field_lines, config.field_range)
         chunks = filter_ignored_chunks(chunks, config, ignore_lines)
+        chunks = pause_controller.wrap_iterable(chunks)
         if progress:
             chunks = tqdm(chunks, unit='L', dynamic_ncols=True)
             if any((mag_hist, row_hist, rejects)):
@@ -1573,6 +1671,7 @@ def deconvolve(chunker, mags, rows, pages, subpages, paginate, config, mode, eig
         else:
             yield from packets
     finally:
+        pause_controller.close()
         if fixer_stop is not None:
             fixer_stop.set()
         if fixer_thread is not None:

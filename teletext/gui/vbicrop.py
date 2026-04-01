@@ -31,6 +31,46 @@ def _clamp(value, minimum, maximum):
     return max(minimum, min(maximum, int(value)))
 
 
+def normalise_cut_ranges(cut_ranges, total_frames):
+    total_frames = max(int(total_frames), 1)
+    merged = []
+    for start, end in sorted(
+        (
+            (_clamp(start, 0, total_frames - 1), _clamp(end, 0, total_frames - 1))
+            for start, end in cut_ranges
+        ),
+        key=lambda item: item[0],
+    ):
+        if start > end:
+            start, end = end, start
+        if not merged or start > (merged[-1][1] + 1):
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return tuple((start, end) for start, end in merged)
+
+
+def count_cut_frames(cut_ranges):
+    return sum((end - start) + 1 for start, end in cut_ranges)
+
+
+def normalise_insertions(insertions, total_frames):
+    total_frames = max(int(total_frames), 1)
+    normalised = []
+    for insertion in insertions:
+        after_frame = _clamp(insertion['after_frame'], 0, total_frames - 1)
+        normalised.append({
+            'after_frame': after_frame,
+            'path': insertion['path'],
+            'frame_count': max(int(insertion['frame_count']), 0),
+        })
+    return tuple(sorted(normalised, key=lambda item: (item['after_frame'], item['path'])))
+
+
+def count_inserted_frames(insertions):
+    return sum(int(insertion['frame_count']) for insertion in insertions)
+
+
 class CropStateHandle:
     CURRENT_INDEX = 0
     PLAYING_INDEX = 1
@@ -94,6 +134,17 @@ class CropStateHandle:
         start, _ = self.selection_range()
         self.set_selection_range(start, self.current_frame())
 
+    def restore_state(self, current_frame, start_frame, end_frame, playing=False):
+        current = _clamp(current_frame, 0, self.total_frames - 1)
+        start = _clamp(start_frame, 0, self.total_frames - 1)
+        end = _clamp(end_frame, 0, self.total_frames - 1)
+        if start > end:
+            start, end = end, start
+        self._shared_values[self.CURRENT_INDEX] = current
+        self._shared_values[self.START_INDEX] = start
+        self._shared_values[self.END_INDEX] = end
+        self._shared_values[self.PLAYING_INDEX] = 1 if playing else 0
+
 
 def create_crop_state(total_frames, current_frame=0, playing=False, start_frame=0, end_frame=None):
     total_frames = max(int(total_frames), 1)
@@ -123,6 +174,8 @@ if IMPORT_ERROR is None:
             self._maximum = max(int(maximum), self._minimum)
             self._start = int(start)
             self._end = int(end)
+            self._cuts = ()
+            self._insert_markers = ()
             self._dragging = None
             self.setMinimumHeight(34)
             self.setMouseTracking(True)
@@ -153,6 +206,14 @@ if IMPORT_ERROR is None:
             if changed:
                 self.rangeChanged.emit(self._start, self._end)
 
+        def setCuts(self, cut_ranges):
+            self._cuts = tuple(cut_ranges)
+            self.update()
+
+        def setInsertMarkers(self, markers):
+            self._insert_markers = tuple(markers)
+            self.update()
+
         def _handle_rect(self, value):
             margin = 12
             usable = max(self.width() - (margin * 2), 1)
@@ -175,6 +236,24 @@ if IMPORT_ERROR is None:
             painter.setBrush(QtGui.QColor('#9a9a9a'))
             painter.drawRoundedRect(track_rect, 3, 3)
 
+            painter.setBrush(QtGui.QColor('#d94b4b'))
+            for start, end in self._cuts:
+                start_rect = self._handle_rect(start)
+                end_rect = self._handle_rect(end)
+                cut_rect = QtCore.QRect(
+                    start_rect.center().x(),
+                    track_rect.y(),
+                    max(end_rect.center().x() - start_rect.center().x(), 1),
+                    track_rect.height(),
+                )
+                painter.drawRoundedRect(cut_rect, 3, 3)
+
+            painter.setPen(QtGui.QPen(QtGui.QColor('#f39c12'), 2))
+            for marker in self._insert_markers:
+                marker_rect = self._handle_rect(marker)
+                x = marker_rect.center().x()
+                painter.drawLine(x, track_rect.y() - 5, x, track_rect.bottom() + 5)
+
             start_rect = self._handle_rect(self._start)
             end_rect = self._handle_rect(self._end)
             selected_rect = QtCore.QRect(
@@ -185,6 +264,29 @@ if IMPORT_ERROR is None:
             )
             painter.setBrush(QtGui.QColor('#3a84ff'))
             painter.drawRoundedRect(selected_rect, 3, 3)
+
+            # Draw cut markers on top so they stay visible even when covered by the blue selection.
+            painter.setPen(QtGui.QPen(QtGui.QColor('#c62828'), 2))
+            painter.setBrush(QtGui.QBrush(QtGui.QColor('#c62828')))
+            for start, end in self._cuts:
+                start_marker = self._handle_rect(start).center().x()
+                end_marker = self._handle_rect(end).center().x()
+                painter.drawLine(start_marker, track_rect.y() - 8, start_marker, track_rect.bottom() + 8)
+                painter.drawLine(end_marker, track_rect.y() - 8, end_marker, track_rect.bottom() + 8)
+                painter.drawPolygon(
+                    QtGui.QPolygon([
+                        QtCore.QPoint(start_marker, track_rect.y() - 10),
+                        QtCore.QPoint(start_marker - 4, track_rect.y() - 4),
+                        QtCore.QPoint(start_marker + 4, track_rect.y() - 4),
+                    ])
+                )
+                painter.drawPolygon(
+                    QtGui.QPolygon([
+                        QtCore.QPoint(end_marker, track_rect.bottom() + 10),
+                        QtCore.QPoint(end_marker - 4, track_rect.bottom() + 4),
+                        QtCore.QPoint(end_marker + 4, track_rect.bottom() + 4),
+                    ])
+                )
 
             for rect, color in ((start_rect, '#ffffff'), (end_rect, '#ffffff')):
                 painter.setBrush(QtGui.QColor(color))
@@ -224,7 +326,7 @@ if IMPORT_ERROR is None:
 
 
     class VBICropWindow(QtWidgets.QDialog):
-        def __init__(self, state, total_frames, frame_rate=DEFAULT_FRAME_RATE, save_callback=None, live_tune_callback=None, viewer_process=None, parent=None):
+        def __init__(self, state, total_frames, frame_rate=DEFAULT_FRAME_RATE, save_callback=None, live_tune_callback=None, viewer_process=None, frame_size_bytes=0, parent=None):
             super().__init__(parent)
             self._state = state
             self._total_frames = max(int(total_frames), 1)
@@ -232,7 +334,12 @@ if IMPORT_ERROR is None:
             self._save_callback = save_callback
             self._live_tune_callback = live_tune_callback
             self._viewer_process = viewer_process
+            self._frame_size_bytes = int(frame_size_bytes)
             self._updating = False
+            self._history = []
+            self._redo_history = []
+            self._cut_ranges = ()
+            self._insertions = ()
 
             self.setWindowTitle('VBI Crop')
             self.resize(760, 280)
@@ -289,7 +396,7 @@ if IMPORT_ERROR is None:
 
             self._range_slider = FrameRangeSlider(0, self._total_frames - 1, 0, self._total_frames - 1)
             self._range_slider.rangeChanged.connect(self._range_slider_changed)
-            selection_layout.addWidget(self._range_slider, 0, 0, 1, 6)
+            selection_layout.addWidget(self._range_slider, 0, 0, 1, 8)
 
             selection_layout.addWidget(QtWidgets.QLabel('Start'), 1, 0)
             self._start_box = QtWidgets.QSpinBox()
@@ -311,6 +418,14 @@ if IMPORT_ERROR is None:
             self._mark_end_button.clicked.connect(self._mark_end)
             selection_layout.addWidget(self._mark_end_button, 1, 5)
 
+            self._delete_button = QtWidgets.QPushButton('Delete Selection')
+            self._delete_button.clicked.connect(self._delete_selection)
+            selection_layout.addWidget(self._delete_button, 1, 6)
+
+            self._add_file_button = QtWidgets.QPushButton('Add File...')
+            self._add_file_button.clicked.connect(self._add_file)
+            selection_layout.addWidget(self._add_file_button, 1, 7)
+
             selection_layout.addWidget(QtWidgets.QLabel('Minutes'), 2, 0)
             self._duration_minutes_box = QtWidgets.QSpinBox()
             self._duration_minutes_box.setRange(0, int(self._total_frames / self._frame_rate) // 60 + 60)
@@ -329,9 +444,31 @@ if IMPORT_ERROR is None:
 
             self._selection_label = QtWidgets.QLabel('')
             root.addWidget(self._selection_label)
+            self._size_label = QtWidgets.QLabel('')
+            root.addWidget(self._size_label)
+            self._edited_label = QtWidgets.QLabel('')
+            root.addWidget(self._edited_label)
+            self._insertions_label = QtWidgets.QLabel('')
+            root.addWidget(self._insertions_label)
 
             button_row = QtWidgets.QHBoxLayout()
             root.addLayout(button_row)
+
+            self._undo_button = QtWidgets.QPushButton('Undo')
+            self._undo_button.clicked.connect(self._undo)
+            button_row.addWidget(self._undo_button)
+
+            self._redo_button = QtWidgets.QPushButton('Redo')
+            self._redo_button.clicked.connect(self._redo)
+            button_row.addWidget(self._redo_button)
+
+            self._undo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+Z'), self)
+            self._undo_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+            self._undo_shortcut.activated.connect(self._undo)
+
+            self._redo_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+X'), self)
+            self._redo_shortcut.setContext(QtCore.Qt.ApplicationShortcut)
+            self._redo_shortcut.activated.connect(self._redo)
 
             self._reset_button = QtWidgets.QPushButton('Reset')
             self._reset_button.clicked.connect(self._reset_selection)
@@ -343,7 +480,7 @@ if IMPORT_ERROR is None:
 
             button_row.addStretch(1)
 
-            self._save_button = QtWidgets.QPushButton('Save Selection...')
+            self._save_button = QtWidgets.QPushButton('Save File...')
             self._save_button.clicked.connect(self._save_selection)
             button_row.addWidget(self._save_button)
 
@@ -355,6 +492,7 @@ if IMPORT_ERROR is None:
             self._timer.setInterval(100)
             self._timer.timeout.connect(self._sync_from_state)
             self._timer.start()
+            self._record_history_state(reset_redo=True)
             self._sync_from_state()
 
         def _format_time(self, frame_index):
@@ -370,6 +508,39 @@ if IMPORT_ERROR is None:
             seconds = total_seconds - (minutes * 60)
             return minutes, seconds
 
+        def _format_duration_value(self, frame_count):
+            total_seconds = max(float(frame_count) / self._frame_rate, 0.0)
+            minutes = int(total_seconds // 60)
+            seconds = total_seconds - (minutes * 60)
+            return f'{minutes:02d}:{seconds:05.2f}'
+
+        def _format_megabytes(self, frame_count):
+            size_bytes = max(int(frame_count), 0) * self._frame_size_bytes
+            return f'{size_bytes / (1024 * 1024):.2f} MB'
+
+        def _capture_snapshot(self):
+            current = self._state.current_frame()
+            start, end = self._state.selection_range()
+            return (current, start, end, tuple(self._cut_ranges), tuple(self._insertions))
+
+        def _record_history_state(self, reset_redo=False):
+            snapshot = self._capture_snapshot()
+            if not self._history or self._history[-1] != snapshot:
+                self._history.append(snapshot)
+            if reset_redo:
+                self._redo_history.clear()
+            self._update_history_buttons()
+
+        def _restore_snapshot(self, snapshot):
+            self._cut_ranges = tuple(snapshot[3])
+            self._insertions = tuple(snapshot[4])
+            self._state.restore_state(snapshot[0], snapshot[1], snapshot[2], playing=False)
+            self._sync_from_state()
+
+        def _update_history_buttons(self):
+            self._undo_button.setEnabled(len(self._history) > 1)
+            self._redo_button.setEnabled(len(self._redo_history) > 0)
+
         def _sync_from_state(self):
             viewer_process = self._viewer_process() if callable(self._viewer_process) else self._viewer_process
             if viewer_process is not None and not viewer_process.is_alive():
@@ -383,6 +554,8 @@ if IMPORT_ERROR is None:
             self._frame_box.setValue(current)
             self._frame_time_label.setText(self._format_time(current))
             self._range_slider.setValues(start, end)
+            self._range_slider.setCuts(self._cut_ranges)
+            self._range_slider.setInsertMarkers(insertion['after_frame'] for insertion in self._insertions)
             self._start_box.setValue(start)
             self._end_box.setValue(end)
             selection_seconds = max(((end - start) + 1) / self._frame_rate, 0.04)
@@ -396,10 +569,32 @@ if IMPORT_ERROR is None:
             remaining = self._format_time(remaining_frames)
             self._status_label.setText(f'{current + 1}/{self._total_frames} [{elapsed}<{remaining}]')
             selection_frames = (end - start) + 1
+            cut_frames = count_cut_frames(self._cut_ranges)
+            inserted_frames = count_inserted_frames(self._insertions)
+            edited_frames = max((self._total_frames - cut_frames) + inserted_frames, 0)
             self._selection_label.setText(
-                f'Selection: {start}..{end} ({selection_frames} frames, {selection_seconds:.2f}s)'
+                f'Selection: {start}..{end} ({selection_frames} frames, {selection_seconds:.2f}s) | Cuts: {len(self._cut_ranges)} | Inserts: {len(self._insertions)}'
             )
+            self._size_label.setText(
+                f'Selected: {self._format_megabytes(selection_frames)} | '
+                f'Cuts total: {self._format_megabytes(cut_frames)} | '
+                f'Inserted total: {self._format_megabytes(inserted_frames)} | '
+                f'Edited file: {self._format_megabytes(edited_frames)}'
+            )
+            self._edited_label.setText(
+                f'Edited total: {edited_frames} frames | {self._format_duration_value(edited_frames)}'
+            )
+            if self._insertions:
+                self._insertions_label.setText(
+                    'Insertions: ' + ', '.join(
+                        f"{os.path.basename(insertion['path'])} -> after {insertion['after_frame']} ({insertion['frame_count']}f)"
+                        for insertion in self._insertions[-4:]
+                    )
+                )
+            else:
+                self._insertions_label.setText('Insertions: none')
             self._updating = False
+            self._update_history_buttons()
 
         def _frame_slider_changed(self, value):
             if self._updating:
@@ -465,7 +660,24 @@ if IMPORT_ERROR is None:
             self._state.set_playing(False)
             self._state.set_current_frame(0)
             self._state.set_selection_range(0, self._total_frames - 1)
+            self._cut_ranges = ()
+            self._insertions = ()
+            self._record_history_state(reset_redo=True)
             self._sync_from_state()
+
+        def _undo(self):
+            if len(self._history) <= 1:
+                return
+            current = self._history.pop()
+            self._redo_history.append(current)
+            self._restore_snapshot(self._history[-1])
+
+        def _redo(self):
+            if not self._redo_history:
+                return
+            snapshot = self._redo_history.pop()
+            self._history.append(snapshot)
+            self._restore_snapshot(snapshot)
 
         def _open_live_tune_dialog(self):
             if self._live_tune_callback is None:
@@ -478,29 +690,67 @@ if IMPORT_ERROR is None:
         def _save_selection(self):
             if self._save_callback is None:
                 return
-            default_name = 'cropped.vbi'
+            default_name = 'edited.vbi'
             filename, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self,
-                'Save Cropped VBI',
+                'Save Edited VBI',
                 os.path.join(os.getcwd(), default_name),
                 'VBI files (*.vbi);;All files (*)',
             )
             if not filename:
                 return
-            start, end = self._state.selection_range()
             try:
-                self._save_callback(filename, start, end)
+                self._save_callback(filename, self._cut_ranges, self._insertions)
             except Exception as exc:  # pragma: no cover - GUI path
                 QtWidgets.QMessageBox.critical(self, 'VBI Crop', str(exc))
                 return
             QtWidgets.QMessageBox.information(
                 self,
                 'VBI Crop',
-                f'Saved frames {start}..{end} to:\n{filename}',
+                f'Saved edited VBI to:\n{filename}',
             )
 
+        def _delete_selection(self):
+            start, end = self._state.selection_range()
+            self._cut_ranges = normalise_cut_ranges(self._cut_ranges + ((start, end),), self._total_frames)
+            self._record_history_state(reset_redo=True)
+            self._sync_from_state()
 
-def run_crop_window(state, total_frames, frame_rate=DEFAULT_FRAME_RATE, save_callback=None, live_tune_callback=None, viewer_process=None):
+        def _add_file(self):
+            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                'Add VBI File',
+                os.getcwd(),
+                'VBI files (*.vbi);;All files (*)',
+            )
+            if not filename:
+                return
+            try:
+                file_size = os.path.getsize(filename)
+            except OSError as exc:  # pragma: no cover - GUI path
+                QtWidgets.QMessageBox.critical(self, 'VBI Crop', str(exc))
+                return
+            if self._frame_size_bytes <= 0:
+                QtWidgets.QMessageBox.critical(self, 'VBI Crop', 'Frame size is unknown, cannot add file.')
+                return
+            frame_count = file_size // self._frame_size_bytes
+            if frame_count <= 0:
+                QtWidgets.QMessageBox.warning(self, 'VBI Crop', 'Selected file does not contain complete VBI frames.')
+                return
+            _, end = self._state.selection_range()
+            self._insertions = normalise_insertions(
+                self._insertions + ({
+                    'after_frame': end,
+                    'path': filename,
+                    'frame_count': frame_count,
+                },),
+                self._total_frames,
+            )
+            self._record_history_state(reset_redo=True)
+            self._sync_from_state()
+
+
+def run_crop_window(state, total_frames, frame_rate=DEFAULT_FRAME_RATE, save_callback=None, live_tune_callback=None, viewer_process=None, frame_size_bytes=0):
     if IMPORT_ERROR is not None:
         raise IMPORT_ERROR
 
@@ -512,6 +762,7 @@ def run_crop_window(state, total_frames, frame_rate=DEFAULT_FRAME_RATE, save_cal
         save_callback=save_callback,
         live_tune_callback=live_tune_callback,
         viewer_process=viewer_process,
+        frame_size_bytes=frame_size_bytes,
     )
     window.show()
     window.raise_()

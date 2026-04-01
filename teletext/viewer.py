@@ -1244,6 +1244,19 @@ class ServiceNavigator:
             self._current_subpage_number = subpages[0]
         return True
 
+    def nearest_pages(self, page_number):
+        page_number = int(page_number)
+        previous_page = None
+        next_page = None
+        for candidate in self._navigable_pages():
+            if candidate < page_number:
+                previous_page = candidate
+                continue
+            if candidate > page_number:
+                next_page = candidate
+                break
+        return previous_page, next_page
+
     def go_next_page(self):
         pages = self._navigable_pages()
         index = pages.index(self._current_page_number)
