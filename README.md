@@ -47,6 +47,13 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Cutting frames from VBI - ✅ realized
 * Adding VBI Files - ✅ realized
 
+## **T42 Crop** - ✅ realized
+* Frame marks - ✅ realized
+* Cutting frames from T42 - ✅ realized
+* Adding T42 Files - ✅ realized
+* Deleting pages and subpages - ✅ realized
+* Checking the first line by frame/page/subpage - ✅ realized
+
 # Future Functions
 * **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
 * **Used Line (record/deconvolve/vbiview)** - ✅ realized
@@ -245,4 +252,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Made a simplification for **Ignore Line** (`-il`) and **Used Line** (`-ul`). Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). **Pause** for `record/deconvolve`. Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop** application. Fixed (**Teletext Viewer**): opening **folders from HTML/T42 files**, added **page scrolling speed**, added **All Symbols** and **No Subpages** flag, **HTML viewer**, **HTML fonts to Split**.
+* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Made a simplification for **Ignore Line** (`-il`) and **Used Line** (`-ul`). Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). **Pause** for `record/deconvolve`. Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop**, **T42 Crop** application. Fixed (**Teletext Viewer**): opening **folders from HTML/T42 files**, added **page scrolling speed**, added **All Symbols** and **No Subpages** flag, **HTML viewer**, **HTML fonts to Split**.
