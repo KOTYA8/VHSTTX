@@ -38,7 +38,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Decoder Tuning (Template/Extra Roll/Line Start Range) - ✅ realized
 * Line Selection - ✅ realized
 * Fix Capture Card - ✅ realized
-* Arguments - ✅ realized
+* Arguments and Presets - ✅ realized
 
 ## **VBI Crop** - ✅ realized
 * Frame-by-frame viewing - ✅ realized
