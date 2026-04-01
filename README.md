@@ -44,6 +44,8 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Frame-by-frame viewing - ✅ realized
 * Frame marks - ✅ realized
 * Saving with VBI Tune Live - ✅ realized
+* Cutting frames from VBI - ✅ realized
+* Adding VBI Files - ✅ realized
 
 # Future Functions
 * **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
@@ -52,6 +54,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * **Brightness/Sharpness/Gain/Contrast (record/deconvolve/vbiview)** - ✅ realized
 * **Fix Capture Card (record/deconvolve/vbiview)** - ✅ realized
 * **URXVT Terminal (deconvolve)** - ✅ realized
+* **Pause for (record/deconvolve)** - ✅ realized
 * **Spellcheck** - ⚠️ bugs
 
 # Apps
@@ -139,6 +142,7 @@ teletext vbiview -fcc 2 3 test.vbi
 teletext deconvolve test.vbi -u -p 100
 teletext deconvolve test.vbi -u -r 0
 ```
+* **Pause** for **record**/**deconvolve** (`P button`) - **Pauses** while recording or deconvolving.
 
 # Guide for Functions
 [GUIDE](https://github.com/KOTYA8/VHSTTX/blob/main/examples/help-all.txt)
@@ -241,4 +245,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop** application. Fixed (**Teletext Viewer**): opening **folders from HTML/T42 files**, added **page scrolling speed**, added **All Symbols** and **No Subpages** flag, **HTML viewer**, **HTML fonts to Split**.
+* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop** application. Fixed (**Teletext Viewer**): opening **folders from HTML/T42 files**, added **page scrolling speed**, added **All Symbols** and **No Subpages** flag, **HTML viewer**, **HTML fonts to Split**. **Pause** for `record/deconvolve`.
