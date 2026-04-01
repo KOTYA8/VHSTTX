@@ -33,6 +33,7 @@ if IMPORT_ERROR is None:
     from teletext.service import Service
     from teletext.viewer import (
         DirectPageBuffer,
+        OverviewEntry,
         ServiceNavigator,
         build_split_pattern,
         count_html_outputs,
@@ -636,6 +637,14 @@ if QtCore is not None:
             self._all_folder_entries = ()
             self._folder_entries = ()
             self._folder_index = -1
+            self._overview_dialog = None
+            self._overview_icon_cache = {}
+            self._overview_selection_map = {}
+            self._overview_source_cache = {}
+            self._overview_signature = None
+            self._overview_preload_queue = []
+            self._overview_preload_total = 0
+            self._overview_preload_loaded = 0
             self._has_web_view = QtWebEngineWidgets is not None
             self._windowed_geometry = None
             self._raw_browser_zoom_steps = 0
@@ -647,6 +656,9 @@ if QtCore is not None:
             self._auto_timer = QtCore.QTimer(self)
             self._auto_timer.setInterval(3500)
             self._auto_timer.timeout.connect(self._auto_advance)
+            self._overview_preload_timer = QtCore.QTimer(self)
+            self._overview_preload_timer.setInterval(0)
+            self._overview_preload_timer.timeout.connect(self._preload_overview_batch)
             self.setWindowTitle('HTML Preview')
             self.resize(960, 700)
 
@@ -698,6 +710,10 @@ if QtCore is not None:
             self._mode_combo.addItem('Raw', 'raw')
             self._mode_combo.currentIndexChanged.connect(self._refresh_preview)
             controls.addWidget(self._mode_combo)
+
+            self._overview_button = QtWidgets.QPushButton('Overview')
+            self._overview_button.clicked.connect(self.show_overview)
+            controls.addWidget(self._overview_button)
 
             self._subpage_prev_button = QtWidgets.QPushButton('←')
             self._subpage_prev_button.clicked.connect(self.prev_subpage)
@@ -782,6 +798,12 @@ if QtCore is not None:
 
             self._buttons_widget = QtWidgets.QWidget()
             buttons = QtWidgets.QHBoxLayout(self._buttons_widget)
+            self._load_overview_toggle = QtWidgets.QCheckBox('Load Overview')
+            self._load_overview_toggle.toggled.connect(self._set_load_overview)
+            buttons.addWidget(self._load_overview_toggle)
+            self._overview_status_label = QtWidgets.QLabel('')
+            self._overview_status_label.hide()
+            buttons.addWidget(self._overview_status_label)
             buttons.addStretch(1)
             close_button = QtWidgets.QPushButton('Close')
             close_button.clicked.connect(self.close)
@@ -800,6 +822,7 @@ if QtCore is not None:
             self._set_folder_mode_enabled(False)
             self._update_subpage_controls()
             self._update_subpage_count_label()
+            self._update_overview_button_state()
 
         def _set_folder_mode_enabled(self, enabled):
             self._folder_prev_button.setVisible(enabled)
@@ -827,6 +850,7 @@ if QtCore is not None:
             with open(filename, 'r', encoding='utf-8', errors='ignore') as handle:
                 self._html_text = handle.read()
             self._preview_entries = extract_html_preview_entries(self._html_text)
+            self._overview_source_cache[filename] = (self._html_text, self._preview_entries)
 
         def _apply_loaded_html(self):
             mode_key = self._mode_combo.currentData() or 'page'
@@ -894,6 +918,20 @@ if QtCore is not None:
         def _misc_dir(self):
             directories = self._misc_dirs()
             return directories[0] if directories else pathlib.Path(__file__).resolve().parents[2] / 'misc'
+
+        def _overview_icon_browser(self):
+            browser = getattr(self, '_overview_browser', None)
+            if browser is None:
+                browser = QtWidgets.QTextBrowser(self)
+                browser.hide()
+                browser.setOpenExternalLinks(False)
+                browser.setOpenLinks(False)
+                browser.setFrameShape(QtWidgets.QFrame.NoFrame)
+                browser.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+                browser.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+                browser.setStyleSheet('background: black; border: 0;')
+                self._overview_browser = browser
+            return browser
 
         def _find_misc_asset(self, filename):
             for directory in self._misc_dirs():
@@ -1251,6 +1289,7 @@ if QtCore is not None:
                 if self._page_browser is not None:
                     self._page_browser.setHtml('')
                 self._update_crt_overlay()
+                self._sync_overview_preload()
                 return
             page_mode = self._mode_combo.currentData() == 'page' and bool(self._preview_entries)
             self._subpage_combo.setEnabled(page_mode and len(self._preview_entries) > 1)
@@ -1263,6 +1302,7 @@ if QtCore is not None:
                 self._update_subpage_controls()
                 self._sync_auto_timer()
                 self._update_crt_overlay()
+                self._sync_overview_preload()
                 return
 
             self._preview_stack.setCurrentWidget(self._raw_browser)
@@ -1271,6 +1311,7 @@ if QtCore is not None:
             self._update_subpage_controls()
             self._sync_auto_timer()
             self._update_crt_overlay()
+            self._sync_overview_preload()
 
         def _apply_window_mode(self):
             immersive = self._window_toggle.isChecked()
@@ -1310,6 +1351,8 @@ if QtCore is not None:
             self._set_folder_mode_enabled(False)
             self._load_html_file(filename)
             self._apply_loaded_html()
+            self._update_overview_button_state()
+            self._sync_overview_preload()
 
         def open_html_folder(self, directory):
             self._set_mode_key('page')
@@ -1318,6 +1361,373 @@ if QtCore is not None:
                 raise ValueError('Selected folder does not contain any .html files.')
             self._all_folder_entries = entries
             self._rebuild_folder_entries(initial_index=0)
+            self._update_overview_button_state()
+            self._sync_overview_preload()
+
+        def _html_overview_source_entries(self):
+            if self._all_folder_entries:
+                return tuple(self._all_folder_entries)
+            if self._filename:
+                try:
+                    entries = list_html_folder_entries(os.path.dirname(self._filename))
+                except Exception:
+                    entries = ()
+                if entries:
+                    return tuple(entries)
+            return ()
+
+        def _html_overview_source_entries_for_loading(self):
+            entries = []
+            for entry in self._html_overview_source_entries():
+                if (
+                    self._no_hex_pages_toggle.isChecked()
+                    and entry.page_number is not None
+                    and not ServiceNavigator.is_decimal_page(entry.page_number)
+                ):
+                    continue
+                entries.append(entry)
+            return tuple(entries)
+
+        def _update_overview_button_state(self):
+            enabled = bool(self._html_overview_source_entries())
+            self._overview_button.setEnabled(enabled)
+            self._load_overview_toggle.setEnabled(enabled)
+            if not enabled:
+                blocked = self._load_overview_toggle.blockSignals(True)
+                self._load_overview_toggle.setChecked(False)
+                self._load_overview_toggle.blockSignals(blocked)
+                self._stop_overview_preload()
+
+        def _html_overview_signature(self, source_entries):
+            return (
+                tuple(entry.path for entry in source_entries),
+                self._single_height_toggle.isChecked(),
+                self._single_width_toggle.isChecked(),
+                self._no_flash_toggle.isChecked(),
+                self._all_symbols_toggle.isChecked(),
+                self._crt_toggle.isChecked(),
+            )
+
+        def _update_overview_status_label(self):
+            if self._overview_preload_total <= 0:
+                self._overview_status_label.setText('')
+                self._overview_status_label.hide()
+                return
+            self._overview_status_label.setText(
+                f'Loading previews {self._overview_preload_loaded}/{self._overview_preload_total}'
+            )
+            self._overview_status_label.show()
+
+        def _stop_overview_preload(self, clear_progress=True):
+            self._overview_preload_timer.stop()
+            if clear_progress:
+                self._overview_preload_queue = []
+                self._overview_preload_total = 0
+                self._overview_preload_loaded = 0
+            self._overview_status_label.setText('')
+            self._overview_status_label.hide()
+
+        def _start_overview_preload(self):
+            if (
+                not self._load_overview_toggle.isChecked()
+                or (self._overview_dialog is not None and self._overview_dialog.isVisible())
+            ):
+                self._stop_overview_preload()
+                return
+
+            source_entries = self._html_overview_source_entries_for_loading()
+            if not source_entries:
+                self._stop_overview_preload()
+                return
+
+            signature = self._html_overview_signature(source_entries)
+            if signature != self._overview_signature:
+                self._overview_signature = signature
+                self._overview_icon_cache.clear()
+                if self._overview_dialog is not None:
+                    self._overview_dialog.clear_icon_cache()
+
+            entries = tuple(self._build_html_overview_entries(source_entries))
+            self._overview_preload_total = len(entries)
+            self._overview_preload_queue = [
+                entry for entry in entries
+                if (entry.page_number, entry.subpage_number) not in self._overview_icon_cache
+            ]
+            self._overview_preload_loaded = self._overview_preload_total - len(self._overview_preload_queue)
+
+            if not self._overview_preload_queue:
+                self._stop_overview_preload()
+                return
+
+            self._update_overview_status_label()
+            self._overview_preload_timer.start()
+
+        def _preload_overview_batch(self):  # pragma: no cover - GUI timer path
+            if (
+                not self._load_overview_toggle.isChecked()
+                or (self._overview_dialog is not None and self._overview_dialog.isVisible())
+            ):
+                self._stop_overview_preload()
+                return
+
+            icon_size = QtCore.QSize(192, 144)
+            for _ in range(6):
+                if not self._overview_preload_queue:
+                    self._stop_overview_preload()
+                    return
+
+                entry = self._overview_preload_queue.pop(0)
+                key = (entry.page_number, entry.subpage_number)
+                if key not in self._overview_icon_cache:
+                    icon = self._make_html_overview_icon(entry.page_number, entry.subpage_number, icon_size)
+                    if icon is not None:
+                        self._overview_icon_cache[key] = icon
+                self._overview_preload_loaded += 1
+
+            self._update_overview_status_label()
+
+        def _set_load_overview(self, enabled):
+            if enabled:
+                self._start_overview_preload()
+            else:
+                self._stop_overview_preload()
+
+        def _resume_overview_preload(self, *_args):
+            if self._load_overview_toggle.isChecked():
+                self._start_overview_preload()
+            else:
+                self._stop_overview_preload()
+
+        def _sync_overview_preload(self):
+            if self._load_overview_toggle.isChecked():
+                self._start_overview_preload()
+            else:
+                self._stop_overview_preload()
+
+        def _read_html_overview_source(self, path):
+            resolved = os.path.abspath(path)
+            cached = self._overview_source_cache.get(resolved)
+            if cached is not None:
+                return cached
+            with open(resolved, 'r', encoding='utf-8', errors='ignore') as handle:
+                html_text = handle.read()
+            preview_entries = extract_html_preview_entries(html_text)
+            cached = (html_text, preview_entries)
+            self._overview_source_cache[resolved] = cached
+            return cached
+
+        def _build_html_overview_entries(self, source_entries):
+            entries = []
+            self._overview_selection_map = {}
+
+            for file_index, folder_entry in enumerate(source_entries, start=1):
+                if folder_entry.page_number is None:
+                    continue
+                _, preview_entries = self._read_html_overview_source(folder_entry.path)
+                page_label = folder_entry.label.split(' / ', 1)[0]
+                if preview_entries:
+                    total = len(preview_entries)
+                    for preview_index, preview_entry in enumerate(preview_entries):
+                        selection_id = (file_index << 12) | preview_index
+                        prefix = f'{folder_entry.subpage_number:04X} / ' if folder_entry.subpage_number is not None else ''
+                        if total > 1:
+                            subpage_label = f'{prefix}{preview_entry.label} ({preview_index + 1:02d}/{total:02d})'
+                        else:
+                            subpage_label = f'{prefix}{preview_entry.label}'
+                        entries.append(OverviewEntry(
+                            page_number=folder_entry.page_number,
+                            subpage_number=selection_id,
+                            page_label=page_label,
+                            subpage_label=subpage_label,
+                        ))
+                        self._overview_selection_map[(folder_entry.page_number, selection_id)] = (
+                            folder_entry.path,
+                            preview_index,
+                        )
+                else:
+                    selection_id = (file_index << 12)
+                    subpage_label = (
+                        f'{folder_entry.subpage_number:04X}'
+                        if folder_entry.subpage_number is not None
+                        else folder_entry.file_name
+                    )
+                    entries.append(OverviewEntry(
+                        page_number=folder_entry.page_number,
+                        subpage_number=selection_id,
+                        page_label=page_label,
+                        subpage_label=subpage_label,
+                    ))
+                    self._overview_selection_map[(folder_entry.page_number, selection_id)] = (
+                        folder_entry.path,
+                        None,
+                    )
+
+            return tuple(entries)
+
+        def _html_overview_css(self):
+            return textwrap.dedent(
+                '''
+                html, body {
+                    margin: 0;
+                    padding: 0;
+                    background: black;
+                }
+
+                body {
+                    padding: 8px !important;
+                    text-align: center;
+                }
+
+                .subpage {
+                    font-size: 18px !important;
+                    border: solid black 6px !important;
+                    border-bottom: solid black 12px !important;
+                    text-shadow: 0 0 0.04em !important;
+                }
+                '''
+            )
+
+        def _build_html_overview_document(self, path, preview_index):
+            html_text, preview_entries = self._read_html_overview_source(path)
+            css = '\n'.join(
+                part for part in (
+                    self._misc_font_css(),
+                    self._base_preview_css(),
+                    self._fallback_crt_css(),
+                    self._preview_feature_css(),
+                    self._fallback_page_overrides(),
+                    self._html_overview_css(),
+                ) if part
+            )
+            if preview_entries and preview_index is not None:
+                fragment = normalise_html_subpage_fragment(
+                    preview_entries[min(preview_index, len(preview_entries) - 1)].html
+                )
+                return textwrap.dedent(
+                    '''\
+                    <html>
+                        <head>
+                            <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+                            <title>{title}</title>
+                            <style>
+                            {css}
+                            </style>
+                        </head>
+                        <body>
+                        {body}
+                        </body>
+                    </html>
+                    '''
+                ).format(
+                    title=html.escape(os.path.basename(path) or 'Teletext Page'),
+                    css=css,
+                    body=fragment,
+                )
+            return self._inject_into_head(
+                self._inject_misc_fonts(html_text),
+                f'<style>\n{css}\n</style>',
+            )
+
+        def _make_html_overview_icon(self, page_number, selection_id, icon_size):
+            source = self._overview_selection_map.get((page_number, selection_id))
+            if source is None:
+                return None
+            path, preview_index = source
+            try:
+                browser = self._overview_icon_browser()
+                document_html = self._build_html_overview_document(path, preview_index)
+                render_size = QtCore.QSize(1040, 780)
+                browser.setFixedSize(render_size)
+                browser.setSearchPaths([os.path.dirname(path)] + [str(directory) for directory in self._misc_dirs()])
+                browser.document().setBaseUrl(
+                    QtCore.QUrl.fromLocalFile(os.path.join(os.path.dirname(path), ''))
+                )
+                browser.setHtml(document_html)
+                browser.verticalScrollBar().setValue(0)
+                browser.horizontalScrollBar().setValue(0)
+                pixmap = QtGui.QPixmap(render_size)
+                pixmap.fill(QtCore.Qt.black)
+                painter = QtGui.QPainter(pixmap)
+                browser.render(painter)
+                painter.end()
+            except Exception:
+                return None
+            return QtGui.QIcon(
+                pixmap.scaled(
+                    icon_size,
+                    QtCore.Qt.KeepAspectRatio,
+                    QtCore.Qt.SmoothTransformation,
+                )
+            )
+
+        def _open_html_overview_selection(self, page_number, selection_id):
+            source = self._overview_selection_map.get((page_number, selection_id))
+            if source is None:
+                return
+            path, preview_index = source
+            if (
+                self._all_folder_entries
+                and self._no_hex_pages_toggle.isChecked()
+                and not ServiceNavigator.is_decimal_page(page_number)
+            ):
+                blocked = self._no_hex_pages_toggle.blockSignals(True)
+                self._no_hex_pages_toggle.setChecked(False)
+                self._no_hex_pages_toggle.blockSignals(blocked)
+                self._rebuild_folder_entries()
+            folder_index = self._folder_entry_index_for_path(path)
+            if folder_index is not None:
+                self._open_folder_entry(folder_index)
+            else:
+                self._load_html_file(path)
+                self._apply_loaded_html()
+            self._set_mode_key('page')
+            if preview_index is not None and 0 <= preview_index < self._subpage_combo.count():
+                self._subpage_combo.setCurrentIndex(preview_index)
+            self._refresh_preview()
+
+        def show_overview(self):
+            source_entries = self._html_overview_source_entries()
+            if not source_entries:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    'HTML Preview',
+                    'No teletext-like HTML pages are available for Overview.',
+                )
+                return
+            overview_entries = self._build_html_overview_entries(source_entries)
+            if not overview_entries:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    'HTML Preview',
+                    'No teletext-like HTML pages are available for Overview.',
+                )
+                return
+            signature = self._html_overview_signature(source_entries)
+            if signature != self._overview_signature:
+                self._overview_icon_cache.clear()
+                if self._overview_dialog is not None:
+                    self._overview_dialog.clear_icon_cache()
+                self._overview_signature = signature
+            if self._overview_dialog is None:
+                self._overview_dialog = PageOverviewDialog(self)
+                self._overview_dialog.selectionRequested.connect(self._open_html_overview_selection)
+                self._overview_dialog.finished.connect(self._resume_overview_preload)
+                include_subpages = True
+                include_hex_pages = not self._no_hex_pages_toggle.isChecked()
+            else:
+                include_subpages = self._overview_dialog.include_subpages
+                include_hex_pages = self._overview_dialog.include_hex_pages
+            self._stop_overview_preload()
+            self._overview_dialog.populate(
+                overview_entries,
+                self._make_html_overview_icon,
+                include_subpages=include_subpages,
+                include_hex_pages=include_hex_pages,
+                icon_cache=self._overview_icon_cache,
+            )
+            self._overview_dialog.show()
+            self._overview_dialog.raise_()
+            self._overview_dialog.activateWindow()
 
         def _filtered_folder_entries(self):
             entries = []
@@ -1333,6 +1743,7 @@ if QtCore is not None:
 
         def _rebuild_folder_entries(self, checked=False, initial_index=None):
             if not self._all_folder_entries:
+                self._sync_overview_preload()
                 return
             current_path = None
             if self._folder_entries and 0 <= self._folder_index < len(self._folder_entries):
@@ -1347,6 +1758,7 @@ if QtCore is not None:
                 self._folder_index = -1
                 self._set_folder_mode_enabled(True)
                 self._page_input.clear()
+                self._sync_overview_preload()
                 return
             target_index = 0
             if current_path is not None:
@@ -1358,6 +1770,7 @@ if QtCore is not None:
                 target_index = max(0, min(int(initial_index), len(self._folder_entries) - 1))
             self._set_folder_mode_enabled(True)
             self._open_folder_entry(target_index)
+            self._sync_overview_preload()
 
         def _open_folder_entry(self, index):
             if index < 0 or index >= len(self._folder_entries):
