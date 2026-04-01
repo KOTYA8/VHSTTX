@@ -1519,6 +1519,47 @@ def vbicrop(input_path, config, pause, tape_format, n_lines, ignore_lines, used_
 
 
 @teletext.command()
+@click.argument('input_path', type=click.Path(exists=True, dir_okay=False, readable=True))
+def t42crop(input_path):
+
+    """Open the T42 crop editor for a recorded .t42 file."""
+
+    try:
+        from teletext.gui.t42crop import (
+            edited_t42_entries,
+            load_t42_entries,
+            run_t42_crop_window,
+            write_t42_entries,
+        )
+    except ModuleNotFoundError as e:
+        if e.name == 'PyQt5':
+            raise click.UsageError(f'{e.msg}. PyQt5 is not installed. T42 crop window is not available.')
+        raise
+
+    entries = load_t42_entries(input_path)
+    if not entries:
+        raise click.UsageError('Input file does not contain any complete teletext packets.')
+
+    def save_callback(output_path, cut_ranges, insertions, deleted_pages, deleted_subpages):
+        write_t42_entries(
+            edited_t42_entries(
+                entries,
+                cut_ranges=cut_ranges,
+                insertions=insertions,
+                deleted_pages=deleted_pages,
+                deleted_subpages=deleted_subpages,
+            ),
+            output_path,
+        )
+
+    run_t42_crop_window(
+        input_path=input_path,
+        entries=entries,
+        save_callback=save_callback,
+    )
+
+
+@teletext.command()
 @click.option('-M', '--mode', type=click.Choice(['deconvolve', 'slice']), default='deconvolve', help='Deconvolution mode.')
 @click.option('-8', '--eight-bit', is_flag=True, help='Treat rows 1-25 as 8-bit data without parity check.')
 @click.option('-f', '--tape-format', type=click.Choice(Config.tape_formats), default='vhs', help='Source VCR format.')

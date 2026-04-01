@@ -360,6 +360,25 @@ def list_html_folder_entries(directory):
     return tuple(entry for _, entry in entries)
 
 
+def nearest_html_pages(entries, page_number):
+    page_number = int(page_number)
+    pages = sorted({
+        int(entry.page_number)
+        for entry in entries
+        if entry.page_number is not None
+    })
+    previous_page = None
+    next_page = None
+    for candidate in pages:
+        if candidate < page_number:
+            previous_page = candidate
+            continue
+        if candidate > page_number:
+            next_page = candidate
+            break
+    return previous_page, next_page
+
+
 def list_t42_files(directory):
     directory_path = pathlib.Path(directory)
     if not directory_path.is_dir():

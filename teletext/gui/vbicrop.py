@@ -71,6 +71,14 @@ def count_inserted_frames(insertions):
     return sum(int(insertion['frame_count']) for insertion in insertions)
 
 
+def selection_end_targets(start_frame, total_frames):
+    total_frames = max(int(total_frames), 1)
+    maximum = total_frames - 1
+    start = _clamp(start_frame, 0, maximum)
+    middle = start + ((maximum - start) // 2)
+    return start, middle, maximum
+
+
 class CropStateHandle:
     CURRENT_INDEX = 0
     PLAYING_INDEX = 1
@@ -396,7 +404,7 @@ if IMPORT_ERROR is None:
 
             self._range_slider = FrameRangeSlider(0, self._total_frames - 1, 0, self._total_frames - 1)
             self._range_slider.rangeChanged.connect(self._range_slider_changed)
-            selection_layout.addWidget(self._range_slider, 0, 0, 1, 8)
+            selection_layout.addWidget(self._range_slider, 0, 0, 1, 10)
 
             selection_layout.addWidget(QtWidgets.QLabel('Start'), 1, 0)
             self._start_box = QtWidgets.QSpinBox()
@@ -422,9 +430,17 @@ if IMPORT_ERROR is None:
             self._delete_button.clicked.connect(self._delete_selection)
             selection_layout.addWidget(self._delete_button, 1, 6)
 
-            self._add_file_button = QtWidgets.QPushButton('Add File...')
-            self._add_file_button.clicked.connect(self._add_file)
-            selection_layout.addWidget(self._add_file_button, 1, 7)
+            self._selection_start_button = QtWidgets.QPushButton('Sel Start')
+            self._selection_start_button.clicked.connect(self._jump_selection_start)
+            selection_layout.addWidget(self._selection_start_button, 2, 4)
+
+            self._selection_mid_button = QtWidgets.QPushButton('Sel Mid')
+            self._selection_mid_button.clicked.connect(self._jump_selection_middle)
+            selection_layout.addWidget(self._selection_mid_button, 2, 5)
+
+            self._selection_end_button = QtWidgets.QPushButton('Sel End')
+            self._selection_end_button.clicked.connect(self._jump_selection_end)
+            selection_layout.addWidget(self._selection_end_button, 2, 6)
 
             selection_layout.addWidget(QtWidgets.QLabel('Minutes'), 2, 0)
             self._duration_minutes_box = QtWidgets.QSpinBox()
@@ -479,6 +495,10 @@ if IMPORT_ERROR is None:
             button_row.addWidget(self._live_tune_button)
 
             button_row.addStretch(1)
+
+            self._add_file_button = QtWidgets.QPushButton('Add File...')
+            self._add_file_button.clicked.connect(self._add_file)
+            button_row.addWidget(self._add_file_button)
 
             self._save_button = QtWidgets.QPushButton('Save File...')
             self._save_button.clicked.connect(self._save_selection)
@@ -654,6 +674,26 @@ if IMPORT_ERROR is None:
 
         def _mark_end(self):
             self._state.set_selection_to_current_end()
+            self._sync_from_state()
+
+        def _jump_selection_start(self):
+            start, _ = self._state.selection_range()
+            self._state.set_playing(False)
+            self._state.set_selection_range(start, start)
+            self._sync_from_state()
+
+        def _jump_selection_middle(self):
+            start, end = self._state.selection_range()
+            self._state.set_playing(False)
+            _, middle, _ = selection_end_targets(start, self._total_frames)
+            self._state.set_selection_range(start, middle)
+            self._sync_from_state()
+
+        def _jump_selection_end(self):
+            start, _ = self._state.selection_range()
+            self._state.set_playing(False)
+            _, _, end = selection_end_targets(start, self._total_frames)
+            self._state.set_selection_range(start, end)
             self._sync_from_state()
 
         def _reset_selection(self):

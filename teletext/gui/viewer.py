@@ -46,6 +46,7 @@ if IMPORT_ERROR is None:
         export_split_t42,
         list_html_folder_entries,
         load_service_from_t42_directory,
+        nearest_html_pages,
         normalise_html_subpage_fragment,
     )
 
@@ -735,24 +736,24 @@ if QtCore is not None:
             self._auto_toggle.toggled.connect(self._sync_auto_timer)
             controls.addWidget(self._auto_toggle)
 
-            self._single_height_toggle = QtWidgets.QCheckBox('Single Height')
+            self._single_height_toggle = QtWidgets.QCheckBox(self)
+            self._single_height_toggle.hide()
             self._single_height_toggle.setChecked(True)
             self._single_height_toggle.toggled.connect(self._refresh_preview)
-            controls.addWidget(self._single_height_toggle)
 
-            self._single_width_toggle = QtWidgets.QCheckBox('Single Width')
+            self._single_width_toggle = QtWidgets.QCheckBox(self)
+            self._single_width_toggle.hide()
             self._single_width_toggle.setChecked(True)
             self._single_width_toggle.toggled.connect(self._refresh_preview)
-            controls.addWidget(self._single_width_toggle)
 
-            self._no_flash_toggle = QtWidgets.QCheckBox('No Flash')
+            self._no_flash_toggle = QtWidgets.QCheckBox(self)
+            self._no_flash_toggle.hide()
             self._no_flash_toggle.setChecked(True)
             self._no_flash_toggle.toggled.connect(self._refresh_preview)
-            controls.addWidget(self._no_flash_toggle)
 
-            self._all_symbols_toggle = QtWidgets.QCheckBox('All Symbols')
+            self._all_symbols_toggle = QtWidgets.QCheckBox(self)
+            self._all_symbols_toggle.hide()
             self._all_symbols_toggle.toggled.connect(self._refresh_preview)
-            controls.addWidget(self._all_symbols_toggle)
 
             self._crt_toggle = QtWidgets.QCheckBox('CRT')
             self._crt_toggle.setCheckable(True)
@@ -760,13 +761,49 @@ if QtCore is not None:
             self._crt_toggle.toggled.connect(self._refresh_preview)
             controls.addWidget(self._crt_toggle)
 
-            self._mouse_wheel_toggle = QtWidgets.QCheckBox('Wheel Pages')
-            self._mouse_wheel_toggle.setChecked(True)
-            controls.addWidget(self._mouse_wheel_toggle)
-
             self._window_toggle = QtWidgets.QCheckBox('Window')
             self._window_toggle.toggled.connect(self._set_window_mode)
             controls.addWidget(self._window_toggle)
+
+            self._settings_button = QtWidgets.QToolButton()
+            self._settings_button.setText('Settings')
+            self._settings_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._settings_menu = QtWidgets.QMenu(self._settings_button)
+
+            self._single_height_action = self._settings_menu.addAction('Single Height')
+            self._single_height_action.setCheckable(True)
+            self._single_height_action.setChecked(True)
+            self._single_height_action.toggled.connect(self._single_height_toggle.setChecked)
+            self._single_height_toggle.toggled.connect(self._single_height_action.setChecked)
+
+            self._single_width_action = self._settings_menu.addAction('Single Width')
+            self._single_width_action.setCheckable(True)
+            self._single_width_action.setChecked(True)
+            self._single_width_action.toggled.connect(self._single_width_toggle.setChecked)
+            self._single_width_toggle.toggled.connect(self._single_width_action.setChecked)
+
+            self._no_flash_action = self._settings_menu.addAction('No Flash')
+            self._no_flash_action.setCheckable(True)
+            self._no_flash_action.setChecked(True)
+            self._no_flash_action.toggled.connect(self._no_flash_toggle.setChecked)
+            self._no_flash_toggle.toggled.connect(self._no_flash_action.setChecked)
+
+            self._all_symbols_action = self._settings_menu.addAction('All Symbols')
+            self._all_symbols_action.setCheckable(True)
+            self._all_symbols_action.toggled.connect(self._all_symbols_toggle.setChecked)
+            self._all_symbols_toggle.toggled.connect(self._all_symbols_action.setChecked)
+
+            self._mouse_wheel_toggle = QtWidgets.QCheckBox(self)
+            self._mouse_wheel_toggle.hide()
+            self._mouse_wheel_toggle.setChecked(True)
+            self._mouse_wheel_action = self._settings_menu.addAction('Wheel Pages')
+            self._mouse_wheel_action.setCheckable(True)
+            self._mouse_wheel_action.setChecked(True)
+            self._mouse_wheel_action.toggled.connect(self._mouse_wheel_toggle.setChecked)
+            self._mouse_wheel_toggle.toggled.connect(self._mouse_wheel_action.setChecked)
+
+            self._settings_button.setMenu(self._settings_menu)
+            controls.addWidget(self._settings_button)
 
             controls.addStretch(1)
             root.addWidget(self._controls_widget)
@@ -1833,6 +1870,53 @@ if QtCore is not None:
                     return index
             return None
 
+        @staticmethod
+        def _page_display_label(page_number):
+            if page_number is None:
+                return 'unavailable'
+            return f'P{int(page_number):03X}'
+
+        def _show_missing_page_dialog(self, requested_page_number):
+            previous_page, next_page = nearest_html_pages(self._folder_entries, requested_page_number)
+            message = QtWidgets.QMessageBox(self)
+            message.setWindowTitle('HTML Preview')
+            message.setIcon(QtWidgets.QMessageBox.Information)
+            message.setText(
+                f'Page {self._page_display_label(requested_page_number)} is not present in this folder.'
+            )
+            message.setInformativeText(
+                f'Closest before: {self._page_display_label(previous_page)}\n'
+                f'Closest after: {self._page_display_label(next_page)}'
+            )
+
+            previous_button = None
+            next_button = None
+            if previous_page is not None:
+                previous_button = message.addButton(
+                    f'Go to {self._page_display_label(previous_page)}',
+                    QtWidgets.QMessageBox.ActionRole,
+                )
+            if next_page is not None:
+                next_button = message.addButton(
+                    f'Go to {self._page_display_label(next_page)}',
+                    QtWidgets.QMessageBox.ActionRole,
+                )
+            message.addButton(QtWidgets.QMessageBox.Ok)
+            message.exec_()
+
+            clicked = message.clickedButton()
+            if clicked is previous_button and previous_page is not None:
+                index = self._folder_entry_index_for_page(previous_page)
+                if index is not None:
+                    self._open_folder_entry(index)
+                    return True
+            if clicked is next_button and next_page is not None:
+                index = self._folder_entry_index_for_page(next_page)
+                if index is not None:
+                    self._open_folder_entry(index)
+                    return True
+            return False
+
         def go_to_page_text(self):
             if not self._folder_entries:
                 return False
@@ -1845,13 +1929,10 @@ if QtCore is not None:
                 return False
             index = self._folder_entry_index_for_page(page_number)
             if index is None:
-                QtWidgets.QMessageBox.information(
-                    self,
-                    'HTML Preview',
-                    f'Page {self._page_input.text().strip().upper()} is not present in this folder.',
-                )
-                self._reset_direct_page_buffer()
-                return False
+                if not self._show_missing_page_dialog(page_number):
+                    self._reset_direct_page_buffer()
+                    return False
+                return True
             self._open_folder_entry(index)
             return True
 
