@@ -1,10 +1,13 @@
 import unittest
+import tempfile
+import os
 
 import click
 from click.testing import CliRunner
 
 import teletext.cli.teletext
 import teletext.cli.training
+from teletext.cli.livepause import PauseController
 from teletext.vbi.config import Config
 
 
@@ -228,6 +231,73 @@ class TestUrxvtHelpers(unittest.TestCase):
             '-e',
         ])
         self.assertEqual(command[10:], ['teletext', 'deconvolve', '-p', '100', 'test.vbi'])
+
+
+class TestPauseHelpers(unittest.TestCase):
+
+    def test_pause_controller_wrap_iterable_preserves_items(self):
+        controller = PauseController(enabled=False)
+        controller.set_paused(True)
+        controller.set_paused(False)
+
+        self.assertEqual(list(controller.wrap_iterable([1, 2, 3])), [1, 2, 3])
+
+
+class TestVBICropHelpers(unittest.TestCase):
+
+    def test_estimate_vbi_size_megabytes_matches_frame_size(self):
+        config = Config(card='bt8x8')
+        frame_size = teletext.cli.teletext.frame_size_for_config(config)
+        expected = (frame_size * 2) / (1024 * 1024)
+
+        actual = teletext.cli.teletext.estimate_vbi_size_megabytes(2, config)
+
+        self.assertAlmostEqual(actual, expected)
+
+    def test_save_edited_vbi_removes_multiple_cut_ranges(self):
+        config = Config(card='bt8x8')
+        frame_size = teletext.cli.teletext.frame_size_for_config(config)
+        controls = (50, 50, 50, 50, 48.0, 3.0, 0.5, 0.5)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = os.path.join(tmpdir, 'input.vbi')
+            output_path = os.path.join(tmpdir, 'output.vbi')
+            with open(input_path, 'wb') as input_file:
+                input_file.write((b'\x60' * frame_size) * 5)
+
+            teletext.cli.teletext.save_edited_vbi(
+                input_path=input_path,
+                output_path=output_path,
+                config=config,
+                controls=controls,
+                cut_ranges=((1, 1), (3, 4)),
+            )
+
+            self.assertEqual(os.path.getsize(output_path), frame_size * 2)
+
+    def test_save_edited_vbi_inserts_file_after_selected_frame(self):
+        config = Config(card='bt8x8')
+        frame_size = teletext.cli.teletext.frame_size_for_config(config)
+        controls = (50, 50, 50, 50, 48.0, 3.0, 0.5, 0.5)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = os.path.join(tmpdir, 'input.vbi')
+            insert_path = os.path.join(tmpdir, 'insert.vbi')
+            output_path = os.path.join(tmpdir, 'output.vbi')
+            with open(input_path, 'wb') as input_file:
+                input_file.write((b'\x60' * frame_size) * 2)
+            with open(insert_path, 'wb') as insert_file:
+                insert_file.write(b'\x70' * frame_size)
+
+            teletext.cli.teletext.save_edited_vbi(
+                input_path=input_path,
+                output_path=output_path,
+                config=config,
+                controls=controls,
+                insertions=({'after_frame': 0, 'path': insert_path, 'frame_count': 1},),
+            )
+
+            self.assertEqual(os.path.getsize(output_path), frame_size * 3)
 
 
 class TestCmdTraining(TestCommandTeletext):

@@ -188,6 +188,11 @@ class TestServiceNavigator(unittest.TestCase):
         self.assertTrue(self.navigator.go_to_page_text('P101'))
         self.assertEqual(self.navigator.current_page_number, 0x101)
 
+    def test_nearest_pages_returns_previous_and_next_existing_pages(self):
+        self.assertEqual(self.navigator.nearest_pages(0x180), (0x101, 0x200))
+        self.assertEqual(self.navigator.nearest_pages(0x100), (None, 0x101))
+        self.assertEqual(self.navigator.nearest_pages(0x800), (0x200, None))
+
     def test_parse_page_number_rejects_invalid_values(self):
         with self.assertRaises(ValueError):
             ServiceNavigator.parse_page_number('99')
