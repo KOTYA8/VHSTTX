@@ -74,6 +74,10 @@ class TestCmdVBICrop(TestCommandTeletext):
     cmd = teletext.cli.teletext.vbicrop
 
 
+class TestCmdT42Crop(TestCommandTeletext):
+    cmd = teletext.cli.teletext.t42crop
+
+
 class TestCmdDeconvolve(TestCommandTeletext):
     cmd = teletext.cli.teletext.deconvolve
 

@@ -15,6 +15,7 @@ from teletext.gui.vbituner import (
     save_local_presets,
     save_preset_text,
 )
+from teletext.gui.vbicrop import selection_end_targets
 from teletext.vbi.line import (
     apply_signal_controls,
     process_frame_bytes,
@@ -23,6 +24,11 @@ from teletext.vbi.line import (
 
 
 class TestSignalControls(unittest.TestCase):
+
+    def test_selection_end_targets_cover_remaining_timeline(self):
+        self.assertEqual(selection_end_targets(0, 101), (0, 50, 100))
+        self.assertEqual(selection_end_targets(40, 101), (40, 70, 100))
+        self.assertEqual(selection_end_targets(100, 101), (100, 100, 100))
 
     def test_neutral_controls_leave_samples_unchanged(self):
         samples = np.array([12, 48, 96, 144, 192, 220], dtype=np.float32)

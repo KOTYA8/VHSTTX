@@ -25,6 +25,7 @@ from teletext.viewer import (
     export_split_t42,
     list_html_folder_entries,
     load_service_from_t42_directory,
+    nearest_html_pages,
     normalise_html_subpage_fragment,
     render_subpage_text,
 )
@@ -492,6 +493,17 @@ class TestServiceExportHelpers(unittest.TestCase):
         )
         self.assertEqual(entries[0].label, 'P100')
         self.assertEqual(entries[1].label, 'P100 / 0001')
+
+    def test_nearest_html_pages_returns_previous_and_next_existing_pages(self):
+        directory = pathlib.Path(self.tempdir.name)
+        for name in ('100.html', '101-0001.html', '200.html', 'misc.html'):
+            (directory / name).write_text('<html></html>', encoding='utf-8')
+
+        entries = list_html_folder_entries(directory)
+
+        self.assertEqual(nearest_html_pages(entries, 0x180), (0x101, 0x200))
+        self.assertEqual(nearest_html_pages(entries, 0x100), (None, 0x101))
+        self.assertEqual(nearest_html_pages(entries, 0x800), (0x200, None))
 
     def test_load_service_from_t42_directory_collects_all_pages(self):
         directory = pathlib.Path(self.tempdir.name)
