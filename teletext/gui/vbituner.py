@@ -1,4 +1,6 @@
+import json
 import multiprocessing as mp
+import os
 import shlex
 import sys
 
@@ -39,6 +41,8 @@ DEFAULT_CONTROLS = (
     CONTRAST_COEFF_DEFAULT if IMPORT_ERROR is None else 0.5,
 )
 DEFAULT_LINE_COUNT = 32
+PRESET_FILE_FILTER = 'VBI Tune Presets (*.vtnargs *.txt);;All Files (*)'
+LOCAL_PRESET_FILE = 'vbi-tune-presets.json'
 
 
 def _normalise_decoder_tuning(decoder_tuning):
@@ -311,6 +315,92 @@ def parse_tuning_args(text, defaults=DEFAULT_CONTROLS, decoder_defaults=None, ta
     )
 
 
+def save_preset_text(path, text):
+    content = text.strip()
+    if not content:
+        raise ValueError('Preset is empty.')
+    with open(path, 'w', encoding='utf-8', newline='\n') as handle:
+        handle.write(content)
+        handle.write('\n')
+
+
+def load_preset_text(path):
+    with open(path, 'r', encoding='utf-8') as handle:
+        lines = [
+            line.strip()
+            for line in handle
+            if line.strip() and not line.lstrip().startswith('#')
+        ]
+    if not lines:
+        raise ValueError('Preset file is empty.')
+    return ' '.join(lines)
+
+
+def default_local_preset_store_path(base_dir=None):
+    root = os.path.expanduser(base_dir or '~')
+    return os.path.join(root, '.vhsttx', LOCAL_PRESET_FILE)
+
+
+def load_local_presets(path=None):
+    path = path or default_local_preset_store_path()
+    if not os.path.exists(path):
+        return {}
+    with open(path, 'r', encoding='utf-8') as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError('Local preset store is invalid.')
+    presets = {}
+    for name, value in data.items():
+        preset_name = str(name).strip()
+        preset_value = str(value).strip()
+        if preset_name and preset_value:
+            presets[preset_name] = preset_value
+    return dict(sorted(presets.items(), key=lambda item: item[0].lower()))
+
+
+def save_local_presets(presets, path=None):
+    path = path or default_local_preset_store_path()
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    cleaned = {}
+    for name, value in presets.items():
+        preset_name = str(name).strip()
+        preset_value = str(value).strip()
+        if not preset_name:
+            raise ValueError('Preset name is empty.')
+        if not preset_value:
+            raise ValueError(f'Preset {preset_name!r} is empty.')
+        cleaned[preset_name] = preset_value
+    with open(path, 'w', encoding='utf-8', newline='\n') as handle:
+        json.dump(dict(sorted(cleaned.items(), key=lambda item: item[0].lower())), handle, indent=2, ensure_ascii=False)
+        handle.write('\n')
+
+
+def save_local_preset(name, text, path=None):
+    preset_name = str(name).strip()
+    preset_text = str(text).strip()
+    if not preset_name:
+        raise ValueError('Preset name is empty.')
+    if not preset_text:
+        raise ValueError('Preset is empty.')
+    presets = load_local_presets(path)
+    presets[preset_name] = preset_text
+    save_local_presets(presets, path)
+    return preset_name
+
+
+def delete_local_preset(name, path=None):
+    preset_name = str(name).strip()
+    if not preset_name:
+        raise ValueError('Preset name is empty.')
+    presets = load_local_presets(path)
+    if preset_name not in presets:
+        raise ValueError(f'Preset {preset_name!r} does not exist.')
+    del presets[preset_name]
+    save_local_presets(presets, path)
+
+
 def _ensure_app():
     global _APP
     app = QtWidgets.QApplication.instance()
@@ -359,6 +449,9 @@ if IMPORT_ERROR is None:
             self._line_count = int(line_count)
             self._default_line_selection = _normalise_line_selection(line_selection, line_count=self._line_count)
             self._default_fix_capture_card = normalise_fix_capture_card(fix_capture_card)
+            self._last_preset_path = None
+            self._local_preset_store_path = default_local_preset_store_path()
+            self._local_presets = {}
 
             if self._show_preview:
                 self.resize(960, 620)
@@ -537,6 +630,24 @@ if IMPORT_ERROR is None:
             args_row.addWidget(apply_args_button)
             root.addLayout(args_row)
 
+            local_presets_row = QtWidgets.QHBoxLayout()
+            local_presets_row.addWidget(QtWidgets.QLabel('Local Preset'))
+            self._local_preset_box = QtWidgets.QComboBox()
+            self._local_preset_box.setEditable(False)
+            self._local_preset_box.setMinimumContentsLength(18)
+            self._local_preset_box.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            local_presets_row.addWidget(self._local_preset_box, 1)
+            load_local_button = QtWidgets.QPushButton('Use Local')
+            load_local_button.clicked.connect(self._load_local_preset)
+            local_presets_row.addWidget(load_local_button)
+            save_local_button = QtWidgets.QPushButton('Save Local')
+            save_local_button.clicked.connect(self._save_local_preset)
+            local_presets_row.addWidget(save_local_button)
+            delete_local_button = QtWidgets.QPushButton('Delete Local')
+            delete_local_button.clicked.connect(self._delete_local_preset)
+            local_presets_row.addWidget(delete_local_button)
+            root.addLayout(local_presets_row)
+
             if live:
                 info_text = 'Live changes apply immediately to new lines.'
             elif self._show_preview:
@@ -562,6 +673,14 @@ if IMPORT_ERROR is None:
             paste_button.clicked.connect(self._paste_args)
             buttons.addWidget(paste_button)
 
+            load_preset_button = QtWidgets.QPushButton('Load Preset')
+            load_preset_button.clicked.connect(self._load_preset)
+            buttons.addWidget(load_preset_button)
+
+            save_preset_button = QtWidgets.QPushButton('Save Preset')
+            save_preset_button.clicked.connect(self._save_preset)
+            buttons.addWidget(save_preset_button)
+
             if live:
                 close_button = QtWidgets.QPushButton('Close')
                 close_button.clicked.connect(self.close)
@@ -584,6 +703,7 @@ if IMPORT_ERROR is None:
                 self._preview_timer.start()
                 self.refresh_preview()
 
+            self._refresh_local_presets()
             self._controls_changed()
 
         @property
@@ -686,6 +806,120 @@ if IMPORT_ERROR is None:
 
         def _copy_args(self):
             QtWidgets.QApplication.clipboard().setText(self._args_input.text())
+
+        def _refresh_local_presets(self, selected_name=None):
+            current_name = selected_name or self._local_preset_box.currentText()
+            try:
+                self._local_presets = load_local_presets(self._local_preset_store_path)
+            except (OSError, ValueError) as exc:
+                self._local_presets = {}
+                QtWidgets.QMessageBox.warning(self, 'VBI Tune', str(exc))
+            self._local_preset_box.blockSignals(True)
+            self._local_preset_box.clear()
+            self._local_preset_box.addItem('')
+            for name in self._local_presets:
+                self._local_preset_box.addItem(name)
+            if current_name and current_name in self._local_presets:
+                self._local_preset_box.setCurrentText(current_name)
+            else:
+                self._local_preset_box.setCurrentIndex(0)
+            self._local_preset_box.blockSignals(False)
+
+        def _selected_local_preset_name(self):
+            name = self._local_preset_box.currentText().strip()
+            if not name:
+                raise ValueError('Select a local preset first.')
+            return name
+
+        def _load_local_preset(self):
+            try:
+                name = self._selected_local_preset_name()
+                text = self._local_presets[name]
+            except (KeyError, ValueError) as exc:
+                QtWidgets.QMessageBox.warning(self, 'VBI Tune', str(exc))
+                return
+            self._args_input.setText(text)
+            self._apply_args_text()
+
+        def _save_local_preset(self):
+            suggested = self._local_preset_box.currentText().strip()
+            name, ok = QtWidgets.QInputDialog.getText(
+                self,
+                'Save Local Preset',
+                'Preset name',
+                text=suggested,
+            )
+            if not ok:
+                return
+            try:
+                saved_name = save_local_preset(name, self._args_input.text(), path=self._local_preset_store_path)
+            except (OSError, ValueError) as exc:
+                QtWidgets.QMessageBox.warning(self, 'VBI Tune', str(exc))
+                return
+            self._refresh_local_presets(selected_name=saved_name)
+
+        def _delete_local_preset(self):
+            try:
+                name = self._selected_local_preset_name()
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self, 'VBI Tune', str(exc))
+                return
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                'Delete Local Preset',
+                f'Delete local preset "{name}"?',
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            try:
+                delete_local_preset(name, path=self._local_preset_store_path)
+            except (OSError, ValueError) as exc:
+                QtWidgets.QMessageBox.warning(self, 'VBI Tune', str(exc))
+                return
+            self._refresh_local_presets()
+
+        def _default_preset_path(self):
+            if self._last_preset_path:
+                return self._last_preset_path
+            return os.path.join(os.getcwd(), 'vbi-tune.vtnargs')
+
+        def _load_preset(self):
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                'Load VBI Tune Preset',
+                self._default_preset_path(),
+                PRESET_FILE_FILTER,
+            )
+            if not path:
+                return
+            try:
+                text = load_preset_text(path)
+            except (OSError, ValueError) as exc:
+                QtWidgets.QMessageBox.warning(self, 'VBI Tune', str(exc))
+                return
+            self._last_preset_path = path
+            self._args_input.setText(text)
+            self._apply_args_text()
+
+        def _save_preset(self):
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save VBI Tune Preset',
+                self._default_preset_path(),
+                PRESET_FILE_FILTER,
+            )
+            if not path:
+                return
+            if not os.path.splitext(path)[1]:
+                path += '.vtnargs'
+            try:
+                save_preset_text(path, self._args_input.text())
+            except (OSError, ValueError) as exc:
+                QtWidgets.QMessageBox.warning(self, 'VBI Tune', str(exc))
+                return
+            self._last_preset_path = path
 
         def _paste_args(self):
             self._apply_parsed_tuning(

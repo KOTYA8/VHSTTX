@@ -85,7 +85,7 @@ def signalcontrolparams(f):
 def previewtuneparams(f):
     options = [
         click.option('-vtn', '--vbi-tune', is_flag=True, help='Open the VBI tuning window before starting processing.'),
-        click.option('-vtnl', '--vbi-tune-live', is_flag=True, help='Open the VBI tuning window and apply changes live.'),
+        click.option('-vtnl', '--vbi-tune-live', is_flag=True, help='Open the VBI tuning window and apply changes live while deconvolving in the terminal.'),
     ]
     for decorator in reversed(options):
         f = decorator(f)
