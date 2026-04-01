@@ -310,6 +310,8 @@ if IMPORT_ERROR is None:
             self._history = []
             self._redo_history = []
             self._cache_dirty = True
+            self._page_tree_dirty = True
+            self._pages_hidden = False
             self._cached_combined_entries = ()
             self._cached_edited_entries = ()
             self._cached_deleted_packet_count = 0
@@ -362,6 +364,7 @@ if IMPORT_ERROR is None:
 
             selection_group = QtWidgets.QGroupBox('Selection')
             selection_layout = QtWidgets.QGridLayout(selection_group)
+            selection_layout.setColumnStretch(4, 1)
             root.addWidget(selection_group)
 
             self._range_slider = FrameRangeSlider(0, self._total_packets - 1, 0, self._total_packets - 1)
@@ -382,27 +385,27 @@ if IMPORT_ERROR is None:
 
             self._mark_start_button = QtWidgets.QPushButton('Mark Start')
             self._mark_start_button.clicked.connect(self._mark_start)
-            selection_layout.addWidget(self._mark_start_button, 1, 4)
+            selection_layout.addWidget(self._mark_start_button, 1, 5)
 
             self._mark_end_button = QtWidgets.QPushButton('Mark End')
             self._mark_end_button.clicked.connect(self._mark_end)
-            selection_layout.addWidget(self._mark_end_button, 1, 5)
+            selection_layout.addWidget(self._mark_end_button, 1, 6)
 
             self._delete_button = QtWidgets.QPushButton('Delete Selection')
             self._delete_button.clicked.connect(self._delete_selection)
-            selection_layout.addWidget(self._delete_button, 1, 6)
+            selection_layout.addWidget(self._delete_button, 1, 7)
 
             self._selection_start_button = QtWidgets.QPushButton('Sel Start')
             self._selection_start_button.clicked.connect(self._jump_selection_start)
-            selection_layout.addWidget(self._selection_start_button, 2, 4)
+            selection_layout.addWidget(self._selection_start_button, 2, 5)
 
             self._selection_mid_button = QtWidgets.QPushButton('Sel Mid')
             self._selection_mid_button.clicked.connect(self._jump_selection_middle)
-            selection_layout.addWidget(self._selection_mid_button, 2, 5)
+            selection_layout.addWidget(self._selection_mid_button, 2, 6)
 
             self._selection_end_button = QtWidgets.QPushButton('Sel End')
             self._selection_end_button.clicked.connect(self._jump_selection_end)
-            selection_layout.addWidget(self._selection_end_button, 2, 6)
+            selection_layout.addWidget(self._selection_end_button, 2, 7)
 
             self._selection_label = QtWidgets.QLabel('')
             root.addWidget(self._selection_label)
@@ -413,7 +416,15 @@ if IMPORT_ERROR is None:
             self._insertions_label = QtWidgets.QLabel('')
             root.addWidget(self._insertions_label)
 
+            split_controls = QtWidgets.QHBoxLayout()
+            root.addLayout(split_controls)
+            self._toggle_pages_button = QtWidgets.QPushButton('Hide Pages/Subpages')
+            self._toggle_pages_button.clicked.connect(self._toggle_pages_panel)
+            split_controls.addWidget(self._toggle_pages_button)
+            split_controls.addStretch(1)
+
             split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+            self._splitter = split
             root.addWidget(split, 1)
 
             preview_group = QtWidgets.QGroupBox('Row 0 Preview')
@@ -424,6 +435,7 @@ if IMPORT_ERROR is None:
             split.addWidget(preview_group)
 
             pages_group = QtWidgets.QGroupBox('Pages / Subpages')
+            self._pages_group = pages_group
             pages_layout = QtWidgets.QVBoxLayout(pages_group)
             self._page_tree = QtWidgets.QTreeWidget()
             self._page_tree.setHeaderLabels(['Entry', 'Packets', 'Row 0'])
@@ -516,6 +528,7 @@ if IMPORT_ERROR is None:
 
         def _mark_cache_dirty(self):
             self._cache_dirty = True
+            self._page_tree_dirty = True
 
         def _ensure_edit_cache(self):
             if not self._cache_dirty:
@@ -593,7 +606,8 @@ if IMPORT_ERROR is None:
                 self._insertions_label.setText('Insertions: none')
 
             self._preview_text.setPlainText(header_preview_text(self._entries, self._headers, current_packet))
-            self._refresh_page_tree()
+            if not self._pages_hidden and self._page_tree_dirty:
+                self._refresh_page_tree()
 
             self._updating = False
             self._update_history_buttons()
@@ -635,6 +649,18 @@ if IMPORT_ERROR is None:
 
             if current_data is not None:
                 self._restore_tree_selection(current_data)
+            self._page_tree_dirty = False
+
+        def _toggle_pages_panel(self):
+            self._pages_hidden = not self._pages_hidden
+            self._pages_group.setVisible(not self._pages_hidden)
+            self._toggle_pages_button.setText('Show Pages/Subpages' if self._pages_hidden else 'Hide Pages/Subpages')
+            if self._pages_hidden:
+                self._splitter.setSizes([1, 0])
+            else:
+                if self._page_tree_dirty:
+                    self._refresh_page_tree()
+                self._splitter.setSizes([700, 300])
 
         def _restore_tree_selection(self, current_data):
             item_type, value1, value2 = current_data

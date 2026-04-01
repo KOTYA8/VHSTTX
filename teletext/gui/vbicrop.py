@@ -400,6 +400,7 @@ if IMPORT_ERROR is None:
 
             selection_group = QtWidgets.QGroupBox('Selection')
             selection_layout = QtWidgets.QGridLayout(selection_group)
+            selection_layout.setColumnStretch(4, 1)
             root.addWidget(selection_group)
 
             self._range_slider = FrameRangeSlider(0, self._total_frames - 1, 0, self._total_frames - 1)
@@ -420,27 +421,27 @@ if IMPORT_ERROR is None:
 
             self._mark_start_button = QtWidgets.QPushButton('Mark Start')
             self._mark_start_button.clicked.connect(self._mark_start)
-            selection_layout.addWidget(self._mark_start_button, 1, 4)
+            selection_layout.addWidget(self._mark_start_button, 1, 5)
 
             self._mark_end_button = QtWidgets.QPushButton('Mark End')
             self._mark_end_button.clicked.connect(self._mark_end)
-            selection_layout.addWidget(self._mark_end_button, 1, 5)
+            selection_layout.addWidget(self._mark_end_button, 1, 6)
 
             self._delete_button = QtWidgets.QPushButton('Delete Selection')
             self._delete_button.clicked.connect(self._delete_selection)
-            selection_layout.addWidget(self._delete_button, 1, 6)
+            selection_layout.addWidget(self._delete_button, 1, 7)
 
             self._selection_start_button = QtWidgets.QPushButton('Sel Start')
             self._selection_start_button.clicked.connect(self._jump_selection_start)
-            selection_layout.addWidget(self._selection_start_button, 2, 4)
+            selection_layout.addWidget(self._selection_start_button, 2, 5)
 
             self._selection_mid_button = QtWidgets.QPushButton('Sel Mid')
             self._selection_mid_button.clicked.connect(self._jump_selection_middle)
-            selection_layout.addWidget(self._selection_mid_button, 2, 5)
+            selection_layout.addWidget(self._selection_mid_button, 2, 6)
 
             self._selection_end_button = QtWidgets.QPushButton('Sel End')
             self._selection_end_button.clicked.connect(self._jump_selection_end)
-            selection_layout.addWidget(self._selection_end_button, 2, 6)
+            selection_layout.addWidget(self._selection_end_button, 2, 7)
 
             selection_layout.addWidget(QtWidgets.QLabel('Minutes'), 2, 0)
             self._duration_minutes_box = QtWidgets.QSpinBox()
