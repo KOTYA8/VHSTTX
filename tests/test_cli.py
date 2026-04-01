@@ -112,6 +112,7 @@ class TestSignalControlOptions(TestCommandTeletext):
         self.assertIn('-ctcf, --contrast-coeff', result.output)
         self.assertIn('-vtn, --vbi-tune', result.output)
         self.assertIn('-vtnl, --vbi-tune-live', result.output)
+        self.assertIn('while deconvolving in the terminal', result.output)
 
     def test_vbiview_help_lists_signal_controls(self):
         result = self.runner.invoke(teletext.cli.teletext.vbiview, ['--help'])

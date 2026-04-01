@@ -1,9 +1,20 @@
 import unittest
+import tempfile
+import os
 
 import numpy as np
 
 from teletext.vbi.config import Config
-from teletext.gui.vbituner import parse_signal_controls_args, parse_tuning_args
+from teletext.gui.vbituner import (
+    delete_local_preset,
+    load_local_presets,
+    load_preset_text,
+    parse_signal_controls_args,
+    parse_tuning_args,
+    save_local_preset,
+    save_local_presets,
+    save_preset_text,
+)
 from teletext.vbi.line import (
     apply_signal_controls,
     process_frame_bytes,
@@ -113,3 +124,49 @@ class TestSignalControls(unittest.TestCase):
         self.assertEqual(updated.extra_roll, 2)
         self.assertEqual(updated.line_start_range, (70, 145))
         self.assertEqual(updated.sample_rate, config.sample_rate)
+
+    def test_preset_text_round_trip(self):
+        fd, path = tempfile.mkstemp(suffix='.vtnargs')
+        os.close(fd)
+        try:
+            save_preset_text(path, '-bn 55 -sp 66 -ul 4,5 -fcc 2 3')
+            self.assertEqual(load_preset_text(path), '-bn 55 -sp 66 -ul 4,5 -fcc 2 3')
+        finally:
+            os.unlink(path)
+
+    def test_preset_loader_ignores_comments(self):
+        fd, path = tempfile.mkstemp(suffix='.vtnargs')
+        os.close(fd)
+        try:
+            with open(path, 'w', encoding='utf-8') as handle:
+                handle.write('# comment\n')
+                handle.write('-bn 55 -sp 66\n')
+                handle.write('  --extra-roll 2\n')
+            self.assertEqual(load_preset_text(path), '-bn 55 -sp 66 --extra-roll 2')
+        finally:
+            os.unlink(path)
+
+    def test_local_presets_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'presets.json')
+            save_local_preset('Tape A', '-bn 55 -sp 66', path=path)
+            save_local_preset('Tape B', '-bn 44 -sp 33 -fcc 2 3', path=path)
+
+            self.assertEqual(load_local_presets(path), {
+                'Tape A': '-bn 55 -sp 66',
+                'Tape B': '-bn 44 -sp 33 -fcc 2 3',
+            })
+
+    def test_delete_local_preset(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'presets.json')
+            save_local_presets({
+                'Tape A': '-bn 55 -sp 66',
+                'Tape B': '-bn 44 -sp 33',
+            }, path=path)
+
+            delete_local_preset('Tape A', path=path)
+
+            self.assertEqual(load_local_presets(path), {
+                'Tape B': '-bn 44 -sp 33',
+            })
