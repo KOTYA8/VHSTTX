@@ -106,12 +106,45 @@ def install_desktop_integration(data_home=None, exec_command='ttviewer', set_def
     }
 
 
+def uninstall_desktop_integration(data_home=None):
+    if data_home is None:
+        data_home = os.environ.get('XDG_DATA_HOME', os.path.join(os.path.expanduser('~'), '.local', 'share'))
+
+    applications_dir = os.path.join(data_home, 'applications')
+    mime_packages_dir = os.path.join(data_home, 'mime', 'packages')
+    icon_dir = os.path.join(data_home, 'icons', 'hicolor', '512x512', 'apps')
+
+    targets = {
+        'desktop': os.path.join(applications_dir, DESKTOP_FILENAME),
+        'mime': os.path.join(mime_packages_dir, MIME_FILENAME),
+        'icon': os.path.join(icon_dir, ICON_FILENAME),
+    }
+    removed = {}
+    for key, path in targets.items():
+        if os.path.exists(path):
+            os.remove(path)
+            removed[key] = path
+
+    _run_command(['update-mime-database', os.path.join(data_home, 'mime')])
+    _run_command(['update-desktop-database', applications_dir])
+    _run_command(['gtk-update-icon-cache', '-f', '-t', os.path.join(data_home, 'icons', 'hicolor')], quiet=True)
+    return removed
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Install Teletext Viewer desktop integration for .t42 files.')
     parser.add_argument('--data-home', help='Override XDG data directory (default: ~/.local/share).')
     parser.add_argument('--exec', dest='exec_command', default='ttviewer', help='Command used in the desktop launcher.')
     parser.add_argument('--no-default', action='store_true', help='Do not register ttviewer.desktop as the default handler.')
+    parser.add_argument('--uninstall', action='store_true', help='Remove Teletext Viewer desktop integration.')
     args = parser.parse_args(argv)
+
+    if args.uninstall:
+        removed = uninstall_desktop_integration(data_home=args.data_home)
+        print('Removed Teletext Viewer desktop integration.')
+        for key, path in removed.items():
+            print(f'{key}: {path}')
+        return 0
 
     installed = install_desktop_integration(
         data_home=args.data_home,
@@ -121,6 +154,18 @@ def main(argv=None):
 
     print('Installed Teletext Viewer desktop integration.')
     for key, path in installed.items():
+        print(f'{key}: {path}')
+    return 0
+
+
+def uninstall_main(argv=None):
+    parser = argparse.ArgumentParser(description='Remove Teletext Viewer desktop integration.')
+    parser.add_argument('--data-home', help='Override XDG data directory (default: ~/.local/share).')
+    args = parser.parse_args(argv)
+
+    removed = uninstall_desktop_integration(data_home=args.data_home)
+    print('Removed Teletext Viewer desktop integration.')
+    for key, path in removed.items():
         print(f'{key}: {path}')
     return 0
 

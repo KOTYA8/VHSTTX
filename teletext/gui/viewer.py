@@ -52,6 +52,224 @@ if IMPORT_ERROR is None:
 
 
 if QtCore is not None:
+    HOTKEY_SETTINGS_ORGANISATION = 'VHSTTX'
+    HOTKEY_SETTINGS_APPLICATION = 'TeletextViewer'
+
+
+    def _portable_shortcut_text(sequence):
+        if isinstance(sequence, QtGui.QKeySequence):
+            return sequence.toString(QtGui.QKeySequence.PortableText)
+        if not sequence:
+            return ''
+        return QtGui.QKeySequence(str(sequence)).toString(QtGui.QKeySequence.PortableText)
+
+
+    def _display_shortcut_text(sequence):
+        portable = _portable_shortcut_text(sequence)
+        if not portable:
+            return 'Unassigned'
+        text = QtGui.QKeySequence(portable).toString(QtGui.QKeySequence.NativeText)
+        return text or portable
+
+
+    def _hotkey_settings():
+        return QtCore.QSettings(HOTKEY_SETTINGS_ORGANISATION, HOTKEY_SETTINGS_APPLICATION)
+
+
+    def _load_hotkey_sequences(scope, bindings):
+        settings = _hotkey_settings()
+        settings.beginGroup(f'hotkeys/{scope}')
+        try:
+            return {
+                binding['id']: _portable_shortcut_text(
+                    settings.value(
+                        binding['id'],
+                        _portable_shortcut_text(binding['default']),
+                        type=str,
+                    )
+                )
+                for binding in bindings
+            }
+        finally:
+            settings.endGroup()
+
+
+    def _save_hotkey_sequences(scope, bindings, sequences):
+        settings = _hotkey_settings()
+        settings.beginGroup(f'hotkeys/{scope}')
+        try:
+            binding_map = {binding['id']: binding for binding in bindings}
+            for key in tuple(settings.childKeys()):
+                if key not in binding_map:
+                    settings.remove(key)
+            for binding in bindings:
+                key = binding['id']
+                value = _portable_shortcut_text(sequences.get(key, ''))
+                default = _portable_shortcut_text(binding['default'])
+                if value == default:
+                    settings.remove(key)
+                else:
+                    settings.setValue(key, value)
+        finally:
+            settings.endGroup()
+        settings.sync()
+
+
+    class HotkeyEditorDialog(QtWidgets.QDialog):
+        def __init__(self, title, bindings, sequences, parent=None):
+            super().__init__(parent)
+            self._bindings = tuple(bindings)
+            self._edits = {}
+            self.setWindowTitle(title)
+            self.resize(620, 560)
+
+            root = QtWidgets.QVBoxLayout(self)
+            root.setContentsMargins(10, 10, 10, 10)
+            root.setSpacing(8)
+
+            note = QtWidgets.QLabel('Empty shortcut disables the action. Duplicate shortcuts are not allowed.')
+            note.setWordWrap(True)
+            root.addWidget(note)
+
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            root.addWidget(scroll, 1)
+
+            container = QtWidgets.QWidget()
+            grid = QtWidgets.QGridLayout(container)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(6)
+
+            grid.addWidget(QtWidgets.QLabel('Action'), 0, 0)
+            grid.addWidget(QtWidgets.QLabel('Shortcut'), 0, 1)
+            grid.addWidget(QtWidgets.QLabel(''), 0, 2)
+            grid.addWidget(QtWidgets.QLabel(''), 0, 3)
+
+            for row, binding in enumerate(self._bindings, start=1):
+                label = QtWidgets.QLabel(binding['label'])
+                edit = QtWidgets.QKeySequenceEdit()
+                edit.setKeySequence(QtGui.QKeySequence(sequences.get(binding['id'], '')))
+                clear_button = QtWidgets.QPushButton('Clear')
+                clear_button.clicked.connect(
+                    lambda checked=False, widget=edit: widget.setKeySequence(QtGui.QKeySequence())
+                )
+                default_button = QtWidgets.QPushButton('Default')
+                default_button.clicked.connect(
+                    lambda checked=False, widget=edit, sequence=binding['default']:
+                    widget.setKeySequence(QtGui.QKeySequence(sequence))
+                )
+
+                self._edits[binding['id']] = edit
+                grid.addWidget(label, row, 0)
+                grid.addWidget(edit, row, 1)
+                grid.addWidget(clear_button, row, 2)
+                grid.addWidget(default_button, row, 3)
+
+            grid.setColumnStretch(1, 1)
+            scroll.setWidget(container)
+
+            buttons = QtWidgets.QHBoxLayout()
+            buttons.addStretch(1)
+
+            reset_all_button = QtWidgets.QPushButton('Reset All')
+            reset_all_button.clicked.connect(self._reset_all)
+            buttons.addWidget(reset_all_button)
+
+            save_button = QtWidgets.QPushButton('Save')
+            save_button.clicked.connect(self.accept)
+            buttons.addWidget(save_button)
+
+            cancel_button = QtWidgets.QPushButton('Cancel')
+            cancel_button.clicked.connect(self.reject)
+            buttons.addWidget(cancel_button)
+
+            root.addLayout(buttons)
+
+        def _reset_all(self):
+            for binding in self._bindings:
+                self._edits[binding['id']].setKeySequence(QtGui.QKeySequence(binding['default']))
+
+        def sequences(self):
+            return {
+                binding['id']: _portable_shortcut_text(self._edits[binding['id']].keySequence())
+                for binding in self._bindings
+            }
+
+        def accept(self):
+            seen = {}
+            for binding in self._bindings:
+                sequence = _portable_shortcut_text(self._edits[binding['id']].keySequence())
+                if not sequence:
+                    continue
+                existing = seen.get(sequence)
+                if existing is not None:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        'Change Shortcut',
+                        (
+                            f'"{binding["label"]}" and "{existing}" use the same shortcut '
+                            f'({_display_shortcut_text(sequence)}).'
+                        ),
+                    )
+                    return
+                seen[sequence] = binding['label']
+            super().accept()
+
+
+    class ShortcutConfigController:
+        def __init__(self, owner, scope, menu, bindings, title):
+            self._owner = owner
+            self._scope = scope
+            self._menu = menu
+            self._bindings = tuple(bindings)
+            self._title = title
+            self._hint_actions = {}
+            self._shortcuts = {}
+            self._sequences = _load_hotkey_sequences(scope, self._bindings)
+            self._build_menu()
+            self._apply_sequences()
+
+        def _build_menu(self):
+            self._menu.clear()
+            self._hint_actions = {}
+            for binding in self._bindings:
+                action = self._menu.addAction('')
+                action.setEnabled(False)
+                self._hint_actions[binding['id']] = action
+            self._menu.addSeparator()
+            action = self._menu.addAction('Change Shortcut...')
+            action.triggered.connect(self.show_editor)
+            self._update_menu_labels()
+
+        def _update_menu_labels(self):
+            for binding in self._bindings:
+                action = self._hint_actions[binding['id']]
+                action.setText(
+                    f'{binding["label"]}\t{_display_shortcut_text(self._sequences.get(binding["id"], ""))}'
+                )
+
+        def _apply_sequences(self):
+            for binding in self._bindings:
+                shortcut = self._shortcuts.get(binding['id'])
+                if shortcut is None:
+                    shortcut = QtWidgets.QShortcut(self._owner)
+                    shortcut.setContext(QtCore.Qt.WindowShortcut)
+                    shortcut.activated.connect(binding['handler'])
+                    self._shortcuts[binding['id']] = shortcut
+                shortcut.setKey(QtGui.QKeySequence(self._sequences.get(binding['id'], '')))
+            self._update_menu_labels()
+
+        def show_editor(self):
+            dialog = HotkeyEditorDialog(self._title, self._bindings, self._sequences, self._owner)
+            if dialog.exec_() != QtWidgets.QDialog.Accepted:
+                return
+            self._sequences = dialog.sequences()
+            _save_hotkey_sequences(self._scope, self._bindings, self._sequences)
+            self._apply_sequences()
+
+
     class ServiceLoader(QtCore.QThread):
         loaded = QtCore.pyqtSignal(object)
         failed = QtCore.pyqtSignal(str)
@@ -712,9 +930,22 @@ if QtCore is not None:
             self._mode_combo.currentIndexChanged.connect(self._refresh_preview)
             controls.addWidget(self._mode_combo)
 
-            self._overview_button = QtWidgets.QPushButton('Overview')
-            self._overview_button.clicked.connect(self.show_overview)
-            controls.addWidget(self._overview_button)
+            self._overview_action = QtWidgets.QAction('Overview', self)
+            self._overview_action.triggered.connect(self.show_overview)
+            self._html_screenshot_action = QtWidgets.QAction('Screenshot (File)', self)
+            self._html_screenshot_action.triggered.connect(self.save_screenshot)
+            self._html_screenshot_copy_action = QtWidgets.QAction('Screenshot (Copy)', self)
+            self._html_screenshot_copy_action.triggered.connect(self.copy_screenshot)
+
+            self._functions_button = QtWidgets.QToolButton()
+            self._functions_button.setText('Functions')
+            self._functions_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._functions_menu = QtWidgets.QMenu(self._functions_button)
+            self._functions_menu.addAction(self._overview_action)
+            self._functions_menu.addAction(self._html_screenshot_action)
+            self._functions_menu.addAction(self._html_screenshot_copy_action)
+            self._functions_button.setMenu(self._functions_menu)
+            controls.addWidget(self._functions_button)
 
             self._subpage_prev_button = QtWidgets.QPushButton('←')
             self._subpage_prev_button.clicked.connect(self.prev_subpage)
@@ -802,6 +1033,9 @@ if QtCore is not None:
             self._mouse_wheel_action.toggled.connect(self._mouse_wheel_toggle.setChecked)
             self._mouse_wheel_toggle.toggled.connect(self._mouse_wheel_action.setChecked)
 
+            self._settings_menu.addSeparator()
+            self._html_hotkeys_menu = self._settings_menu.addMenu('Hotkeys')
+
             self._settings_button.setMenu(self._settings_menu)
             controls.addWidget(self._settings_button)
 
@@ -854,8 +1088,14 @@ if QtCore is not None:
                 self._subpage_combo,
             ):
                 widget.installEventFilter(self)
-            QtWidgets.QShortcut(QtGui.QKeySequence('F11'), self, activated=self._toggle_window_shortcut)
             QtWidgets.QShortcut(QtGui.QKeySequence('Escape'), self, activated=self._leave_fullscreen_shortcut)
+            self._hotkey_controller = ShortcutConfigController(
+                self,
+                'html',
+                self._html_hotkeys_menu,
+                self._build_hotkey_bindings(),
+                'HTML Hotkeys',
+            )
             self._set_folder_mode_enabled(False)
             self._update_subpage_controls()
             self._update_subpage_count_label()
@@ -874,6 +1114,24 @@ if QtCore is not None:
             self._go_button.setEnabled(enabled)
             self._folder_combo.setEnabled(enabled)
             self._no_hex_pages_toggle.setEnabled(enabled)
+
+        def _build_hotkey_bindings(self):
+            return (
+                {'id': 'single_height', 'label': 'Single Height', 'default': 'Ctrl+1', 'handler': self._single_height_action.toggle},
+                {'id': 'single_width', 'label': 'Single Width', 'default': 'Ctrl+2', 'handler': self._single_width_action.toggle},
+                {'id': 'no_flash', 'label': 'No Flash', 'default': 'Ctrl+3', 'handler': self._no_flash_action.toggle},
+                {'id': 'all_symbols', 'label': 'All Symbols', 'default': 'Ctrl+5', 'handler': self._all_symbols_action.toggle},
+                {'id': 'wheel_pages', 'label': 'Wheel Pages', 'default': 'Ctrl+6', 'handler': self._mouse_wheel_action.toggle},
+                {'id': 'no_hex', 'label': 'No HEX', 'default': 'Ctrl+8', 'handler': self._no_hex_pages_toggle.toggle},
+                {'id': 'mode', 'label': 'Mode', 'default': 'Ctrl+M', 'handler': self._toggle_mode_shortcut},
+                {'id': 'overview', 'label': 'Overview', 'default': 'Ctrl+P', 'handler': self.show_overview},
+                {'id': 'load_overview', 'label': 'Load Overview', 'default': 'Ctrl+Shift+P', 'handler': self._load_overview_toggle.toggle},
+                {'id': 'screenshot_file', 'label': 'Screenshot (File)', 'default': 'Ctrl+S', 'handler': self.save_screenshot},
+                {'id': 'screenshot_copy', 'label': 'Screenshot (Copy)', 'default': 'Ctrl+Shift+C', 'handler': self.copy_screenshot},
+                {'id': 'auto', 'label': 'Auto', 'default': 'Ctrl+A', 'handler': self._auto_toggle.toggle},
+                {'id': 'crt', 'label': 'CRT', 'default': 'Ctrl+R', 'handler': self._crt_toggle.toggle},
+                {'id': 'window', 'label': 'Window', 'default': 'F11', 'handler': self._toggle_window_shortcut},
+            )
 
         def _load_html_file(self, filename):
             filename = os.path.abspath(filename)
@@ -1373,6 +1631,11 @@ if QtCore is not None:
             if self._window_toggle.isChecked():
                 self._window_toggle.setChecked(False)
 
+        def _toggle_mode_shortcut(self):
+            mode_key = self._mode_combo.currentData() or 'page'
+            self._set_mode_key('raw' if mode_key == 'page' else 'page')
+            self._refresh_preview()
+
         def resizeEvent(self, event):  # pragma: no cover - GUI event path
             super().resizeEvent(event)
             self._update_crt_overlay()
@@ -1427,8 +1690,11 @@ if QtCore is not None:
 
         def _update_overview_button_state(self):
             enabled = bool(self._html_overview_source_entries())
-            self._overview_button.setEnabled(enabled)
+            self._overview_action.setEnabled(enabled)
             self._load_overview_toggle.setEnabled(enabled)
+            self._html_screenshot_action.setEnabled(bool(self._filename))
+            self._html_screenshot_copy_action.setEnabled(bool(self._filename))
+            self._functions_button.setEnabled(bool(self._filename) or enabled)
             if not enabled:
                 blocked = self._load_overview_toggle.blockSignals(True)
                 self._load_overview_toggle.setChecked(False)
@@ -1875,6 +2141,55 @@ if QtCore is not None:
             if page_number is None:
                 return 'unavailable'
             return f'P{int(page_number):03X}'
+
+        def _show_brief_message(self, text):
+            QtWidgets.QToolTip.showText(self.mapToGlobal(QtCore.QPoint(24, 24)), text, self)
+
+        def _suggest_screenshot_path(self):
+            directory = os.path.dirname(self._filename) if self._filename else os.getcwd()
+            base_name = os.path.splitext(os.path.basename(self._filename or 'teletext-html'))[0]
+            suffix = ''
+            if self._preview_entries:
+                index = self._subpage_combo.currentIndex()
+                if index >= 0:
+                    label = self._subpage_combo.itemText(index)
+                    safe_label = re.sub(r'[^0-9A-Za-z._-]+', '-', label).strip('-')
+                    if safe_label:
+                        suffix = f'-{safe_label}'
+            return os.path.join(directory, f'{base_name}{suffix}.png')
+
+        def _current_preview_pixmap(self):
+            return self._preview_container.grab()
+
+        def save_screenshot(self):
+            if not self._filename:
+                return
+
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save teletext screenshot',
+                self._suggest_screenshot_path(),
+                'PNG Image (*.png)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.png'):
+                filename += '.png'
+
+            pixmap = self._current_preview_pixmap()
+            if not pixmap.isNull() and pixmap.save(filename, 'PNG'):
+                self._show_brief_message(f'Screenshot saved to {filename}')
+            else:  # pragma: no cover - GUI error path
+                QtWidgets.QMessageBox.warning(self, 'HTML Preview', f'Could not save screenshot to {filename}.')
+
+        def copy_screenshot(self):
+            if not self._filename:
+                return
+            pixmap = self._current_preview_pixmap()
+            if pixmap.isNull():
+                return
+            QtWidgets.QApplication.clipboard().setPixmap(pixmap)
+            self._show_brief_message('Screenshot copied to clipboard.')
 
         def _show_missing_page_dialog(self, requested_page_number):
             previous_page, next_page = nearest_html_pages(self._folder_entries, requested_page_number)
@@ -2324,8 +2639,10 @@ if QtCore is not None:
             self._split_button.setMenu(self._split_menu)
             toolbar.addWidget(self._split_button)
 
-            self._screenshot_action = QtWidgets.QAction('Screenshot...', self)
+            self._screenshot_action = QtWidgets.QAction('Screenshot (File)...', self)
             self._screenshot_action.triggered.connect(self.save_screenshot)
+            self._screenshot_copy_action = QtWidgets.QAction('Screenshot (Copy)', self)
+            self._screenshot_copy_action.triggered.connect(self.copy_screenshot)
             self._overview_action = QtWidgets.QAction('Overview', self)
             self._overview_action.triggered.connect(self.show_overview)
             self._info_action = QtWidgets.QAction('Info', self)
@@ -2341,8 +2658,9 @@ if QtCore is not None:
             self._functions_button.setText('Functions')
             self._functions_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
             self._functions_menu = QtWidgets.QMenu(self._functions_button)
-            self._functions_menu.addAction(self._screenshot_action)
             self._functions_menu.addAction(self._overview_action)
+            self._functions_menu.addAction(self._screenshot_action)
+            self._functions_menu.addAction(self._screenshot_copy_action)
             self._functions_menu.addAction(self._info_action)
             self._functions_menu.addSeparator()
             self._functions_menu.addAction(self._fullscreen_action)
@@ -2481,6 +2799,8 @@ if QtCore is not None:
                 action.toggled.connect(lambda checked=False, item=key: self._set_language(item, checked))
                 self._language_action_group.addAction(action)
                 self._language_actions[key] = action
+            self._settings_menu.addSeparator()
+            self._hotkeys_menu = self._settings_menu.addMenu('Hotkeys')
             self._settings_button.setMenu(self._settings_menu)
             toolbar.addWidget(self._settings_button)
 
@@ -2510,6 +2830,13 @@ if QtCore is not None:
             self._crt_toggle.setChecked(True)
             self._crt_toggle.toggled.connect(self._set_crt_effect)
             toolbar.addWidget(self._crt_toggle)
+            self._hotkey_controller = ShortcutConfigController(
+                self,
+                'main',
+                self._hotkeys_menu,
+                self._build_hotkey_bindings(),
+                'Viewer Hotkeys',
+            )
 
             toolbar.addStretch(1)
 
@@ -2616,12 +2943,32 @@ if QtCore is not None:
             QtWidgets.QShortcut(QtGui.QKeySequence('Down'), self, activated=self.prev_page)
             QtWidgets.QShortcut(QtGui.QKeySequence('Left'), self, activated=self.prev_subpage)
             QtWidgets.QShortcut(QtGui.QKeySequence('Right'), self, activated=self.next_subpage)
-            QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+I'), self, activated=self.show_info)
             QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+O'), self, activated=self.open_dialog)
-            QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+P'), self, activated=self.show_overview)
-            QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+S'), self, activated=self.save_screenshot)
-            QtWidgets.QShortcut(QtGui.QKeySequence('F11'), self, activated=self._toggle_fullscreen_shortcut)
             QtWidgets.QShortcut(QtGui.QKeySequence('Escape'), self, activated=self._leave_fullscreen_shortcut)
+
+        def _build_hotkey_bindings(self):
+            return (
+                {'id': 'single_height', 'label': 'Single Height', 'default': 'Ctrl+1', 'handler': self._single_height_action.toggle},
+                {'id': 'single_width', 'label': 'Single Width', 'default': 'Ctrl+2', 'handler': self._single_width_action.toggle},
+                {'id': 'no_flash', 'label': 'No Flash', 'default': 'Ctrl+3', 'handler': self._no_flash_action.toggle},
+                {'id': 'highlight_text', 'label': 'Highlight Characters', 'default': 'Ctrl+4', 'handler': self._highlight_text_action.toggle},
+                {'id': 'all_symbols', 'label': 'All Symbols', 'default': 'Ctrl+5', 'handler': self._reveal_all_action.toggle},
+                {'id': 'wheel_pages', 'label': 'Mouse Wheel Pages', 'default': 'Ctrl+6', 'handler': self._mouse_wheel_pages_action.toggle},
+                {'id': 'no_subpages', 'label': 'No Subpages', 'default': 'Ctrl+7', 'handler': self._subpages_enabled_action.toggle},
+                {'id': 'no_hex', 'label': 'No Hex Pages', 'default': 'Ctrl+8', 'handler': self._no_hex_pages_action.toggle},
+                {'id': 'language', 'label': 'Language', 'default': 'Ctrl+L', 'handler': self._cycle_language_shortcut},
+                {'id': 'fullscreen', 'label': 'Fullscreen', 'default': 'F11', 'handler': self._toggle_fullscreen_shortcut},
+                {'id': 'load_overview', 'label': 'Load Overview', 'default': 'Ctrl+Shift+P', 'handler': self._load_overview_action.toggle},
+                {'id': 'overview', 'label': 'Overview', 'default': 'Ctrl+P', 'handler': self.show_overview},
+                {'id': 'screenshot_file', 'label': 'Screenshot (File)', 'default': 'Ctrl+S', 'handler': self.save_screenshot},
+                {'id': 'screenshot_copy', 'label': 'Screenshot (Copy)', 'default': 'Ctrl+Shift+C', 'handler': self.copy_screenshot},
+                {'id': 'info', 'label': 'Info', 'default': 'Ctrl+I', 'handler': self.show_info},
+                {'id': 'auto', 'label': 'Auto', 'default': 'Ctrl+A', 'handler': self._auto_toggle.toggle},
+                {'id': 'zoom_in', 'label': 'Zoom In', 'default': 'Ctrl+=', 'handler': lambda: self._nudge_viewer_zoom(0.1)},
+                {'id': 'zoom_out', 'label': 'Zoom Out', 'default': 'Ctrl+-', 'handler': lambda: self._nudge_viewer_zoom(-0.1)},
+                {'id': 'zoom_reset', 'label': 'Zoom Reset', 'default': 'Ctrl+0', 'handler': self._reset_viewer_zoom},
+                {'id': 'crt', 'label': 'CRT', 'default': 'Ctrl+R', 'handler': self._crt_toggle.toggle},
+            )
 
         def _resource_path(self, filename):
             return os.path.join(os.path.dirname(__file__), filename)
@@ -2641,6 +2988,25 @@ if QtCore is not None:
                 if action.isChecked():
                     return key
             return 'default'
+
+        def _cycle_language_shortcut(self):
+            keys = tuple(self._language_actions)
+            if not keys:
+                return
+            current = self._current_language_key()
+            try:
+                index = keys.index(current)
+            except ValueError:
+                index = -1
+            self._language_actions[keys[(index + 1) % len(keys)]].setChecked(True)
+
+        def _nudge_viewer_zoom(self, delta):
+            value = round(self._viewer_zoom_spin.value() + float(delta), 1)
+            value = max(self._viewer_zoom_spin.minimum(), min(self._viewer_zoom_spin.maximum(), value))
+            self._viewer_zoom_spin.setValue(value)
+
+        def _reset_viewer_zoom(self):
+            self._viewer_zoom_spin.setValue(2.0)
 
         def _subpages_enabled(self):
             return not self._subpages_enabled_action.isChecked()
@@ -3013,6 +3379,7 @@ if QtCore is not None:
                 widget.setEnabled(enabled)
             for action in (
                 self._screenshot_action,
+                self._screenshot_copy_action,
                 self._overview_action,
                 self._info_action,
                 self._fullscreen_action,
@@ -3779,6 +4146,9 @@ if QtCore is not None:
                 f'{base_name}-{self._navigator.current_page_label}-{self._navigator.current_subpage_number:04X}.png',
             )
 
+        def _current_screenshot_pixmap(self):
+            return self._decoder_widget.grab()
+
         def save_screenshot(self):
             if self._navigator is None:
                 return
@@ -3794,10 +4164,19 @@ if QtCore is not None:
             if not filename.lower().endswith('.png'):
                 filename += '.png'
 
-            if self._decoder_widget.grab().save(filename, 'PNG'):
+            if self._current_screenshot_pixmap().save(filename, 'PNG'):
                 self.statusBar().showMessage(f'Screenshot saved to {filename}', 5000)
             else:  # pragma: no cover - GUI error path
                 QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', f'Could not save screenshot to {filename}.')
+
+        def copy_screenshot(self):
+            if self._navigator is None:
+                return
+            pixmap = self._current_screenshot_pixmap()
+            if pixmap.isNull():
+                return
+            QtWidgets.QApplication.clipboard().setPixmap(pixmap)
+            self.statusBar().showMessage('Screenshot copied to clipboard.', 5000)
 
         def _sync_auto_scroll(self):
             self._auto_scroll_timer.setInterval(self._auto_interval_ms)
