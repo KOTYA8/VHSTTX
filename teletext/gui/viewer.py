@@ -647,8 +647,8 @@ if QtCore is not None:
         def paintEvent(self, event):  # pragma: no cover - GUI paint path
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
-            for y in range(0, self.height(), 4):
-                painter.fillRect(0, y, self.width(), 1, QtGui.QColor(0, 0, 0, 112))
+            for y in range(0, self.height(), 3):
+                painter.fillRect(0, y, self.width(), 1, QtGui.QColor(0, 0, 0, 48))
             painter.end()
 
 
@@ -866,7 +866,6 @@ if QtCore is not None:
             self._overview_preload_loaded = 0
             self._has_web_view = QtWebEngineWidgets is not None
             self._windowed_geometry = None
-            self._raw_browser_zoom_steps = 0
             self._direct_page_buffer = DirectPageBuffer()
             self._direct_page_timer = QtCore.QTimer(self)
             self._direct_page_timer.setInterval(1500)
@@ -1292,33 +1291,96 @@ if QtCore is not None:
             interval = getattr(parent, '_auto_interval_ms', None)
             return max(100, int(interval)) if interval else 3500
 
-        def _zoom_css(self):
-            return textwrap.dedent(
-                '''
-                body {
-                    padding: 12px !important;
-                }
+        def _html_zoom_factor(self):
+            return 1.0
 
-                .subpage {
-                    font-size: 30px !important;
-                    border: solid black 10px !important;
-                    border-bottom: solid black 20px !important;
+        def _zoom_css(self, for_web=False):
+            zoom = self._html_zoom_factor()
+            padding = max(0, int(round(12 * zoom)))
+            font_size = max(10, int(round(30 * zoom)))
+            border_size = max(2, int(round(10 * zoom)))
+            border_bottom = max(4, int(round(20 * zoom)))
+            if for_web:
+                return textwrap.dedent(
+                    f'''
+                    body {{
+                        padding: {padding}px !important;
+                        overflow: auto !important;
+                    }}
+
+                    .subpage {{
+                        font-size: {font_size}px !important;
+                        border: solid black {border_size}px !important;
+                        border-bottom: solid black {border_bottom}px !important;
+                        text-shadow: 0 0 0.05em !important;
+                        transform-origin: top center !important;
+                    }}
+                    '''
+                )
+
+            return textwrap.dedent(
+                f'''
+                body {{
+                    padding: {padding}px !important;
+                }}
+
+                .subpage {{
+                    font-size: {font_size}px !important;
+                    border: solid black {border_size}px !important;
+                    border-bottom: solid black {border_bottom}px !important;
                     text-shadow: 0 0 0.05em !important;
-                }
+                }}
                 '''
             )
 
-        def _theme_css(self, include_crt=False):
+        def _theme_css(self, include_crt=False, for_web=False):
             css_parts = [self._base_preview_css()]
             if include_crt and self._crt_toggle.isChecked():
                 crt_css = self._strip_css_imports(self._read_misc_text('teletext.css'))
                 if crt_css:
                     css_parts.append(crt_css)
-            css_parts.append(self._zoom_css())
+                css_parts.append(
+                    '''
+                    .subpage {
+                        filter: blur(0.86px) brightness(118%) !important;
+                    }
+
+                    .subpage:after {
+                        background-size: 2px 2px !important;
+                        opacity: 0.24 !important;
+                    }
+                    '''
+                )
+            css_parts.append(self._zoom_css(for_web=for_web))
             return '\n'.join(part for part in css_parts if part)
 
         def _preview_feature_css(self):
-            rules = []
+            rules = [
+                '.row { gap: 0 !important; }',
+                '.row > span { '
+                'display: inline-block !important; '
+                'width: 1ch !important; '
+                'min-width: 1ch !important; '
+                'margin: 0 !important; '
+                'padding: 0 !important; '
+                'border: 0 !important; '
+                'line-height: 1 !important; '
+                'height: 1em !important; '
+                'box-sizing: border-box !important; '
+                'overflow: hidden !important; '
+                'white-space: pre !important; '
+                '}',
+                '.row > span + span { margin-left: -0.06em !important; }',
+                '.subpage span { font-kerning: none !important; font-variant-ligatures: none !important; }',
+                '.row > .b0 { box-shadow: inset 0.04em 0 #000000, inset -0.04em 0 #000000; }',
+                '.row > .b1 { box-shadow: inset 0.04em 0 red, inset -0.04em 0 red; }',
+                '.row > .b2 { box-shadow: inset 0.04em 0 #00ff00, inset -0.04em 0 #00ff00; }',
+                '.row > .b3 { box-shadow: inset 0.04em 0 yellow, inset -0.04em 0 yellow; }',
+                '.row > .b4 { box-shadow: inset 0.04em 0 blue, inset -0.04em 0 blue; }',
+                '.row > .b5 { box-shadow: inset 0.04em 0 magenta, inset -0.04em 0 magenta; }',
+                '.row > .b6 { box-shadow: inset 0.04em 0 cyan, inset -0.04em 0 cyan; }',
+                '.row > .b7 { box-shadow: inset 0.04em 0 white, inset -0.04em 0 white; }',
+            ]
             if self._single_height_toggle.isChecked():
                 rules.append('.dh { font-family: teletext2 !important; font-size: 100% !important; line-height: 100% !important; }')
             if self._single_width_toggle.isChecked():
@@ -1381,7 +1443,7 @@ if QtCore is not None:
             return '\n'.join(
                 part for part in (
                     font_css,
-                    self._theme_css(include_crt=True),
+                    self._theme_css(include_crt=True, for_web=True),
                     self._preview_feature_css(),
                     selection_css,
                 ) if part
@@ -1453,7 +1515,11 @@ if QtCore is not None:
             return textwrap.dedent(
                 '''
                 .subpage {
-                    filter: blur(0.5px) brightness(120%) !important;
+                    filter: blur(0.82px) brightness(116%) !important;
+                }
+
+                .subpage:after {
+                    opacity: 0.24 !important;
                 }
                 '''
             )
@@ -1519,7 +1585,13 @@ if QtCore is not None:
             self._raw_browser.setHtml(html_text)
 
         def _update_crt_overlay(self):
-            use_overlay = bool(self._crt_toggle.isChecked())
+            use_overlay = bool(
+                self._crt_toggle.isChecked()
+                and (
+                    self._page_browser is None
+                    or self._preview_stack.currentWidget() is self._raw_browser
+                )
+            )
             self._scanline_overlay.setVisible(use_overlay)
             if use_overlay:
                 self._scanline_overlay.raise_()
@@ -1552,6 +1624,7 @@ if QtCore is not None:
         def _apply_page_browser_overrides(self):
             if self._page_browser is None:
                 return
+            self._page_browser.setZoomFactor(1.0)
             css = self._page_browser_css()
             if not css:
                 return
