@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from teletext.gui.install import desktop_entry, install_desktop_integration, mime_xml, resolve_exec_command
+from teletext.gui.install import (
+    desktop_entry,
+    install_desktop_integration,
+    mime_xml,
+    resolve_exec_command,
+    uninstall_desktop_integration,
+)
 
 
 class TestGuiInstall(unittest.TestCase):
@@ -51,3 +57,19 @@ class TestGuiInstall(unittest.TestCase):
 
             self.assertIn('Exec=/home/kot/.local/bin/ttviewer-test %f', desktop_contents)
             self.assertIn('application/x-teletext-t42', mime_contents)
+
+    def test_uninstall_desktop_integration_removes_user_files(self):
+        with tempfile.TemporaryDirectory() as data_home:
+            with mock.patch('teletext.gui.install.shutil.which', return_value='/home/kot/.local/bin/ttviewer-test'):
+                with mock.patch('teletext.gui.install._run_command'):
+                    installed = install_desktop_integration(
+                        data_home=data_home,
+                        exec_command='ttviewer-test',
+                        set_default=False,
+                    )
+                    removed = uninstall_desktop_integration(data_home=data_home)
+
+            self.assertEqual(set(removed), {'desktop', 'mime', 'icon'})
+            self.assertFalse(os.path.exists(installed['desktop']))
+            self.assertFalse(os.path.exists(installed['mime']))
+            self.assertFalse(os.path.exists(installed['icon']))

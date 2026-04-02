@@ -64,6 +64,7 @@ setup(
         'console_scripts': [
             'teletext = teletext.cli.teletext:teletext',
             'ttviewer-install = teletext.gui.install:main',
+            'ttviewer-uninstall = teletext.gui.install:uninstall_main',
         ],
         'gui_scripts': [
             'ttviewer = teletext.gui.viewer:main',
