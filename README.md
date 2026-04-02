@@ -27,10 +27,11 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Opening from .t42 file - ✅ realized
 * Language support - ✅ realized
 * FasText Buttons - ✅ realized
-* Screenshot - ✅ realized
+* Screenshot (copy/file) - ✅ realized
 * Display of teletext subpages and flags - ✅ realized
 * List of all pages - ✅ realized
 * Full screen - ✅ realized
+* Hotkeys - ✅ realized
 * Teletext service information - ⚠️ bugs
 
 ## **VBI Tune/VBI Tune Live** - ✅ realized
