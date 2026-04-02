@@ -648,7 +648,7 @@ if QtCore is not None:
             painter = QtGui.QPainter(self)
             painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
             for y in range(0, self.height(), 3):
-                painter.fillRect(0, y, self.width(), 1, QtGui.QColor(0, 0, 0, 48))
+                painter.fillRect(0, y, self.width(), 1, QtGui.QColor(0, 0, 0, 60))
             painter.end()
 
 
@@ -1342,12 +1342,12 @@ if QtCore is not None:
                 css_parts.append(
                     '''
                     .subpage {
-                        filter: blur(0.86px) brightness(118%) !important;
+                        filter: blur(0.96px) brightness(118%) !important;
                     }
 
                     .subpage:after {
                         background-size: 2px 2px !important;
-                        opacity: 0.24 !important;
+                        opacity: 0.30 !important;
                     }
                     '''
                 )
@@ -1515,11 +1515,11 @@ if QtCore is not None:
             return textwrap.dedent(
                 '''
                 .subpage {
-                    filter: blur(0.82px) brightness(116%) !important;
+                    filter: blur(0.92px) brightness(116%) !important;
                 }
 
                 .subpage:after {
-                    opacity: 0.24 !important;
+                    opacity: 0.30 !important;
                 }
                 '''
             )
