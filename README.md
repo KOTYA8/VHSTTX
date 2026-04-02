@@ -205,6 +205,10 @@ pipx install -e .[qt] --force
 ```
 ttviewer-install
 ```
+* Delete Teletext Viewer
+```
+ttviewer-uninstall
+```
 ### Installation Apps
 1. Install QT
 ```
