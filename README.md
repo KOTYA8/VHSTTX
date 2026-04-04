@@ -99,9 +99,17 @@ teletext deconvolve -vtn test.vbi > test.t42
 teletext deconvolve -vtnl test.vbi > test.t42
 teletext vbiview -vtnl test.vbi
 ``` 
-* **VBI Crop** - Control panel for trimming VBI file.
+* **VBI Tool** - Control panel for trimming VBI file.
 ```
-teletext vbicrop test.vbi
+teletext vbitool test.vbi
+```
+* **T42 Tool** - Control panel for trimming T42 file.
+```
+teletext vbitool test.vbi
+```
+* **VBI Repair** - Restoring VBI and strings
+```
+teletext vbirepair test.vbi
 ```
 
 # Functions
