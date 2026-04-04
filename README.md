@@ -33,27 +33,42 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Full screen - ✅ realized
 * Hotkeys - ✅ realized
 * Teletext service information - ⚠️ bugs
+* Opening T42 and HTML files and folders in HTML Viewer - ✅ realized
+* Comparison of two teletexts - ✅ realized
 
 ## **VBI Tune/VBI Tune Live** - ✅ realized
-* Signal Controls (Brightness/Sharpness/Gain/Contrast) - ✅ realized
-* Decoder Tuning (Template/Extra Roll/Line Start Range) - ✅ realized
+* Signal Controls - ✅ realized
+* Signal Cleanup - ✅ realized
+* Decoder Tuning - ✅ realized
+* Diagnostics - ✅ realized
+* Tools - ✅ realized
 * Line Selection - ✅ realized
 * Fix Capture Card - ✅ realized
 * Arguments and Presets - ✅ realized
 
-## **VBI Crop** - ✅ realized
+## **VBI Tool** - ✅ realized
 * Frame-by-frame viewing - ✅ realized
 * Frame marks - ✅ realized
 * Saving with VBI Tune Live - ✅ realized
 * Cutting frames from VBI - ✅ realized
 * Adding VBI Files - ✅ realized
+* Checking for errors in VBI - ✅ realized
 
-## **T42 Crop** - ✅ realized
+## **T42 Tool** - ✅ realized
 * Frame marks - ✅ realized
 * Cutting frames from T42 - ✅ realized
 * Adding T42 Files - ✅ realized
 * Deleting pages and subpages - ✅ realized
 * Checking the first line by frame/page/subpage - ✅ realized
+* Adding/replacing pages/subpages from a .t42 file - ✅ realized
+* View teletext on a page/subpage - ✅ realized
+
+## **VBI Repair** - ✅ realized
+* Frame marks - ✅ realized
+* Saving with VBI Tune Live - ✅ realized
+* Saving to VBI/T42 file - ✅ realized
+* Real-time VBI diagnostics with Teletext Monitor - ✅ realized
+* Stabilize VBI - ⚠️ bugs
 
 # Future Functions
 * **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
@@ -63,6 +78,9 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * **Fix Capture Card (record/deconvolve/vbiview)** - ✅ realized
 * **URXVT Terminal (deconvolve)** - ✅ realized
 * **Pause for (record/deconvolve)** - ✅ realized
+* **Timer for (record)** - ✅ realized
+* **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized
+* **Mode: V1,V3, auto for (squash)** - (auto)⚠️ bugs
 * **Spellcheck** - ⚠️ bugs
 
 # Apps
@@ -115,25 +133,15 @@ teletext vbiview -f hd630sp test.vbi
 ```
 teletext deconvolve -f hd630lp test.vbi > test.t42  
 ```
-* **Brightness/Sharpness/Gain/Contrast** for **record**/**deconvolve**/**vbiview** (`-bn/--brightness`/`-sp/--sharpness`/`-gn/--gain`/`-ct/--contrast`) - Adjusting Values ​​for VBI from **0** to **100** (**50** - no change).   
+* **Brightness/Sharpness/Gain/Contrast** and **Coeff** for **record**/**deconvolve**/**vbiview** (`-bn/--brightness`/`-sp/--sharpness`/`-gn/--gain`/`-ct/--contrast`) - Adjusting Values ​​for VBI from **0** to **100** (**50** - no change) + Coefficients for values from **0.00** to **100**.   
 ```
-teletext record -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
-```
-```
-teletext deconvolve -bn 25 -sp 30 -gn 50 -ct 0 test.vbi > test.t42
+teletext record -bn 25/1 -sp 30/1 -gn 50/1 -ct 0/1 test.vbi
 ```
 ```
-teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
-```
-* **Brightness/Sharpness/Gain/Contrast Coefficients** for **record**/**deconvolve**/**vbiview** (`-bncf/--brightness-coeff`/`-spcf/--sharpness-coeff`/`-gncf/--gain-coeff`/`-ctcf/--contrast-coeff`) - Increasing coefficients for values from **0.00** to **100**.   
-```
-teletext record -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
+teletext deconvolve -bn 25/1 -sp 30/1 -gn 50/1 -ct 0/1 test.vbi > test.t42
 ```
 ```
-teletext deconvolve -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi > test.t42
-```
-```
-teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
+teletext vbiview -bn 25/1 -sp 30/1 -gn 50 /1-ct 0/1 test.vbi
 ```
 * **Fix Capture Card** for **record**/**deconvolve**/**vbiview** (`-fcc/--fix-capture-card`) - Fixes bug with increasing brightness in vbi0, runs through ffmpeg. How long does it work in seconds and after how long will it turn on in minutes: (`-fcc 2 3`) - runs **2 seconds** every **3 minutes** 
 ```
@@ -151,6 +159,20 @@ teletext deconvolve test.vbi -u -p 100
 teletext deconvolve test.vbi -u -r 0
 ```
 * **Pause** for **record**/**deconvolve** (`P button`) - **Pauses** while recording or deconvolving.
+* **Timer for **record** (`-tm/--timer`)
+```
+teletext record test.vbi -tm XXh XXm XXs
+```
+* **Capture Card Settings** for **record**/**deconvolve**/**vbiview** (`-vs/--vbi-start` `-vc/--vbi-count` `-vt/--vbi-terminate-reset`)
+```
+teletext record test.vbi -vs 7 320 -vc 16 16
+```
+```
+teletext deconvolve test.vbi > test.t42 -vs 7 320 -vc 16 16
+```
+```
+teletext vbiview test.vbi -vs 7 320 -vc 16 16
+```
 
 # Guide for Functions
 [GUIDE](https://github.com/KOTYA8/VHSTTX/blob/main/examples/help-all.txt)
@@ -257,4 +279,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Made a simplification for **Ignore Line** (`-il`) and **Used Line** (`-ul`). Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). **Pause** for `record/deconvolve`. Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop**, **T42 Crop** application. Fixed (**Teletext Viewer**): opening **folders from HTML/T42 files**, added **page scrolling speed**, added **All Symbols** and **No Subpages** flag, **HTML viewer**, **HTML fonts to Split**.
+* **V2.5** - Added: **VBI Repair**, **Timer** for `record`, **Settings** for **Capture Card**, **Squash** (`V1`, `auto`). Renamed: **T42 Crop** > **T42 Tool**, **VBI Crop** > **VBI Tool**. 
