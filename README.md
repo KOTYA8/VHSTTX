@@ -79,7 +79,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * **URXVT Terminal (deconvolve)** - ✅ realized
 * **Pause for (record/deconvolve)** - ✅ realized
 * **Timer for (record)** - ✅ realized
-* **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized
+* **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (⚠️ support only bttv (BT8x8))
 * **Mode: V1,V3, auto for (squash)** - (auto)⚠️ bugs
 * **Spellcheck** - ⚠️ bugs
 
