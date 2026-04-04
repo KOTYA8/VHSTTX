@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 import teletext.cli.teletext
 import teletext.cli.training
+import teletext.gui.vbituner
 from teletext.cli.livepause import PauseController
 from teletext.vbi.config import Config
 
@@ -558,6 +559,30 @@ class TestVBICropHelpers(unittest.TestCase):
         self.assertIn('restored VBI start/count', result.output)
         get_format.assert_called_once_with(device_path)
         set_format.assert_called_once()
+
+    def test_live_tuner_decoder_tuning_does_not_leak_line_selection_into_per_line_shift(self):
+        line_count = 32
+        total_slots = (
+            teletext.gui.vbituner._line_decoder_override_offset(line_count)
+            + teletext.gui.vbituner.LINE_OVERRIDE_DECODER_SLOT_COUNT
+        )
+        shared_values = [0.0] * total_slots
+        line_offset = teletext.gui.vbituner._line_selection_offset()
+        for line in range(1, line_count + 1):
+            shared_values[line_offset + line - 1] = 1.0
+
+        class _DummyProcess:
+            def is_alive(self):
+                return False
+
+        handle = teletext.gui.vbituner.LiveTunerHandle(
+            _DummyProcess(),
+            shared_values,
+            tape_formats=['vhs'],
+            line_count=line_count,
+        )
+
+        self.assertEqual(handle.decoder_tuning()['per_line_shift'], {})
 
 
     def test_processed_frame_for_output_respects_line_control_overrides(self):
