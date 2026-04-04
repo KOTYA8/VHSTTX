@@ -159,7 +159,7 @@ teletext deconvolve test.vbi -u -p 100
 teletext deconvolve test.vbi -u -r 0
 ```
 * **Pause** for **record**/**deconvolve** (`P button`) - **Pauses** while recording or deconvolving.
-* **Timer for **record** (`-tm/--timer`)
+* **Timer** for **record** (`-tm/--timer`)
 ```
 teletext record test.vbi -tm XXh XXm XXs
 ```
