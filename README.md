@@ -10,12 +10,16 @@ git clone https://github.com/KOTYA8/VHSTTX.git
 cd VHSTTX
 python3 setup.py install
 ```
+### Install library
+```
+pip install PyQt5
+pipx install -e .[qt] --force
+```
 ### Update
 ```
 cd VHSTTX
 git pull
 python3 setup.py install
-pipx install -e .[qt] --force
 ```
 ### Uninstalling the old version
 In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
