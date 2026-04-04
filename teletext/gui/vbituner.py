@@ -199,6 +199,10 @@ def _line_selection_offset():
     return SIGNAL_CONTROL_COUNT + DECODER_TUNING_SLOT_COUNT
 
 
+def _per_line_shift_offset(line):
+    return SIGNAL_CONTROL_COUNT + DECODER_TUNING_BASE_SLOT_COUNT + (int(line) - 1)
+
+
 def _fix_capture_card_offset(line_count):
     return _line_selection_offset() + int(line_count)
 
@@ -5438,14 +5442,14 @@ def _live_tuner_entry(shared_values, title, tape_formats, line_count, config=Non
             'show_rejects': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 18])),
             'show_start_clock': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 19])),
             'show_clock_visuals': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 20])),
-            'show_alignment_visuals': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 21])),
-            'show_quality_meter': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 22])),
-            'show_histogram_graph': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 23])),
-            'show_eye_pattern': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 24])),
+        'show_alignment_visuals': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 21])),
+        'show_quality_meter': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 22])),
+        'show_histogram_graph': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 23])),
+        'show_eye_pattern': bool(int(shared_values[SIGNAL_CONTROL_COUNT + 24])),
         'per_line_shift': {
-            line: float(shared_values[SIGNAL_CONTROL_COUNT + 25 + line])
+            line: float(shared_values[_per_line_shift_offset(line)])
             for line in range(1, min(int(line_count), PER_LINE_SHIFT_SLOT_COUNT) + 1)
-            if abs(float(shared_values[SIGNAL_CONTROL_COUNT + 25 + line])) > 1e-9
+            if abs(float(shared_values[_per_line_shift_offset(line)])) > 1e-9
         },
         'line_control_overrides': _deserialise_line_control_override_slots(
             shared_values[line_control_offset:line_control_offset + LINE_OVERRIDE_SIGNAL_SLOT_COUNT],
@@ -5498,7 +5502,7 @@ def _live_tuner_entry(shared_values, title, tape_formats, line_count, config=Non
             shared_values[SIGNAL_CONTROL_COUNT + 24] = 1.0 if next_decoder_tuning.get('show_eye_pattern', False) else 0.0
             per_line_shift = normalise_per_line_shift_map(next_decoder_tuning.get('per_line_shift', {}), maximum_line=line_count)
             for line in range(1, PER_LINE_SHIFT_SLOT_COUNT + 1):
-                shared_values[SIGNAL_CONTROL_COUNT + 25 + line] = float(per_line_shift.get(line, 0))
+                shared_values[_per_line_shift_offset(line)] = float(per_line_shift.get(line, 0))
             line_control_slots = _serialise_line_control_override_slots(
                 next_decoder_tuning.get('line_control_overrides', {}),
                 line_count=line_count,
@@ -5607,9 +5611,9 @@ class LiveTunerHandle:
             'show_histogram_graph': bool(int(self._shared_values[SIGNAL_CONTROL_COUNT + 23])),
             'show_eye_pattern': bool(int(self._shared_values[SIGNAL_CONTROL_COUNT + 24])),
             'per_line_shift': {
-                line: float(self._shared_values[SIGNAL_CONTROL_COUNT + 25 + line])
+                line: float(self._shared_values[_per_line_shift_offset(line)])
                 for line in range(1, min(self._line_count, PER_LINE_SHIFT_SLOT_COUNT) + 1)
-                if abs(float(self._shared_values[SIGNAL_CONTROL_COUNT + 25 + line])) > 1e-9
+                if abs(float(self._shared_values[_per_line_shift_offset(line)])) > 1e-9
             },
             'line_control_overrides': _deserialise_line_control_override_slots(
                 self._shared_values[line_control_offset:line_control_offset + LINE_OVERRIDE_SIGNAL_SLOT_COUNT],
@@ -5674,7 +5678,7 @@ class LiveTunerHandle:
             self._shared_values[SIGNAL_CONTROL_COUNT + 24] = 1.0 if decoder_tuning.get('show_eye_pattern', False) else 0.0
             per_line_shift = normalise_per_line_shift_map(decoder_tuning.get('per_line_shift', {}), maximum_line=self._line_count)
             for line in range(1, PER_LINE_SHIFT_SLOT_COUNT + 1):
-                self._shared_values[SIGNAL_CONTROL_COUNT + 25 + line] = float(per_line_shift.get(line, 0))
+                self._shared_values[_per_line_shift_offset(line)] = float(per_line_shift.get(line, 0))
             line_control_offset = _line_control_override_offset(self._line_count)
             line_decoder_offset = _line_decoder_override_offset(self._line_count)
             line_control_slots = _serialise_line_control_override_slots(
