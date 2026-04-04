@@ -105,7 +105,7 @@ teletext vbitool test.vbi
 ```
 * **T42 Tool** - Control panel for trimming T42 file.
 ```
-teletext vbitool test.vbi
+teletext t42tool test.vbi
 ```
 * **VBI Repair** - Restoring VBI and strings
 ```
