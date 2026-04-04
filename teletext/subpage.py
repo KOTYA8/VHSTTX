@@ -17,6 +17,7 @@ class Subpage(Element):
             self._numbers = np.full((26 + (3*16),), fill_value=-100, dtype=np.int64)
         else:
             self._numbers = numbers
+        self._confidences = np.full((26 + (3*16),), fill_value=-1.0, dtype=np.float32)
 
         if prefill:
             for i in range(0, 25):
@@ -58,6 +59,17 @@ class Subpage(Element):
         except IndexError:
             print(row, dc)
             raise
+
+    def packet_confidence(self, row, dc=0):
+        confidence = float(self._confidences[self._slot(row, dc)])
+        return confidence if confidence >= 0.0 else 0.0
+
+    @property
+    def average_confidence(self):
+        used = self._confidences[self._confidences >= 0.0]
+        if used.size == 0:
+            return 0.0
+        return float(np.mean(used))
 
     @property
     def mrag(self):
@@ -121,6 +133,7 @@ class Subpage(Element):
                     continue
             s._array[i, :] = p[:]
             s._numbers[i] = -1 if p.number is None else p.number
+            s._confidences[i] = float(getattr(p, '_line_confidence', -1.0))
         return s
 
     @classmethod
@@ -158,7 +171,11 @@ class Subpage(Element):
     def packets(self):
         for n, a in enumerate(self._array):
             if self._numbers[n] > -100:
-                yield Packet(a, number=None if self._numbers[n] < 0 else self._numbers[n])
+                packet = Packet(a, number=None if self._numbers[n] < 0 else self._numbers[n])
+                confidence = float(self._confidences[n])
+                if confidence >= 0.0:
+                    packet._line_confidence = confidence
+                yield packet
 
     @property
     def mrg_PN(self):

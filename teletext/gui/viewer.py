@@ -636,6 +636,692 @@ if QtCore is not None:
             QtWidgets.QApplication.clipboard().setText(self._text.toPlainText())
 
 
+    class TeletextComparePane(QtWidgets.QWidget):
+        serviceStateChanged = QtCore.pyqtSignal()
+
+        def __init__(self, owner, title, decoder_alignment, parent=None):
+            super().__init__(parent)
+            self._owner = owner
+            self._title = title
+            self._decoder_alignment = decoder_alignment
+            self._filename = ''
+            self._navigator = None
+            self._loader = None
+            self._target_page_number = None
+            self._target_subpage_number = None
+            self.setStyleSheet(
+                'TeletextComparePane { background-color: white; }'
+                'TeletextComparePane QLabel { color: black; background: transparent; }'
+                'TeletextComparePane QPushButton {'
+                'background-color: white;'
+                'color: black;'
+                'border: 1px solid #9a9a9a;'
+                'border-radius: 3px;'
+                'padding: 4px 8px;'
+                '}'
+            )
+
+            root = QtWidgets.QVBoxLayout(self)
+            root.setContentsMargins(4, 6, 4, 6)
+            root.setSpacing(6)
+
+            header = QtWidgets.QHBoxLayout()
+            header.setContentsMargins(0, 0, 0, 0)
+            header.setSpacing(8)
+            title_label = QtWidgets.QLabel(title)
+            title_label.setStyleSheet('font-weight: bold;')
+            header.addWidget(title_label)
+            header.addStretch(1)
+            self._open_button = QtWidgets.QToolButton()
+            self._open_button.setText('Open')
+            self._open_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._open_menu = QtWidgets.QMenu(self._open_button)
+            self._open_file_action = QtWidgets.QAction('Open .t42...', self)
+            self._open_file_action.triggered.connect(self.open_dialog)
+            self._open_folder_action = QtWidgets.QAction('Open T42 Folder...', self)
+            self._open_folder_action.triggered.connect(self.open_folder_dialog)
+            self._open_menu.addAction(self._open_file_action)
+            self._open_menu.addAction(self._open_folder_action)
+            self._open_button.setMenu(self._open_menu)
+            header.addWidget(self._open_button)
+            root.addLayout(header)
+
+            self._file_label = QtWidgets.QLabel('No file loaded.')
+            self._file_label.setWordWrap(True)
+            self._file_label.setStyleSheet('color: #555;')
+            root.addWidget(self._file_label)
+
+            self._page_label = QtWidgets.QLabel('Page: ---')
+            root.addWidget(self._page_label)
+
+            self._decoder_widget = QtQuickWidgets.QQuickWidget()
+            self._decoder_widget.setResizeMode(QtQuickWidgets.QQuickWidget.SizeViewToRootObject)
+            self._decoder_widget.setClearColor(QtGui.QColor('black'))
+            self._decoder_widget.setFocusPolicy(QtCore.Qt.NoFocus)
+            self._decoder = Decoder(self._decoder_widget, font_family=self._owner._font_family)
+            self._decoder.zoom = self._owner._viewer_zoom_spin.value()
+            self._decoder_widget.setFixedSize(self._decoder.size())
+
+            self._decoder_area = QtWidgets.QWidget()
+            self._decoder_area.setStyleSheet('background-color: black;')
+            decoder_layout = QtWidgets.QGridLayout(self._decoder_area)
+            decoder_layout.setContentsMargins(0, 0, 0, 0)
+            decoder_layout.setSpacing(0)
+            decoder_layout.addWidget(self._decoder_widget, 0, 0, QtCore.Qt.AlignCenter)
+            self._decoder_area.setFixedSize(self._decoder_widget.size())
+            root.addWidget(self._decoder_area, 1, self._decoder_alignment)
+
+            self._status_label = QtWidgets.QLabel('')
+            self._status_label.setWordWrap(True)
+            self._status_label.setStyleSheet('color: #666;')
+            root.addWidget(self._status_label)
+
+            self._clear_decoder()
+
+        @property
+        def has_service(self):
+            return self._navigator is not None
+
+        @property
+        def current_page_number(self):
+            if self._navigator is None:
+                return None
+            return self._navigator.current_page_number
+
+        @property
+        def current_subpage_number(self):
+            if self._navigator is None:
+                return None
+            return self._navigator.current_subpage_number
+
+        @property
+        def current_subpage_count(self):
+            if self._navigator is None:
+                return 0
+            return self._navigator.current_subpage_count
+
+        def open_dialog(self):
+            start_path = os.path.dirname(self._filename) if self._filename else self._owner._capture_directory()
+            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                f'Open {self._title.lower()} teletext capture',
+                start_path,
+                'Teletext Files (*.t42);;All Files (*)',
+            )
+            if filename:
+                self.open_file(
+                    filename,
+                    page_number=self._target_page_number,
+                    subpage_number=self._target_subpage_number,
+                )
+
+        def open_folder_dialog(self):
+            start_path = self._filename if os.path.isdir(self._filename) else os.path.dirname(self._filename)
+            if not start_path:
+                start_path = self._owner._capture_directory()
+            directory = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                f'Open {self._title.lower()} T42 folder',
+                start_path,
+            )
+            if directory:
+                self.open_folder(
+                    directory,
+                    page_number=self._target_page_number,
+                    subpage_number=self._target_subpage_number,
+                )
+
+        def open_file(self, filename, page_number=None, subpage_number=None):
+            filename = os.path.abspath(filename)
+            self._start_loading(filename, ServiceLoader(filename), page_number, subpage_number)
+
+        def open_folder(self, directory, page_number=None, subpage_number=None):
+            directory = os.path.abspath(directory)
+            self._start_loading(directory, DirectoryServiceLoader(directory), page_number, subpage_number)
+
+        def _start_loading(self, source_path, loader, page_number=None, subpage_number=None):
+            if self._loader is not None and self._loader.isRunning():
+                return
+            self._filename = source_path
+            self._target_page_number = page_number
+            self._target_subpage_number = subpage_number
+            self._file_label.setText(source_path)
+            self._file_label.setToolTip(source_path)
+            self._status_label.setText(f'Loading {os.path.basename(source_path)}...')
+            self._open_button.setEnabled(False)
+
+            self._loader = loader
+            self._loader.loaded.connect(self._service_loaded)
+            self._loader.failed.connect(self._service_failed)
+            self._loader.progress.connect(self._service_progress)
+            self._loader.finished.connect(self._service_finished)
+            self._loader.start()
+
+        def set_target(self, page_number, subpage_number=None):
+            self._target_page_number = page_number
+            self._target_subpage_number = subpage_number
+            if self._navigator is None:
+                return False
+            self._apply_owner_navigation_flags()
+            if not self._owner._subpages_enabled():
+                subpage_number = None
+            if self._navigator.go_to_page(page_number, subpage_number):
+                self._status_label.setText('')
+                self._render_current_subpage()
+                return True
+            self._status_label.setText(self._missing_target_text(page_number))
+            return False
+
+        def refresh_view(self):
+            if self._navigator is None:
+                return
+            self._apply_owner_navigation_flags()
+            self._render_current_subpage()
+
+        def go_next_page(self):
+            if self._navigator is None:
+                return False
+            if self._navigator.go_next_page():
+                self._status_label.setText('')
+                self._render_current_subpage()
+                return True
+            return False
+
+        def go_prev_page(self):
+            if self._navigator is None:
+                return False
+            if self._navigator.go_prev_page():
+                self._status_label.setText('')
+                self._render_current_subpage()
+                return True
+            return False
+
+        def go_next_subpage(self):
+            if self._navigator is None:
+                return False
+            if self._navigator.go_next_subpage():
+                self._status_label.setText('')
+                self._render_current_subpage()
+                return True
+            return False
+
+        def go_prev_subpage(self):
+            if self._navigator is None:
+                return False
+            if self._navigator.go_prev_subpage():
+                self._status_label.setText('')
+                self._render_current_subpage()
+                return True
+            return False
+
+        def _service_loaded(self, service):
+            try:
+                self._navigator = ServiceNavigator(service)
+            except ValueError as exc:
+                self._navigator = None
+                self._clear_decoder()
+                self._page_label.setText('Page: ---')
+                self._status_label.setText(str(exc))
+                QtWidgets.QMessageBox.warning(self, 'Compare', str(exc))
+            else:
+                self._apply_owner_navigation_flags()
+                if self._target_page_number is not None:
+                    target_subpage = self._target_subpage_number if self._owner._subpages_enabled() else None
+                    if not self._navigator.go_to_page(self._target_page_number, target_subpage):
+                        self._status_label.setText(self._missing_target_text(self._target_page_number))
+                    else:
+                        self._status_label.setText('')
+                else:
+                    self._status_label.setText('')
+                self._render_current_subpage()
+            self.serviceStateChanged.emit()
+
+        def _service_failed(self, message):  # pragma: no cover - GUI error path
+            self._navigator = None
+            self._clear_decoder()
+            self._page_label.setText('Page: ---')
+            self._status_label.setText(message)
+            QtWidgets.QMessageBox.warning(self, 'Compare', message)
+            self.serviceStateChanged.emit()
+
+        def _service_progress(self, processed, total, _elapsed):
+            if total > 0:
+                self._status_label.setText(
+                    f'Loading {os.path.basename(self._filename)}... {processed}/{total}'
+                )
+            else:
+                self._status_label.setText(f'Loading {os.path.basename(self._filename)}...')
+
+        def _service_finished(self):
+            if self._loader is not None:
+                self._loader.deleteLater()
+                self._loader = None
+            self._open_button.setEnabled(True)
+
+        def _clear_decoder(self):
+            self._decoder[:] = np.full((25, 40), fill_value=0x20, dtype=np.uint8)
+
+        def _render_current_subpage(self):
+            self._owner._apply_decoder_preferences(self._decoder)
+            self._decoder.zoom = self._owner._viewer_zoom_spin.value()
+            subpage = self._navigator.subpage(
+                self._navigator.current_page_number,
+                self._navigator.current_subpage_number,
+            )
+            header = np.full((40,), fill_value=0x20, dtype=np.uint8)
+            magazine, page = ServiceNavigator.split_page_number(self._navigator.current_page_number)
+            header[3:7] = np.frombuffer(f'P{magazine}{page:02X}'.encode('ascii'), dtype=np.uint8)
+            header[8:] = subpage.header.displayable[:]
+            self._decoder.pagecodepage = subpage.codepage
+            self._decoder[0] = header
+            self._decoder[1:] = subpage.displayable[:]
+            self._decoder.fullscreenmode = False
+            self._decoder.fullscreenstretch = False
+            self._decoder_widget.setFixedSize(self._decoder.size())
+            self._decoder_area.setFixedSize(self._decoder_widget.size())
+            if self._owner._subpages_enabled():
+                current_subpage, total_subpages = self._navigator.current_subpage_position
+            else:
+                current_subpage, total_subpages = 1, 1
+            self._page_label.setText(
+                f'Page: {self._navigator.current_page_label}  '
+                f'Subpage: {current_subpage:02d}/{total_subpages:02d} '
+                f'({self._navigator.current_subpage_number:04X})'
+            )
+
+        @staticmethod
+        def _format_page_label(page_number):
+            magazine, page = ServiceNavigator.split_page_number(page_number)
+            return f'P{magazine}{page:02X}'
+
+        def _missing_target_text(self, page_number):
+            previous_page, next_page = self._navigator.nearest_pages(page_number)
+            parts = [f'{self._format_page_label(page_number)} not found']
+            if previous_page is not None:
+                parts.append(f'Prev {self._format_page_label(previous_page)}')
+            if next_page is not None:
+                parts.append(f'Next {self._format_page_label(next_page)}')
+            return ' | '.join(parts)
+
+        def _apply_owner_navigation_flags(self):
+            if self._navigator is None:
+                return
+            self._navigator.set_hex_pages_enabled(not self._owner._no_hex_pages_action.isChecked())
+            if not self._owner._subpages_enabled():
+                self._navigator.go_to_page(self._navigator.current_page_number)
+
+
+    class TeletextCompareDialog(QtWidgets.QDialog):
+        def __init__(self, owner):
+            super().__init__(owner)
+            self._owner = owner
+            self._target_page_number = None
+            self._target_subpage_number = None
+            self.setStyleSheet(
+                'TeletextCompareDialog { background-color: white; color: black; }'
+                'TeletextCompareDialog QLabel { color: black; background: transparent; }'
+                'TeletextCompareDialog QPushButton, '
+                'TeletextCompareDialog QToolButton, '
+                'TeletextCompareDialog QLineEdit {'
+                'background-color: white;'
+                'color: black;'
+                'border: 1px solid #9a9a9a;'
+                'border-radius: 3px;'
+                'padding: 4px 8px;'
+                '}'
+                'TeletextCompareDialog QMenu {'
+                'background-color: white;'
+                'color: black;'
+                'border: 1px solid #9a9a9a;'
+                '}'
+                'TeletextCompareDialog QMenu::item:selected {'
+                'background-color: #dce9ff;'
+                'color: black;'
+                '}'
+            )
+            self.setWindowTitle('Compare')
+            self.resize(1260, 780)
+            if os.path.exists(self._owner._icon_path):
+                self.setWindowIcon(QtGui.QIcon(self._owner._icon_path))
+
+            root = QtWidgets.QVBoxLayout(self)
+            root.setContentsMargins(6, 6, 6, 6)
+            root.setSpacing(6)
+
+            controls = QtWidgets.QHBoxLayout()
+            controls.setContentsMargins(0, 0, 0, 0)
+            controls.setSpacing(8)
+            controls.addWidget(QtWidgets.QLabel('Page'))
+
+            self._page_input = QtWidgets.QLineEdit()
+            self._page_input.setMaxLength(4)
+            self._page_input.setFixedWidth(90)
+            self._page_input.setPlaceholderText('100')
+            self._page_input.returnPressed.connect(self.go_to_page_text)
+            controls.addWidget(self._page_input)
+
+            self._go_button = QtWidgets.QPushButton('Go')
+            self._go_button.clicked.connect(self.go_to_page_text)
+            controls.addWidget(self._go_button)
+
+            self._functions_button = QtWidgets.QToolButton()
+            self._functions_button.setText('Functions')
+            self._functions_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._functions_menu = QtWidgets.QMenu(self._functions_button)
+            self._screenshot_action = QtWidgets.QAction('Screenshot (File)...', self)
+            self._screenshot_action.triggered.connect(self.save_screenshot)
+            self._screenshot_copy_action = QtWidgets.QAction('Screenshot (Copy)', self)
+            self._screenshot_copy_action.triggered.connect(self.copy_screenshot)
+            self._functions_menu.addAction(self._screenshot_action)
+            self._functions_menu.addAction(self._screenshot_copy_action)
+            self._functions_button.setMenu(self._functions_menu)
+            controls.addWidget(self._functions_button)
+
+            self._hotkeys_button = QtWidgets.QToolButton()
+            self._hotkeys_button.setText('Hotkeys')
+            self._hotkeys_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._hotkeys_menu = QtWidgets.QMenu(self._hotkeys_button)
+            self._hotkeys_button.setMenu(self._hotkeys_menu)
+            controls.addWidget(self._hotkeys_button)
+
+            self._next_page_button = QtWidgets.QPushButton('\u2191 Next Page')
+            self._next_page_button.clicked.connect(self.next_page)
+            controls.addWidget(self._next_page_button)
+
+            self._prev_page_button = QtWidgets.QPushButton('\u2193 Prev Page')
+            self._prev_page_button.clicked.connect(self.prev_page)
+            controls.addWidget(self._prev_page_button)
+
+            self._prev_subpage_button = QtWidgets.QPushButton('\u2190 Prev Subpage')
+            self._prev_subpage_button.clicked.connect(self.prev_subpage)
+            controls.addWidget(self._prev_subpage_button)
+
+            self._next_subpage_button = QtWidgets.QPushButton('\u2192 Next Subpage')
+            self._next_subpage_button.clicked.connect(self.next_subpage)
+            controls.addWidget(self._next_subpage_button)
+
+            controls.addStretch(1)
+
+            self._target_label = QtWidgets.QLabel('Page: ---')
+            controls.addWidget(self._target_label)
+
+            root.addLayout(controls)
+            panes = QtWidgets.QHBoxLayout()
+            panes.setContentsMargins(0, 0, 0, 0)
+            panes.setSpacing(0)
+
+            self._compare_widget = QtWidgets.QWidget()
+            self._compare_widget.setStyleSheet('background-color: white;')
+            compare_layout = QtWidgets.QHBoxLayout(self._compare_widget)
+            compare_layout.setContentsMargins(0, 0, 0, 0)
+            compare_layout.setSpacing(0)
+            compare_layout.setSizeConstraint(QtWidgets.QLayout.SetFixedSize)
+
+            self._left_pane = TeletextComparePane(owner, 'Left', QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, self)
+            self._left_pane.serviceStateChanged.connect(self._pane_state_changed)
+            compare_layout.addWidget(self._left_pane, 1)
+
+            separator = QtWidgets.QFrame()
+            separator.setFixedWidth(4)
+            separator.setStyleSheet('background-color: white;')
+            compare_layout.addWidget(separator)
+
+            self._right_pane = TeletextComparePane(owner, 'Right', QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self)
+            self._right_pane.serviceStateChanged.connect(self._pane_state_changed)
+            compare_layout.addWidget(self._right_pane, 1)
+
+            panes.addWidget(self._compare_widget, 1)
+            root.addLayout(panes, 1)
+
+            self._message_label = QtWidgets.QLabel('')
+            self._message_label.setAlignment(QtCore.Qt.AlignCenter)
+            self._message_label.setStyleSheet('color: #1a5fb4; font-weight: bold;')
+            self._message_label.setFixedHeight(self.fontMetrics().height() + 8)
+            root.addWidget(self._message_label)
+
+            self._message_timer = QtCore.QTimer(self)
+            self._message_timer.setSingleShot(True)
+            self._message_timer.timeout.connect(lambda: self._message_label.setText(''))
+
+            self._hotkey_controller = ShortcutConfigController(
+                self,
+                'compare',
+                self._hotkeys_menu,
+                self._build_hotkey_bindings(),
+                'Compare Hotkeys',
+            )
+
+            self._update_navigation_state()
+
+        def prepare_from_owner(self):
+            if self._owner._navigator is not None:
+                self._target_page_number = self._owner._navigator.current_page_number
+                self._target_subpage_number = self._owner._navigator.current_subpage_number
+            if (
+                self._left_pane._filename == ''
+                and self._owner._filename
+                and os.path.isfile(self._owner._filename)
+                and self._owner._filename.lower().endswith('.t42')
+            ):
+                self._left_pane.open_file(
+                    self._owner._filename,
+                    page_number=self._target_page_number,
+                    subpage_number=self._target_subpage_number,
+                )
+            else:
+                self.refresh_views()
+            self._update_navigation_state()
+            QtCore.QTimer.singleShot(0, self._fit_to_content)
+
+        def refresh_views(self):
+            for pane in (self._left_pane, self._right_pane):
+                pane.refresh_view()
+            self._update_navigation_state()
+            self._fit_to_content()
+
+        def _build_hotkey_bindings(self):
+            return (
+                {'id': 'open_left_file', 'label': 'Open Left .t42', 'default': 'Ctrl+Shift+1', 'handler': self._left_pane.open_dialog},
+                {'id': 'open_left_folder', 'label': 'Open Left Folder', 'default': 'Ctrl+Alt+1', 'handler': self._left_pane.open_folder_dialog},
+                {'id': 'open_right_file', 'label': 'Open Right .t42', 'default': 'Ctrl+Shift+2', 'handler': self._right_pane.open_dialog},
+                {'id': 'open_right_folder', 'label': 'Open Right Folder', 'default': 'Ctrl+Alt+2', 'handler': self._right_pane.open_folder_dialog},
+                {'id': 'overview_prev_page', 'label': 'Prev Page', 'default': 'Down', 'handler': self.prev_page},
+                {'id': 'overview_next_page', 'label': 'Next Page', 'default': 'Up', 'handler': self.next_page},
+                {'id': 'prev_subpage', 'label': 'Prev Subpage', 'default': 'Left', 'handler': self.prev_subpage},
+                {'id': 'next_subpage', 'label': 'Next Subpage', 'default': 'Right', 'handler': self.next_subpage},
+                {'id': 'screenshot_file', 'label': 'Screenshot (File)', 'default': 'Ctrl+S', 'handler': self.save_screenshot},
+                {'id': 'screenshot_copy', 'label': 'Screenshot (Copy)', 'default': 'Ctrl+Shift+C', 'handler': self.copy_screenshot},
+                {'id': 'close', 'label': 'Close', 'default': 'Esc', 'handler': self.close},
+            )
+
+        def _current_screenshot_pixmap(self):
+            left = self._left_pane._decoder_widget.grab()
+            right = self._right_pane._decoder_widget.grab()
+            separator_width = 4
+            width = left.width() + separator_width + right.width()
+            height = max(left.height(), right.height())
+            if width <= 0 or height <= 0:
+                return QtGui.QPixmap()
+
+            pixmap = QtGui.QPixmap(width, height)
+            pixmap.fill(QtGui.QColor('black'))
+            painter = QtGui.QPainter(pixmap)
+            left_y = (height - left.height()) // 2
+            right_y = (height - right.height()) // 2
+            painter.drawPixmap(0, left_y, left)
+            painter.fillRect(left.width(), 0, separator_width, height, QtGui.QColor('white'))
+            painter.drawPixmap(left.width() + separator_width, right_y, right)
+            painter.end()
+            return pixmap
+
+        def _suggest_screenshot_path(self):
+            base_directory = self._owner._capture_directory()
+            left_name = os.path.splitext(os.path.basename(self._left_pane._filename or 'left'))[0]
+            right_name = os.path.splitext(os.path.basename(self._right_pane._filename or 'right'))[0]
+            if self._target_page_number is None:
+                filename = f'compare-{left_name}-vs-{right_name}.png'
+            else:
+                page_label = TeletextComparePane._format_page_label(self._target_page_number)
+                subpage_label = (
+                    f'-{self._target_subpage_number:04X}'
+                    if self._target_subpage_number is not None else ''
+                )
+                filename = f'compare-{left_name}-vs-{right_name}-{page_label}{subpage_label}.png'
+            return os.path.join(base_directory, filename)
+
+        def _suggest_screenshot_name(self):
+            return os.path.basename(self._suggest_screenshot_path())
+
+        def save_screenshot(self):
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                'Save compare screenshot',
+                self._suggest_screenshot_path(),
+                'PNG Image (*.png)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.png'):
+                filename += '.png'
+            pixmap = self._current_screenshot_pixmap()
+            if pixmap.save(filename, 'PNG'):
+                self._show_message(f'Screenshot saved: {os.path.basename(filename)}')
+                self._owner.statusBar().showMessage(f'Compare screenshot saved to {filename}', 5000)
+            else:  # pragma: no cover - GUI error path
+                QtWidgets.QMessageBox.warning(self, 'Compare', f'Could not save screenshot to {filename}.')
+
+        def copy_screenshot(self):
+            pixmap = self._current_screenshot_pixmap()
+            if pixmap.isNull():
+                return
+            mime = QtCore.QMimeData()
+            mime.setImageData(pixmap.toImage())
+            mime.setText(self._suggest_screenshot_name())
+            QtWidgets.QApplication.clipboard().setMimeData(mime)
+            self._show_message(f'Screenshot copied: {self._suggest_screenshot_name()}')
+            self._owner.statusBar().showMessage('Compare screenshot copied to clipboard.', 5000)
+
+        def go_to_page_text(self):
+            text = self._page_input.text().strip()
+            if not text:
+                return
+            try:
+                page_number = ServiceNavigator.parse_page_number(text)
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self, 'Compare', str(exc))
+                return
+            self._apply_target(page_number, self._target_subpage_number)
+
+        def next_page(self):
+            self._apply_navigation(lambda pane: pane.go_next_page())
+
+        def prev_page(self):
+            self._apply_navigation(lambda pane: pane.go_prev_page())
+
+        def next_subpage(self):
+            if not self._owner._subpages_enabled():
+                return
+            self._apply_navigation(lambda pane: pane.go_next_subpage())
+
+        def prev_subpage(self):
+            if not self._owner._subpages_enabled():
+                return
+            self._apply_navigation(lambda pane: pane.go_prev_subpage())
+
+        def _pane_state_changed(self):
+            primary = self._primary_pane()
+            if primary is not None and self._target_page_number is None:
+                self._target_page_number = primary.current_page_number
+                self._target_subpage_number = primary.current_subpage_number
+            self._update_navigation_state()
+            self._fit_to_content()
+
+        def _primary_pane(self):
+            if self._left_pane.has_service:
+                return self._left_pane
+            if self._right_pane.has_service:
+                return self._right_pane
+            return None
+
+        def _apply_navigation(self, action):
+            primary = self._primary_pane()
+            if primary is None:
+                return
+            if not action(primary):
+                return
+            self._target_page_number = primary.current_page_number
+            self._target_subpage_number = primary.current_subpage_number
+            for pane in (self._left_pane, self._right_pane):
+                if pane is primary or not pane.has_service:
+                    continue
+                pane.set_target(self._target_page_number, self._target_subpage_number)
+            self._update_navigation_state()
+
+        def _apply_target(self, page_number, subpage_number=None):
+            self._target_page_number = page_number
+            self._target_subpage_number = subpage_number
+            successful_pane = None
+            for pane in (self._left_pane, self._right_pane):
+                if not pane.has_service:
+                    continue
+                if pane.set_target(page_number, subpage_number) and successful_pane is None:
+                    successful_pane = pane
+            if successful_pane is not None:
+                self._target_page_number = successful_pane.current_page_number
+                self._target_subpage_number = successful_pane.current_subpage_number
+            self._update_navigation_state()
+
+        def _update_navigation_state(self):
+            primary = self._primary_pane()
+            enabled = primary is not None
+            for widget in (
+                self._page_input,
+                self._go_button,
+                self._next_page_button,
+                self._prev_page_button,
+            ):
+                widget.setEnabled(enabled)
+            subpages_enabled = (
+                enabled
+                and self._owner._subpages_enabled()
+                and primary is not None
+                and primary.current_subpage_count > 1
+            )
+            self._prev_subpage_button.setEnabled(subpages_enabled)
+            self._next_subpage_button.setEnabled(subpages_enabled)
+
+            if self._target_page_number is None:
+                self._target_label.setText('Page: ---')
+                self._page_input.setText('')
+                return
+
+            if enabled:
+                current_subpage, total_subpages = primary._navigator.current_subpage_position
+                self._target_label.setText(
+                    f'Page: {primary._navigator.current_page_label}  '
+                    f'Subpage: {current_subpage:02d}/{total_subpages:02d} '
+                    f'({primary.current_subpage_number:04X})'
+                )
+                self._page_input.setText(primary._navigator.current_page_label[1:])
+            else:
+                self._target_label.setText(
+                    f'Page: {TeletextComparePane._format_page_label(self._target_page_number)}'
+                )
+                self._page_input.setText(TeletextComparePane._format_page_label(self._target_page_number)[1:])
+
+        def _fit_to_content(self):
+            if self.isMaximized() or self.isFullScreen():
+                return
+            self.adjustSize()
+            hint = self.sizeHint()
+            if hint.isValid():
+                self.resize(hint)
+
+        def _show_message(self, text):
+            self._message_label.setText(text)
+            self._message_timer.start(2500)
+
+
     class HtmlScanlineOverlay(QtWidgets.QWidget):
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -921,13 +1607,11 @@ if QtCore is not None:
             controls = QtWidgets.QHBoxLayout(self._controls_widget)
             controls.setContentsMargins(0, 0, 0, 0)
             controls.setSpacing(8)
-            controls.addWidget(QtWidgets.QLabel('Mode'))
 
             self._mode_combo = QtWidgets.QComboBox()
             self._mode_combo.addItem('Page', 'page')
             self._mode_combo.addItem('Raw', 'raw')
             self._mode_combo.currentIndexChanged.connect(self._refresh_preview)
-            controls.addWidget(self._mode_combo)
 
             self._overview_action = QtWidgets.QAction('Overview', self)
             self._overview_action.triggered.connect(self.show_overview)
@@ -935,6 +1619,29 @@ if QtCore is not None:
             self._html_screenshot_action.triggered.connect(self.save_screenshot)
             self._html_screenshot_copy_action = QtWidgets.QAction('Screenshot (Copy)', self)
             self._html_screenshot_copy_action.triggered.connect(self.copy_screenshot)
+            self._open_html_file_action = QtWidgets.QAction('Open in Browser', self)
+            self._open_html_file_action.triggered.connect(self.open_current_html_file)
+            self._open_html_folder_action = QtWidgets.QAction('Open Current Folder', self)
+            self._open_html_folder_action.triggered.connect(self.open_current_html_folder)
+            self._choose_html_folder_action = QtWidgets.QAction('Open HTML Folder...', self)
+            self._choose_html_folder_action.triggered.connect(self.open_html_folder_dialog)
+            self._choose_html_file_action = QtWidgets.QAction('Open HTML File...', self)
+            self._choose_html_file_action.triggered.connect(self.open_html_file_dialog)
+
+            self._open_button = QtWidgets.QToolButton()
+            self._open_button.setText('Open')
+            self._open_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._open_menu = QtWidgets.QMenu(self._open_button)
+            self._open_menu.addAction(self._choose_html_folder_action)
+            self._open_menu.addAction(self._choose_html_file_action)
+            self._open_menu.addSeparator()
+            self._open_menu.addAction(self._open_html_file_action)
+            self._open_menu.addAction(self._open_html_folder_action)
+            self._open_button.setMenu(self._open_menu)
+            controls.addWidget(self._open_button)
+
+            controls.addWidget(QtWidgets.QLabel('Mode'))
+            controls.addWidget(self._mode_combo)
 
             self._functions_button = QtWidgets.QToolButton()
             self._functions_button.setText('Functions')
@@ -1286,10 +1993,49 @@ if QtCore is not None:
             parent = self.parent()
             return parent if parent is not None else None
 
+        def _open_local_path(self, path):
+            parent = self._parent_viewer()
+            if parent is not None and hasattr(parent, '_open_local_path'):
+                return parent._open_local_path(path)
+
+            if not path or not os.path.exists(path):
+                QtWidgets.QMessageBox.information(self, 'HTML Preview', f'Path does not exist yet:\n{path}')
+                return False
+
+            url = QtCore.QUrl.fromLocalFile(path)
+            if QtGui.QDesktopServices.openUrl(url):
+                return True
+
+            try:
+                if os.name == 'nt':  # pragma: no cover - platform-specific GUI path
+                    os.startfile(path)
+                elif sys.platform == 'darwin':  # pragma: no cover - platform-specific GUI path
+                    subprocess.Popen(['open', path])
+                else:  # pragma: no cover - platform-specific GUI path
+                    subprocess.Popen(['xdg-open', path])
+            except Exception as exc:  # pragma: no cover - GUI error path
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    'HTML Preview',
+                    f'Could not open path:\n{path}\n\n{exc}',
+                )
+                return False
+            return True
+
         def _configured_auto_interval_ms(self):
             parent = self._parent_viewer()
             interval = getattr(parent, '_auto_interval_ms', None)
             return max(100, int(interval)) if interval else 3500
+
+        def _html_open_start_path(self):
+            if self._filename:
+                return os.path.dirname(self._filename)
+            parent = self._parent_viewer()
+            if parent is not None:
+                path = getattr(parent, '_last_html_source_directory', None) or getattr(parent, '_user_html_directory', None)
+                if path:
+                    return path
+            return os.getcwd()
 
         def _html_zoom_factor(self):
             return 1.0
@@ -1767,6 +2513,9 @@ if QtCore is not None:
             self._load_overview_toggle.setEnabled(enabled)
             self._html_screenshot_action.setEnabled(bool(self._filename))
             self._html_screenshot_copy_action.setEnabled(bool(self._filename))
+            self._open_html_file_action.setEnabled(bool(self._filename))
+            self._open_html_folder_action.setEnabled(bool(self._filename))
+            self._open_button.setEnabled(True)
             self._functions_button.setEnabled(bool(self._filename) or enabled)
             if not enabled:
                 blocked = self._load_overview_toggle.blockSignals(True)
@@ -2234,6 +2983,41 @@ if QtCore is not None:
         def _current_preview_pixmap(self):
             return self._preview_container.grab()
 
+        def open_html_folder_dialog(self):
+            directory = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                'Choose HTML folder',
+                self._html_open_start_path(),
+            )
+            if not directory:
+                return
+            parent = self._parent_viewer()
+            if parent is not None:
+                parent._last_html_source_directory = directory
+            self.open_html_folder(directory)
+
+        def open_html_file_dialog(self):
+            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                'Open HTML file',
+                self._html_open_start_path(),
+                'HTML files (*.html *.htm);;All files (*.*)',
+            )
+            if not filename:
+                return
+            parent = self._parent_viewer()
+            if parent is not None:
+                parent._last_html_source_directory = os.path.dirname(filename)
+            self.open_html(filename)
+
+        def open_current_html_file(self):
+            if self._filename:
+                self._open_local_path(self._filename)
+
+        def open_current_html_folder(self):
+            if self._filename:
+                self._open_local_path(os.path.dirname(self._filename))
+
         def save_screenshot(self):
             if not self._filename:
                 return
@@ -2622,6 +3406,7 @@ if QtCore is not None:
             self._html_preview_dialog = None
             self._t42_browser_dialog = None
             self._html_browser_dialog = None
+            self._compare_dialog = None
             self._metadata_cache = None
             self._user_t42_directory = None
             self._user_html_directory = None
@@ -2718,6 +3503,8 @@ if QtCore is not None:
             self._screenshot_copy_action.triggered.connect(self.copy_screenshot)
             self._overview_action = QtWidgets.QAction('Overview', self)
             self._overview_action.triggered.connect(self.show_overview)
+            self._compare_action = QtWidgets.QAction('Compare', self)
+            self._compare_action.triggered.connect(self.show_compare)
             self._info_action = QtWidgets.QAction('Info', self)
             self._info_action.triggered.connect(self.show_info)
             self._fullscreen_action = QtWidgets.QAction('Fullscreen', self)
@@ -2732,6 +3519,7 @@ if QtCore is not None:
             self._functions_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
             self._functions_menu = QtWidgets.QMenu(self._functions_button)
             self._functions_menu.addAction(self._overview_action)
+            self._functions_menu.addAction(self._compare_action)
             self._functions_menu.addAction(self._screenshot_action)
             self._functions_menu.addAction(self._screenshot_copy_action)
             self._functions_menu.addAction(self._info_action)
@@ -3330,6 +4118,7 @@ if QtCore is not None:
             self._decoder.zoom = self.stretch_zoom if enabled else self.base_zoom
             self._sync_decoder_size()
             self._resize_window_to_content()
+            self._refresh_compare_dialog()
 
         def _set_decoder_zoom(self, value):
             self.base_zoom = float(value)
@@ -3337,24 +4126,29 @@ if QtCore is not None:
             self._decoder.zoom = self.stretch_zoom if self._stretch_toggle.isChecked() else self.base_zoom
             self._sync_decoder_size()
             self._resize_window_to_content()
+            self._refresh_compare_dialog()
 
         def _set_single_height(self, enabled):
             self._decoder.doubleheight = not enabled
             self._sync_decoder_size()
             self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
 
         def _set_single_width(self, enabled):
             self._decoder.doublewidth = not enabled
             self._sync_decoder_size()
             self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
 
         def _set_no_flash(self, enabled):
             self._decoder.flashenabled = not enabled
             self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
 
         def _set_highlight_text(self, enabled):
             self._decoder.highlighttext = enabled
             self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
 
         def _set_subpages_enabled(self, enabled):
             self._auto_subpages_action.setEnabled(enabled)
@@ -3365,6 +4159,7 @@ if QtCore is not None:
                 self._render_current_subpage()
             else:
                 self._sync_auto_scroll()
+            self._refresh_compare_dialog()
 
         def _set_reveal_all(self, enabled):
             self._decoder.reveal = enabled
@@ -3372,6 +4167,7 @@ if QtCore is not None:
             if self._navigator is not None:
                 self._render_current_subpage()
             self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
 
         def _set_load_overview(self, enabled):
             if enabled:
@@ -3389,6 +4185,7 @@ if QtCore is not None:
                 self._stop_overview_preload()
 
         def _set_no_hex_pages(self, enabled):
+            self._refresh_compare_dialog()
             if self._navigator is None:
                 return
             self._navigator.set_hex_pages_enabled(not enabled)
@@ -3404,9 +4201,15 @@ if QtCore is not None:
             self._invalidate_overview_cache()
             if self._navigator is not None:
                 self._render_current_subpage()
+            self._refresh_compare_dialog()
 
         def _set_crt_effect(self, enabled):
             self._decoder.crteffect = enabled
+            self._refresh_compare_dialog()
+
+        def _refresh_compare_dialog(self):
+            if self._compare_dialog is not None and self._compare_dialog.isVisible():
+                self._compare_dialog.refresh_views()
 
         def _invalidate_overview_cache(self):
             self._stop_overview_preload()
@@ -3436,7 +4239,6 @@ if QtCore is not None:
                 self._auto_scroll_timer.stop()
             for widget in (
                 self._split_button,
-                self._functions_button,
                 self._settings_button,
                 self._go_button,
                 self._page_input,
@@ -3459,6 +4261,7 @@ if QtCore is not None:
                 self._split_export_action,
             ):
                 action.setEnabled(enabled)
+            self._compare_action.setEnabled(True)
             for action in (
                 self._single_height_action,
                 self._single_width_action,
@@ -3478,6 +4281,7 @@ if QtCore is not None:
             self._viewer_zoom_action.setEnabled(enabled)
             if enabled:
                 self._auto_subpages_action.setEnabled(self._subpages_enabled())
+            self._functions_button.setEnabled(True)
             for button in self._fastext_buttons:
                 button.setEnabled(enabled)
 
@@ -3609,6 +4413,8 @@ if QtCore is not None:
                 button.setEnabled(link.enabled)
                 button.setToolTip(f'Go to {link.label}')
             self._sync_auto_scroll()
+            if self._compare_dialog is not None and self._compare_dialog.isVisible():
+                self._compare_dialog.refresh_views()
 
         def show_overview(self):
             if self._navigator is None:
@@ -3640,6 +4446,13 @@ if QtCore is not None:
             self._overview_dialog.show()
             self._overview_dialog.raise_()
             self._overview_dialog.activateWindow()
+
+        def show_compare(self):
+            dialog = self._ensure_compare_dialog()
+            dialog.prepare_from_owner()
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
 
         def _capture_directory(self):
             if not self._filename:
@@ -3710,6 +4523,11 @@ if QtCore is not None:
                 self._html_browser_dialog = FileBrowserDialog('HTML Files', '*.html', self)
                 self._html_browser_dialog.fileRequested.connect(self._open_html_preview)
             return self._html_browser_dialog
+
+        def _ensure_compare_dialog(self):
+            if self._compare_dialog is None:
+                self._compare_dialog = TeletextCompareDialog(self)
+            return self._compare_dialog
 
         def _show_browser_dialog(self, dialog, directory):
             dialog.set_directory(directory)

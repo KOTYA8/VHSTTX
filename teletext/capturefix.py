@@ -36,12 +36,29 @@ class CaptureCardFixer:
         self._process = None
         self._warned_missing_ffmpeg = False
 
+    def _announce(self, message):
+        try:
+            sys.stderr.write(f'[capture-card-fix] {message}\n')
+            sys.stderr.flush()
+        except Exception:
+            pass
+
     def update(self, fix_capture_card):
+        settings = normalise_fix_capture_card(fix_capture_card)
         with self._state_lock:
-            self._settings = normalise_fix_capture_card(fix_capture_card)
+            previous_settings = dict(self._settings)
+            self._settings = settings
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name='capture-card-fixer', daemon=True)
             self._thread.start()
+        if settings != previous_settings:
+            if settings['enabled']:
+                self._announce(
+                    f'Enabled: running now for {settings["seconds"]}s on {settings["device"]}, '
+                    f'then every {settings["interval_minutes"]}m.'
+                )
+            elif previous_settings.get('enabled'):
+                self._announce('Disabled.')
         self._wake_event.set()
 
     def close(self):
@@ -87,6 +104,7 @@ class CaptureCardFixer:
             '-',
         ]
 
+        self._announce(f'Starting wake-up run for {settings["seconds"]}s on {settings["device"]}.')
         process = subprocess.Popen(
             command,
             stdout=subprocess.DEVNULL,
@@ -132,5 +150,6 @@ class CaptureCardFixer:
             if self._stop_event.is_set():
                 break
 
-            self._run_ffmpeg(current_settings)
+            if self._run_ffmpeg(current_settings):
+                self._announce(f'Next wake-up in {current_settings["interval_minutes"]}m.')
             next_run_at = time.monotonic() + (current_settings['interval_minutes'] * 60)

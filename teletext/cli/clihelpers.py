@@ -69,8 +69,8 @@ def carduser(extended=False):
             for d in [
                 click.option('--sample-rate', type=float, default=None, help='Override capture card sample rate (Hz).'),
                 click.option('--sample-rate-adjust', type=float, default=0, help='Adjustment to default capture card sample rate (Hz).'),
-                click.option('--extra-roll', type=int, default=0, help='Shift line by N samples after locking to the packet.'),
-                click.option('--line-start-range', type=(int, int), default=(None, None), help='Override capture card line start offset.'),
+                click.option('-er', '--extra-roll', type=int, default=0, help='Shift line by N samples after locking to the packet.'),
+                click.option('-lsr', '--line-start-range', type=(int, int), default=(None, None), help='Override capture card line start offset.'),
             ][::-1]:
                 f = d(f)
 
@@ -104,6 +104,13 @@ def chunkreader(loop=False, dup_stdin=False):
                     kwargs['progress'] = False
 
             chunker = lambda size, flines=16, frange=range(0, 16): FileChunker(input, size, start, stop, step, limit, flines, frange, loop=loop, dup_stdin=dup_stdin)
+            input_path = getattr(input, 'name', None)
+            if not input_path or input_path in ('-', '<stdin>') or not os.path.exists(input_path):
+                input_path = None
+            else:
+                input_path = os.path.abspath(input_path)
+            chunker._teletext_input_path = input_path
+            chunker._teletext_input_handle = input
 
             return f(chunker=chunker, *args, **kwargs)
         return wrapper
@@ -145,7 +152,7 @@ def packetreader(filtered=True, progress=True, mag_hist=False, row_hist=False, e
             err_hist = kwargs.pop('err_hist', None)
 
             if progress:
-                chunks = tqdm(chunks, unit='P', dynamic_ncols=True)
+                chunks = tqdm(chunks, unit='P', dynamic_ncols=True, desc='Reading packets')
                 if pass_progress or any((mag_hist, row_hist, err_hist)):
                     chunks.postfix = StatsList()
 
@@ -239,11 +246,22 @@ def packetwriter(f):
                     kwargs['progress'] = False
 
         packets = f(*args, **kwargs)
+        tty_outputs = [o for _, o in output if hasattr(o, 'isatty') and o.isatty()]
 
-        for attr, o in output:
-            packets = pipeline.to_file(packets, o, attr)
+        try:
+            for attr, o in output:
+                packets = pipeline.to_file(packets, o, attr)
 
-        for p in packets:
-            pass
+            for p in packets:
+                pass
+        finally:
+            if tty_outputs:
+                reset = b'\x1b[0m\x1b[?25h\r\n'
+                for handle in tty_outputs:
+                    try:
+                        handle.write(reset)
+                        handle.flush()
+                    except Exception:
+                        pass
 
     return wrapper

@@ -106,8 +106,14 @@ class PauseController:
             self._paused_event.clear()
 
     def wait_if_paused(self):
+        paused_started = None
         while self._paused_event.is_set() and not self._stop_event.is_set():
+            if paused_started is None:
+                paused_started = time.monotonic()
             time.sleep(0.1)
+        if paused_started is None:
+            return 0.0
+        return time.monotonic() - paused_started
 
     def wrap_iterable(self, iterable):
         for item in iterable:
