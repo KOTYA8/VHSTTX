@@ -4,6 +4,7 @@ VHS Teletext X - advanced features of [vhs-teletext](https://github.com/ali1234/
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
 # Transition from vhs-teletext and update VHSTTX
+### Install
 ```
 source myvenv/bin/activate
 git clone https://github.com/KOTYA8/VHSTTX.git
@@ -145,6 +146,7 @@ teletext vbiview -f hd630sp test.vbi
 ```
 teletext deconvolve -f hd630lp test.vbi > test.t42  
 ```
+
 * **Fix Capture Card** for **record** (`-fcc/--fix-capture-card`) - Fixes bug with increasing brightness in vbi0, runs through ffmpeg. How long does it work in seconds and after how long will it turn on in minutes: (`-fcc 2 3`) - runs **2 seconds** every **3 minutes** 
 ```
 teletext record -fcc 2 3 test.vbi
@@ -155,16 +157,20 @@ teletext deconvolve -fcc 2 3 test.vbi > test.t42
 ```
 teletext vbiview -fcc 2 3 test.vbi
 ```
+
 * **URXVT Terminal** for **deconvolve** (`-u/--urxvt`) - Urxvt terminal for **viewing individual teletext pages and filters in real time**.
 ```
 teletext deconvolve test.vbi -u -p 100
 teletext deconvolve test.vbi -u -r 0
 ```
+
 * **Pause** for **record**/**deconvolve** (`P button`) - **Pauses** while recording or deconvolving.
+
 * **Timer** for **record** (`-tm/--timer`) (`XXh XXm XXs`)
 ```
 teletext record test.vbi -tm 5m
 ```
+
 * **Capture Card Settings** for **record**/**deconvolve**/**vbiview** (`-vs/--vbi-start` `-vc/--vbi-count` `-vt/--vbi-terminate-reset`)
 ```
 teletext record test.vbi -vs 7 320 -vc 16 16
@@ -178,23 +184,18 @@ teletext vbiview test.vbi -vs 7 320 -vc 16 16
 
 # Functions VBI Tune/VBI Tune Live (**deconvolve**/**vbiview**)
 ## Signal Controls (VBI)
-### Value/Coeff - Adjusting Values ​​for VBI from **0** to **100** (**50** - no change) / Coefficients for values from **0.00** to **100**.
+### Value/Coeff - Adjusting Values ​​for VBI from **0** to **100** (**50** - no change) / Coefficients for values from **0.00** to **100**. *Example: -bn 25/1*
 * **Brightness/Sharpness/Gain/Contrast** (`-bn/--brightness`/`-sp/--sharpness`/`-gn/--gain`/`-ct/--contrast`) 
-```
-teletext deconvolve -bn 25/1 -sp 30/1 -gn 50/1 -ct 0/1 test.vbi > test.t42
-```
-```
-teletext vbiview -bn 25/1 -sp 30/1 -gn 50 /1-ct 0/1 test.vbi
-```
+
 ## Signal Cleanup (VBI)
-### Value/Coeff - Adjusting Values ​​for VBI from **0** to **100** (**0** - no change) + Coefficients for values from **0.00** to **100**.
+### Value/Coeff - Adjusting Values ​​for VBI from **0** to **100** (**0** - no change) + Coefficients for values from **0.00** to **100**. *Example: -nr 25/1*
 * **Noise Reduction/Hum Removal/Auto Black Level/Impulse Filter/Temporal Denoise/Head Switching Mask/Line-to-Line Stabilization/Auto Gain / Auto Contrast** (`-nr/--noise-reduction`/`-hm/--hum-removal`/`-abl/--auto-black-level`/`-if/--impulse-filter`/`-td/--temporal-denoise`/`-hsm/--head-switching-mask`/`-lls/--line-to-line-stabilization`/`-agc/--auto-gain-contrast`)
 
 ## Decoder Tuning (Deconvolve)
-### Value - Adjusting Values ​​for deconvolve from **0** to **100** (**50** - no change): Line Quality, Clock Lock, Start Lock.
-### (**0** - no change): Adaptive Threshold, Dropout Repair, Wow/Flutter Compensation, Auto Line Align.
-### Template (-f vhs), Extra Roll (value), Line Start Range (startline endline), Per-Line Shift (line:shift)
-* **Template/Extra Roll/Line Start Range/Line Quality/Clock Lock/Start Lock/Adaptive Threshold/Dropout Repair/Wow / Flutter Compensation/Auto Line Align/Per-Line Shift** (`-f/--file`/`--extra-roll`/`--line-start-range`/`-cl/--clock-lock`/`-sl/--start-lock`/`-at/--adaptive-threshold`/`-dr/--dropout-repair`/`-wf/--wow-flutter-compensation`/`-ala/--auto-line-align`/`-pls/--per-line-shift`)
+### Value - Adjusting Values ​​for deconvolve from **0** to **100** (**50** - no change): Line Quality, Clock Lock, Start Lock. *Example: -lq 25*   
+**(**0** - no change): Adaptive Threshold, Dropout Repair, Wow/Flutter Compensation, Auto Line Align.**    
+**Template (file), Extra Roll (value), Line Start Range (startline endline), Per-Line Shift (line:shift).** *Example: `-f vhs`/`--extra roll 1`/`--line-start-range 60 130`/`-pls 1:+1`*   
+* **Template/Extra Roll/Line Start Range/Line Quality/Clock Lock/Start Lock/Adaptive Threshold/Dropout Repair/Wow / Flutter Compensation/Auto Line Align/Per-Line Shift** (`-f/--file`/`--extra-roll`/`--line-start-range`/`-lq/--line-quality`/`-cl/--clock-lock`/`-sl/--start-lock`/`-at/--adaptive-threshold`/`-dr/--dropout-repair`/`-wf/--wow-flutter-compensation`/`-ala/--auto-line-align`/`-pls/--per-line-shift`)
 
 ## Diagnostics (Viewer)
 * **Show Quality/Show Rejects/Show Start/Clock / Show Clock Visuals/Show Alignment Visuals/Histogram / Black Level Graph/Eye Pattern / Clock Preview/Quality Meter**
