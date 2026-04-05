@@ -54,7 +54,6 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 ## **VBI Tool** - ✅ realized
 * Frame-by-frame viewing - ✅ realized
 * Frame marks - ✅ realized
-* Saving with VBI Tune Live - ✅ realized
 * Cutting frames from VBI - ✅ realized
 * Adding VBI Files - ✅ realized
 * Checking for errors in VBI - ✅ realized
