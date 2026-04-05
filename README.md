@@ -37,7 +37,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * List of all pages - ✅ realized
 * Full screen - ✅ realized
 * Hotkeys - ✅ realized
-* Teletext service information - ⚠️ bugs
+* Teletext service information - ⚠️bugs
 * Opening T42 and HTML files and folders in HTML Viewer - ✅ realized
 * Comparison of two teletexts - ✅ realized
 
@@ -74,7 +74,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Saving with VBI Tune Live - ✅ realized
 * Saving to VBI/T42 file - ✅ realized
 * Real-time VBI diagnostics with Teletext Monitor - ✅ realized
-* Stabilize VBI - ⚠️ bugs
+* Stabilize VBI - ⚠️bugs
 
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
@@ -110,9 +110,9 @@ teletext vbirepair test.vbi
 * **URXVT Terminal (deconvolve)** - ✅ realized
 * **Pause for (record/deconvolve)** - ✅ realized
 * **Timer for (record)** - ✅ realized
-* **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (⚠️ support only bttv (BT8x8))
-* **Mode: V1|V3|auto for (squash)** - ✅ realized (auto - ⚠️) 
-* **Spellcheck** - ⚠️ bugs
+* **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (❗support only bttv - BT8x8)
+* **Mode: V1|V3|auto for (squash)** - ✅ realized (auto - ⚠️bugs) 
+* **Spellcheck** - ⚠️bugs
 
 # Functions
 * **Ignore Line** for **record**/**deconvolve**/**vbiview** (`-il/--ignore-line`) - Ignoring lines when writing to VBI and deconvolving to t42.   
