@@ -76,19 +76,6 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Real-time VBI diagnostics with Teletext Monitor - ✅ realized
 * Stabilize VBI - ⚠️ bugs
 
-# Future Functions
-* **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
-* **Used Line (record/deconvolve/vbiview)** - ✅ realized
-* **Line numbering (vbiview)** - ✅ realized
-* **Brightness/Sharpness/Gain/Contrast (record/deconvolve/vbiview)** - ✅ realized
-* **Fix Capture Card (record/deconvolve/vbiview)** - ✅ realized
-* **URXVT Terminal (deconvolve)** - ✅ realized
-* **Pause for (record/deconvolve)** - ✅ realized
-* **Timer for (record)** - ✅ realized
-* **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (⚠️ support only bttv (BT8x8))
-* **Mode: V1|V3|auto for (squash)** - ✅ realized (auto - ⚠️) 
-* **Spellcheck** - ⚠️ bugs
-
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
 * **VBI Tune** for **record/deconvolve** (`-vtn/--vbi-tune`) - VBI Tune: simplifies VBI setup before recording.   
@@ -113,6 +100,19 @@ teletext t42tool test.vbi
 ```
 teletext vbirepair test.vbi
 ```
+
+# Future Functions
+* **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
+* **Used Line (record/deconvolve/vbiview)** - ✅ realized
+* **Line numbering (vbiview)** - ✅ realized
+* **Adds Templates (deconvolve/vbiview)** - ✅ realized
+* **Fix Capture Card (record)** - ✅ realized
+* **URXVT Terminal (deconvolve)** - ✅ realized
+* **Pause for (record/deconvolve)** - ✅ realized
+* **Timer for (record)** - ✅ realized
+* **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (⚠️ support only bttv (BT8x8))
+* **Mode: V1|V3|auto for (squash)** - ✅ realized (auto - ⚠️) 
+* **Spellcheck** - ⚠️ bugs
 
 # Functions
 * **Ignore Line** for **record**/**deconvolve**/**vbiview** (`-il/--ignore-line`) - Ignoring lines when writing to VBI and deconvolving to t42.   
@@ -181,6 +181,11 @@ teletext deconvolve test.vbi > test.t42 -vs 7 320 -vc 16 16
 ```
 ```
 teletext vbiview test.vbi -vs 7 320 -vc 16 16
+```
+
+* **Mode**: V1|V3|auto for **squash** (`-md/--mode`)
+```
+teletext squash test.t42 > tests.t42 -md V1
 ```
 
 # Functions VBI Tune/VBI Tune Live (**deconvolve**/**vbiview**)
