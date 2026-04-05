@@ -189,11 +189,23 @@ teletext vbiview -bn 25/1 -sp 30/1 -gn 50 /1-ct 0/1 test.vbi
 ## Signal Cleanup (VBI)
 ### Value/Coeff - Adjusting Values ​​for VBI from **0** to **100** (**0** - no change) + Coefficients for values from **0.00** to **100**.
 * **Noise Reduction/Hum Removal/Auto Black Level/Impulse Filter/Temporal Denoise/Head Switching Mask/Line-to-Line Stabilization/Auto Gain / Auto Contrast** (`-nr/--noise-reduction`/`-hm/--hum-removal`/`-abl/--auto-black-level`/`-if/--impulse-filter`/`-td/--temporal-denoise`/`-hsm/--head-switching-mask`/`-lls/--line-to-line-stabilization`/`-agc/--auto-gain-contrast`)
+
 ## Decoder Tuning (Deconvolve)
 ### Value - Adjusting Values ​​for deconvolve from **0** to **100** (**50** - no change): Line Quality, Clock Lock, Start Lock.
 ### (**0** - no change): Adaptive Threshold, Dropout Repair, Wow/Flutter Compensation, Auto Line Align.
 ### Template (-f vhs), Extra Roll (value), Line Start Range (startline endline), Per-Line Shift (line:shift)
-* **Template/Extra Roll/Line Start Range/Line Quality/Clock Lock/Start Lock/Adaptive Threshold/Dropout Repair/Wow/Flutter Compensation/Auto Line Align/Per-Line Shift** (`-f/--file`/`--extra-roll`/`--line-start-range`/`-cl/--clock-lock`/`-sl/--start-lock`/`-at/--adaptive-threshold`/`-dr/--dropout-repair`/`-wf/--wow-flutter-compensation`/`-ala/--auto-line-align`/`-pls/--per-line-shift`)
+* **Template/Extra Roll/Line Start Range/Line Quality/Clock Lock/Start Lock/Adaptive Threshold/Dropout Repair/Wow / Flutter Compensation/Auto Line Align/Per-Line Shift** (`-f/--file`/`--extra-roll`/`--line-start-range`/`-cl/--clock-lock`/`-sl/--start-lock`/`-at/--adaptive-threshold`/`-dr/--dropout-repair`/`-wf/--wow-flutter-compensation`/`-ala/--auto-line-align`/`-pls/--per-line-shift`)
+
+## Diagnostics (Viewer)
+* **Show Quality/Show Rejects/Show Start/Clock / Show Clock Visuals/Show Alignment Visuals/Histogram / Black Level Graph/Eye Pattern / Clock Preview/Quality Meter**
+
+## Line Selection (Deconvolve) - deleting lines from VBI
+
+## Tools (Analysis) - automatic configuration for VBI - ⚠️ bugs
+* **Auto Tune/Clock / Start Auto-Lock**
+
+## Tools (deconvolve)
+* **Duplicate Consensus/Per-Line Confidence/Best-of-N Page Rebuild** (`--duplicate-consensus/--no-duplicate-consensus`/`--per-line-confidence/--no-per-line-confidence`/`--best-of-n-page-rebuild`)
 
 # Guide for Functions
 [GUIDE](https://github.com/KOTYA8/VHSTTX/blob/main/examples/help-all.txt)
