@@ -60,6 +60,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * Checking for errors in VBI - ✅ realized
 
 ## **T42 Tool** - ✅ realized
+* Frame-by-frame viewing - ✅ realized
 * Frame marks - ✅ realized
 * Cutting frames from T42 - ✅ realized
 * Adding T42 Files - ✅ realized
@@ -69,6 +70,7 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 * View teletext on a page/subpage - ✅ realized
 
 ## **VBI Repair** - ✅ realized
+* Frame-by-frame viewing - ✅ realized
 * Frame marks - ✅ realized
 * Saving with VBI Tune Live - ✅ realized
 * Saving to VBI/T42 file - ✅ realized
