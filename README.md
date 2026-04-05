@@ -194,8 +194,8 @@ teletext vbiview test.vbi -vs 7 320 -vc 16 16
 
 ## Decoder Tuning (Deconvolve)
 ### Value - Adjusting Values ​​for deconvolve from **0** to **100** (**50** - no change): Line Quality, Clock Lock, Start Lock. *Example: -lq 25*   
-### (**0** - no change): Adaptive Threshold, Dropout Repair, Wow/Flutter Compensation, Auto Line Align.**    
-### Template (file), Extra Roll (value), Line Start Range (startline endline), Per-Line Shift (line:shift).** *Example: -f vhs/--extra roll 1/--line-start-range 60 130/-pls 1:+1*   
+### (**0** - no change): Adaptive Threshold, Dropout Repair, Wow/Flutter Compensation, Auto Line Align.   
+### Template (file), Extra Roll (value), Line Start Range (startline endline), Per-Line Shift (line:shift).      *Example: -f vhs/--extra roll 1/--line-start-range 60 130/-pls 1:+1*   
 * **Template/Extra Roll/Line Start Range/Line Quality/Clock Lock/Start Lock/Adaptive Threshold/Dropout Repair/Wow / Flutter Compensation/Auto Line Align/Per-Line Shift** (`-f/--file`/`--extra-roll`/`--line-start-range`/`-lq/--line-quality`/`-cl/--clock-lock`/`-sl/--start-lock`/`-at/--adaptive-threshold`/`-dr/--dropout-repair`/`-wf/--wow-flutter-compensation`/`-ala/--auto-line-align`/`-pls/--per-line-shift`)
 
 ## Diagnostics (Viewer)
