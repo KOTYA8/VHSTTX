@@ -7,54 +7,107 @@ Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-t
 ```
 source myvenv/bin/activate
 git clone https://github.com/KOTYA8/VHSTTX.git
+cd VHSTTX
 python3 setup.py install
+```
+### Update
+```
+cd VHSTTX
+git pull
+python3 setup.py install
+pipx install -e .[qt] --force
 ```
 ### Uninstalling the old version
 In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
 
 # Future Apps
-* **Teletext Viewer** - ✅ realized
+## **Teletext Viewer** - ✅ realized
+* Opening T42 and HTML files and folders - ✅ realized
+* Split individual pages in HTML and T42 - ✅ realized
+* Opening from .t42 file - ✅ realized
+* Language support - ✅ realized
+* FasText Buttons - ✅ realized
+* Screenshot (copy/file) - ✅ realized
+* Display of teletext subpages and flags - ✅ realized
+* List of all pages - ✅ realized
+* Full screen - ✅ realized
+* Hotkeys - ✅ realized
+* Teletext service information - ⚠️ bugs
+
+## **VBI Tune/VBI Tune Live** - ✅ realized
+* Signal Controls (Brightness/Sharpness/Gain/Contrast) - ✅ realized
+* Decoder Tuning (Template/Extra Roll/Line Start Range) - ✅ realized
+* Line Selection - ✅ realized
+* Fix Capture Card - ✅ realized
+* Arguments and Presets - ✅ realized
+
+## **VBI Crop** - ✅ realized
+* Frame-by-frame viewing - ✅ realized
+* Frame marks - ✅ realized
+* Saving with VBI Tune Live - ✅ realized
+* Cutting frames from VBI - ✅ realized
+* Adding VBI Files - ✅ realized
+
+## **T42 Crop** - ✅ realized
+* Frame marks - ✅ realized
+* Cutting frames from T42 - ✅ realized
+* Adding T42 Files - ✅ realized
+* Deleting pages and subpages - ✅ realized
+* Checking the first line by frame/page/subpage - ✅ realized
 
 # Future Functions
-* **Ignore Line (record/deconvolve)** - ✅ realized
-* **Used Line (record/deconvolve)** - ✅ realized
+* **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
+* **Used Line (record/deconvolve/vbiview)** - ✅ realized
 * **Line numbering (vbiview)** - ✅ realized
+* **Brightness/Sharpness/Gain/Contrast (record/deconvolve/vbiview)** - ✅ realized
+* **Fix Capture Card (record/deconvolve/vbiview)** - ✅ realized
+* **URXVT Terminal (deconvolve)** - ✅ realized
+* **Pause for (record/deconvolve)** - ✅ realized
+* **Spellcheck** - ⚠️ bugs
 
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
-### Installation Viewer
-1. Install QT and PyQt5   
+* **VBI Tune** for **record/deconvolve** (`-vtn/--vbi-tune`) - VBI Tune: simplifies VBI setup before recording.   
+**VBI Tune Live** for **deconvolve/vbiview** (`-vtnl/--vbi-tune-live`) - VBI Tune Live: selects real-time value for VBI.    
 ```
-pipx install -e .[qt] --force
+teletext record -vtn test.vbi
+teletext deconvolve -vtn test.vbi > test.t42
 ```
 ```
-pip install PyQt5
+teletext deconvolve -vtnl test.vbi > test.t42
+teletext vbiview -vtnl test.vbi
+``` 
+* **VBI Crop** - Control panel for trimming VBI file.
 ```
-2. Install   
-```
-ttviewer-install
+teletext vbicrop test.vbi
 ```
 
 # Functions
-* **Ignore Line** (`record/deconvolve`) - Ignoring lines when writing to VBI and deconvolving to t42.   
+* **Ignore Line** for **record**/**deconvolve**/**vbiview** (`-il/--ignore-line`) - Ignoring lines when writing to VBI and deconvolving to t42.   
 ```
-teletext record --ignore-line 1,2,20 test.vbi
+teletext record -il 1,2,20 test.vbi
 ```
 ```
-teletext deconvolve --ignore-line 1,2,20 test.vbi > test.t42
+teletext deconvolve -il 1,2,20 test.vbi > test.t42
+```
+```
+teletext vbiview -il 4,5 test.vbi > test.t42
 ```
 
-* **Used Line** (`record/deconvolve`) - Using only selected lines when writing to VBI and deconvolving to t42.   
+* **Used Line** for **record**/**deconvolve**/**vbiview** (`-ul/--used-line`) - Using only selected lines when writing to VBI and deconvolving to t42.   
 ```
-teletext record --used-line 4,5 test.vbi
+teletext record -ul 4,5 test.vbi
 ```
 ```
-teletext deconvolve --used-line 4,5 test.vbi > test.t42
+teletext deconvolve -ul 4,5 test.vbi > test.t42
+```
+```
+teletext vbiview -ul 4,5 test.vbi > test.t42
 ```
    
-* **Line numbering** (`vbiview`) - Line numbering in VBI Viewer.   
+* **Line numbering** for **vbiview** - Line numbering in VBI Viewer.   
    
-* **Templates** (`vbiview/deconvolve`)    
+* **Templates** for **vbiview/deconvolve** (`-f`)   
 (`fs200sp`, `fs200lp`, `hd630lp`, `hd630sp`, `grundig_2x4`, `hrs9700`, `hd630vdlp`, `hd630vdlp24`, `fs200vdsp`, `fs200vdlp`, `betacamsp`, `betamax`) - Adding templates (VCRs) for deconvolution and VBI viewing.   
 ```
 teletext vbiview -f hd630sp test.vbi   
@@ -62,6 +115,42 @@ teletext vbiview -f hd630sp test.vbi
 ```
 teletext deconvolve -f hd630lp test.vbi > test.t42  
 ```
+* **Brightness/Sharpness/Gain/Contrast** for **record**/**deconvolve**/**vbiview** (`-bn/--brightness`/`-sp/--sharpness`/`-gn/--gain`/`-ct/--contrast`) - Adjusting Values ​​for VBI from **0** to **100** (**50** - no change).   
+```
+teletext record -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
+```
+```
+teletext deconvolve -bn 25 -sp 30 -gn 50 -ct 0 test.vbi > test.t42
+```
+```
+teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 test.vbi
+```
+* **Brightness/Sharpness/Gain/Contrast Coefficients** for **record**/**deconvolve**/**vbiview** (`-bncf/--brightness-coeff`/`-spcf/--sharpness-coeff`/`-gncf/--gain-coeff`/`-ctcf/--contrast-coeff`) - Increasing coefficients for values from **0.00** to **100**.   
+```
+teletext record -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
+```
+```
+teletext deconvolve -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi > test.t42
+```
+```
+teletext vbiview -bn 25 -sp 30 -gn 50 -ct 0 -bncf 0.5 -spcf 0.5 -gncf 0.5 -ctcf 0.5 test.vbi
+```
+* **Fix Capture Card** for **record**/**deconvolve**/**vbiview** (`-fcc/--fix-capture-card`) - Fixes bug with increasing brightness in vbi0, runs through ffmpeg. How long does it work in seconds and after how long will it turn on in minutes: (`-fcc 2 3`) - runs **2 seconds** every **3 minutes** 
+```
+teletext record -fcc 2 3 test.vbi
+```
+```
+teletext deconvolve -fcc 2 3 test.vbi > test.t42
+```
+```
+teletext vbiview -fcc 2 3 test.vbi
+```
+* **URXVT Terminal** for **deconvolve** (`-u/--urxvt`) - Urxvt terminal for **viewing individual teletext pages and filters in real time**.
+```
+teletext deconvolve test.vbi -u -p 100
+teletext deconvolve test.vbi -u -r 0
+```
+* **Pause** for **record**/**deconvolve** (`P button`) - **Pauses** while recording or deconvolving.
 
 # Guide for Functions
 [GUIDE](https://github.com/KOTYA8/VHSTTX/blob/main/examples/help-all.txt)
@@ -104,6 +193,23 @@ pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 pip install PyQt5
 ```
+### Installation Teletext Viewer
+1. Install PyQt5 and QT   
+```
+pip install PyQt5
+```
+```
+pipx install -e .[qt] --force
+```
+2. Install   
+```
+ttviewer-install
+```
+### Installation Apps
+1. Install QT
+```
+pipx install -e .[qt] --force
+```
 ### Preparing BT878
 1. Installing the QV4L2 Control Panel:
 ```
@@ -117,7 +223,7 @@ sudo modprobe -v bttv card=16 tuner=0 radio=0
 sudo touch /etc/modprobe.d/bttv.conf
 ```
 3. In a folder `/etc/modprobe.d/bttv.conf`, we write `options bttv card=16 tuner=0 radio=0`
-### Install Terminal for Teletext
+### Install Terminal for Teletext (*new Teletext Viewer made*)
 ```
 sudo apt-get install tv-fonts rxvt-unicode
 cd /etc/fonts/conf.d
@@ -132,7 +238,7 @@ teletext service test.t42 | teletext interactive
 ```
 
 # Additional features
-### Fixing self-brightness on Capture Card
+### Fixing self-brightness on Capture Card (*made in the version 2*)
 1. Installing ffmpeg
 ```
 sudo apt install ffmpeg
@@ -147,4 +253,4 @@ while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sle
 All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
 
 ### **Currently**  
-* **V1** - Support **--ignore-line** and **--used-line** for `record` and `deconvolve`. Numbering in `vbiview`. Templates: **fs200sp**, **fs200lp**, **hd630lp**, **hd630sp**, **grundig_2x4**, **hrs9700**, **hd630vdlp**, **hd630vdlp24**, **fs200vdsp**, **fs200vdlp**, **betacamsp**, **betamax**. New **Teletext viewer**. Language support for further functions: **Italian**, **German**, **French**, **Polish**, **Dutch**.
+* **V2** - Support for adjusting **brightness**, **sharpness**, **gain** and **contrast** and coefficients. Made a simplification for **Ignore Line** (`-il`) and **Used Line** (`-ul`). Simplification of opening **urxvt terminal** for `deconvolve`. Fixed auto-brightness on vbi0 (`-fcc`). **Pause** for `record/deconvolve`. Added: **VBI Tune**, **VBI Tune Live**, **VBI Crop**, **T42 Crop** application. Fixed (**Teletext Viewer**): opening **folders from HTML/T42 files**, added **page scrolling speed**, added **All Symbols** and **No Subpages** flag, **HTML viewer**, **HTML fonts to Split**.
