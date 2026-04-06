@@ -3,8 +3,8 @@ VHS Teletext X - advanced features of [vhs-teletext](https://github.com/ali1234/
    
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
-# Transition from vhs-teletext and update VHSTTX
-### Install
+# Install
+## Ubuntu
 ```
 source myvenv/bin/activate
 git clone https://github.com/KOTYA8/VHSTTX.git
@@ -24,6 +24,19 @@ python3 setup.py install
 ```
 ### Uninstalling the old version
 In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
+
+## Windows
+```
+python -m pip install -e .[qt,viewer,spellcheck]
+python -m pip install pyinstaller
+powershell -ExecutionPolicy Bypass -File misc\windows\build-vhsttx.ps1
+```
+### Launch Apps
+```
+dist\VHSTTX-Windows\VHSTTX.exe
+dist\VHSTTX-Windows\teletext.exe
+dist\VHSTTX-Windows\TTViewer.exe
+```
 
 # Future Apps
 ## **Teletext Viewer** - ✅ realized
@@ -314,9 +327,3 @@ sudo apt install ffmpeg
 while true ; do ffmpeg -y -f video4linux2 -i /dev/video0 -t 0:02 -f null - ; sleep 3m ; done ; loop
 ```
 **Every 3 minutes (within 2 seconds), the capture card will be launched.**
-
-# Changelog
-All previous versions are available in the repository: [VHSTTX_VER](https://github.com/KOTYA8/VHSTTX_VER)  
-
-### **Currently**  
-* **V2.5** - Added: **VBI Repair**, **Timer** for `record`, **Settings** for **Capture Card**, **Mode** for `squash` (`V1`, `auto`). Renamed: **T42 Crop** > **T42 Tool**, **VBI Crop** > **VBI Tool**. 
