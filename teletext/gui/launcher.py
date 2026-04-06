@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import re
+import signal
 import shlex
 import subprocess
 import sys
@@ -90,10 +91,6 @@ LIST_MODE_ADDITIONAL = "additional"
 HIDDEN_COMMAND_PATHS = {
 }
 TTVIEWER_COMMAND_PATH = ("apps", "ttviewer")
-EXTERNAL_LAUNCHER_LAYOUT_CANDIDATES = (
-    os.environ.get("VHSTTX_LAUNCHER_FIELDS_PATH", "").strip(),
-    r"C:\Users\igory\Downloads\networkfolder\launcher_fields.json",
-)
 _ANSI_PATTERN = re.compile(r"\x1b\[([0-9;]+)m")
 _ANSI_COLOURS = {
     0: "#000000",
@@ -181,6 +178,14 @@ def split_text_values(text):
     if len(parts) == 1 and "," in text and " " not in text and "\t" not in text:
         return [item.strip() for item in text.split(",") if item.strip()]
     return parts
+
+
+def _is_stdout_placeholder(value):
+    text = str(value or "").strip()
+    if text in {"-", "<stdout>", "<stderr>"}:
+        return True
+    name = str(getattr(value, "name", "") or "").strip()
+    return name in {"-", "<stdout>", "<stderr>"}
 
 
 def preview_command_text(tokens):
@@ -336,6 +341,10 @@ def launcher_process_command(preview_tokens):
     return sys.executable, ["-u", "-c", launcher_code, *cli_args]
 
 
+def launcher_supports_process_pause(platform_name=None):
+    return not is_windows_runtime(platform_name) and hasattr(signal, "SIGSTOP") and hasattr(signal, "SIGCONT")
+
+
 def list_mode_leaf_nodes(command_tree, mode, favorite_paths=(), platform_name=None):
     leaf_nodes = list(iter_leaf_nodes(command_tree))
     leaf_nodes = [node for node in leaf_nodes if command_visible_for_platform(node, platform_name)]
@@ -409,17 +418,107 @@ def _launcher_config_dir():
     return pathlib.Path(base) / "VHSTTX"
 
 
+def _bundled_launcher_layout_path():
+    return pathlib.Path(__file__).with_name("launcher_fields.json")
+
+
+def _bundled_launcher_default_layout_path():
+    return pathlib.Path(__file__).with_name("launcher_fields_default.json")
+
+
+def _bundled_launcher_presets_path():
+    return pathlib.Path(__file__).with_name("launcher_field_presets.json")
+
+
 def launcher_field_layout_path():
-    for candidate in EXTERNAL_LAUNCHER_LAYOUT_CANDIDATES:
-        if not candidate:
-            continue
-        try:
-            candidate_path = pathlib.Path(candidate)
-        except Exception:
-            continue
-        if candidate_path.exists():
-            return candidate_path
+    bundled_path = _bundled_launcher_layout_path()
+    if bundled_path.exists():
+        return bundled_path
     return _launcher_config_dir() / "launcher_fields.json"
+
+
+def _normalise_layout_map_data(data):
+    if not isinstance(data, dict):
+        return {}
+    result = {}
+    for key, value in data.items():
+        if isinstance(value, list):
+            result[str(key)] = {
+                "hidden": [str(item) for item in value if str(item).strip()],
+                "labels": {},
+                "order": [],
+            }
+        elif isinstance(value, dict):
+            hidden = value.get("hidden", [])
+            labels = value.get("labels", {})
+            order = value.get("order", [])
+            if not isinstance(hidden, list):
+                hidden = []
+            if not isinstance(labels, dict):
+                labels = {}
+            if not isinstance(order, list):
+                order = []
+            result[str(key)] = {
+                "hidden": [str(item) for item in hidden if str(item).strip()],
+                "labels": {
+                    str(label_key): str(label_value)
+                    for label_key, label_value in labels.items()
+                    if str(label_key).strip() and str(label_value).strip()
+                },
+                "order": [str(item) for item in order if str(item).strip()],
+            }
+    return result
+
+
+def load_launcher_layout_map(path=None):
+    try:
+        layout_path = pathlib.Path(path) if path is not None else launcher_field_layout_path()
+    except Exception:
+        return {}
+    try:
+        data = json.loads(layout_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+    return _normalise_layout_map_data(data)
+
+
+def load_launcher_layout_presets(path=None):
+    try:
+        presets_path = pathlib.Path(path) if path is not None else _bundled_launcher_presets_path()
+    except Exception:
+        return {}
+    try:
+        data = json.loads(presets_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result = {}
+    for name, layout_map in data.items():
+        preset_name = str(name).strip()
+        if not preset_name:
+            continue
+        result[preset_name] = _normalise_layout_map_data(layout_map)
+    return result
+
+
+def save_launcher_layout_presets(presets):
+    presets_path = _bundled_launcher_presets_path()
+    presets_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {}
+    for name, layout_map in dict(presets or {}).items():
+        preset_name = str(name).strip()
+        if not preset_name:
+            continue
+        payload[preset_name] = _normalise_layout_map_data(layout_map)
+    presets_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _ansi_text_to_html(text, font_family=None):
@@ -512,7 +611,9 @@ class ParamDescriptor:
         if self.value_kind == "redirect_output":
             if isinstance(value, list) and value:
                 first = value[0]
-                if isinstance(first, (list, tuple)) and len(first) >= 2 and first[1] == "-":
+                if isinstance(first, (list, tuple)) and len(first) >= 2 and _is_stdout_placeholder(first[1]):
+                    return ""
+                if _is_stdout_placeholder(first):
                     return ""
             return ""
         if value is None or value == "":
@@ -596,13 +697,13 @@ def describe_param(param):
             cleaned = []
             for item in normalised:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    cleaned.append([item[0], "" if item[1] == "-" else item[1]])
-                elif item == "-":
+                    cleaned.append([item[0], "" if _is_stdout_placeholder(item[1]) else item[1]])
+                elif _is_stdout_placeholder(item):
                     cleaned.append("")
                 else:
                     cleaned.append(item)
             default = cleaned
-        elif normalised == "-":
+        elif _is_stdout_placeholder(normalised):
             default = ""
     metavar = ""
     if hasattr(param, "make_metavar"):
@@ -752,7 +853,10 @@ if QtWidgets is not None:
             self.changed.emit()
 
         def setValue(self, path):
-            text = str(path or "").strip()
+            if _is_stdout_placeholder(path):
+                text = ""
+            else:
+                text = str(path or "").strip()
             if text == "-":
                 text = ""
             self.path_widget.setText(text)
@@ -763,7 +867,16 @@ if QtWidgets is not None:
 
 
     class FieldEditorDialog(QtWidgets.QDialog):
-        def __init__(self, descriptors, hidden_names, label_overrides, parent=None):
+        def __init__(
+            self,
+            descriptors,
+            hidden_names,
+            label_overrides,
+            factory_descriptors=None,
+            factory_hidden_names=None,
+            factory_label_overrides=None,
+            parent=None,
+        ):
             super().__init__(parent)
             self.setWindowTitle("Field Editor")
             self.resize(480, 560)
@@ -771,6 +884,9 @@ if QtWidgets is not None:
             self._descriptors = list(descriptors)
             self._initial_hidden_names = set(hidden_names or ())
             self._initial_label_overrides = dict(label_overrides or {})
+            self._factory_descriptors = list(factory_descriptors or descriptors)
+            self._factory_hidden_names = set(factory_hidden_names or ())
+            self._factory_label_overrides = dict(factory_label_overrides or {})
 
             label = QtWidgets.QLabel("Choose which fields stay visible for this command and rename them if needed.")
             label.setWordWrap(True)
@@ -862,7 +978,11 @@ if QtWidgets is not None:
             self.list_widget.setCurrentRow(new_row)
 
         def _reset_defaults(self):
-            self._populate_items(self._descriptors, set(), {})
+            self._populate_items(
+                self._factory_descriptors,
+                self._factory_hidden_names,
+                self._factory_label_overrides,
+            )
             if self.list_widget.count():
                 self.list_widget.setCurrentRow(0)
 
@@ -1022,17 +1142,17 @@ if QtWidgets is not None:
                 if isinstance(default, list) and default:
                     first = default[0]
                     if isinstance(first, list) and len(first) >= 2:
-                        self.value_widget.setValue("" if first[1] == "-" else first[1])
+                        self.value_widget.setValue("" if _is_stdout_placeholder(first[1]) else first[1])
                     elif isinstance(first, tuple) and len(first) >= 2:
-                        self.value_widget.setValue("" if first[1] == "-" else first[1])
-                    elif isinstance(first, str):
-                        self.value_widget.setValue("" if first == "-" else first)
-                    else:
+                        self.value_widget.setValue("" if _is_stdout_placeholder(first[1]) else first[1])
+                    elif _is_stdout_placeholder(first):
                         self.value_widget.setValue("")
-                elif default == "-":
+                    else:
+                        self.value_widget.setValue(first)
+                elif _is_stdout_placeholder(default):
                     self.value_widget.setValue("")
                 else:
-                    self.value_widget.setValue("")
+                    self.value_widget.setValue(default if default is not None else "")
             else:
                 self.value_widget.setText(descriptor.default_text)
             self._sync_enabled_state()
@@ -1245,6 +1365,8 @@ if QtWidgets is not None:
             self._favorite_paths = self._load_favorite_paths()
             self._monitor_font_family = self._load_monitor_font_family()
             self._updates_dialog = None
+            self._stop_requested = False
+            self._pause_requested = False
 
             self.setWindowTitle("VHSTTX Launcher")
             self.resize(1320, 880)
@@ -1254,6 +1376,7 @@ if QtWidgets is not None:
                 self.setWindowIcon(QtGui.QIcon(str(icon_path)))
 
             self._build_ui()
+            self._refresh_layout_preset_combo("kOt")
             self._populate_tree()
             self._select_first_command()
 
@@ -1326,6 +1449,19 @@ if QtWidgets is not None:
             self.field_editor_button.setEnabled(False)
             self.field_editor_button.clicked.connect(self._open_field_editor)
             title_row.addWidget(self.field_editor_button)
+            title_row.addWidget(QtWidgets.QLabel("Preset"))
+            self.layout_preset_combo = QtWidgets.QComboBox()
+            self.layout_preset_combo.setMinimumWidth(120)
+            title_row.addWidget(self.layout_preset_combo)
+            self.load_preset_button = QtWidgets.QPushButton("Load Preset")
+            self.load_preset_button.clicked.connect(self._load_selected_layout_preset)
+            title_row.addWidget(self.load_preset_button)
+            self.save_preset_button = QtWidgets.QPushButton("Save Preset")
+            self.save_preset_button.clicked.connect(self._save_layout_preset)
+            title_row.addWidget(self.save_preset_button)
+            self.delete_preset_button = QtWidgets.QPushButton("Delete Preset")
+            self.delete_preset_button.clicked.connect(self._delete_layout_preset)
+            title_row.addWidget(self.delete_preset_button)
             self.updates_button = QtWidgets.QPushButton("Updates")
             self.updates_button.clicked.connect(self._open_updates_dialog)
             title_row.addWidget(self.updates_button)
@@ -1379,17 +1515,21 @@ if QtWidgets is not None:
 
             controls_row = QtWidgets.QHBoxLayout()
             self.run_button = QtWidgets.QPushButton("Run")
+            self.pause_button = QtWidgets.QPushButton("Pause")
+            self.pause_button.setEnabled(False)
             self.stop_button = QtWidgets.QPushButton("Stop")
             self.stop_button.setEnabled(False)
             self.reset_button = QtWidgets.QPushButton("Reset Options")
             self.copy_button = QtWidgets.QPushButton("Copy Command")
             self.clear_log_button = QtWidgets.QPushButton("Clear Log")
             self.run_button.clicked.connect(self._run_command)
+            self.pause_button.clicked.connect(self._toggle_pause_process)
             self.stop_button.clicked.connect(self._stop_process)
             self.reset_button.clicked.connect(self._reset_current_command)
             self.copy_button.clicked.connect(self._copy_command_preview)
             self.clear_log_button.clicked.connect(self._clear_output_log)
             controls_row.addWidget(self.run_button)
+            controls_row.addWidget(self.pause_button)
             controls_row.addWidget(self.stop_button)
             controls_row.addStretch(1)
             controls_row.addWidget(self.reset_button)
@@ -1463,44 +1603,92 @@ if QtWidgets is not None:
             self._settings().setValue("favorites/commands", sorted(self._favorite_paths))
             self._settings().sync()
 
+        def _factory_layout_map(self):
+            return load_launcher_layout_map(_bundled_launcher_default_layout_path())
+
+        def _current_layout_map(self):
+            return load_launcher_layout_map()
+
+        def _write_layout_map(self, layout_map):
+            layout_path = launcher_field_layout_path()
+            layout_path.parent.mkdir(parents=True, exist_ok=True)
+            layout_path.write_text(
+                json.dumps(_normalise_layout_map_data(layout_map), ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        def _layout_presets(self):
+            presets = load_launcher_layout_presets()
+            if "Default" not in presets:
+                presets["Default"] = self._factory_layout_map()
+            return presets
+
+        def _refresh_layout_preset_combo(self, selected_name=None):
+            current_text = str(selected_name or self.layout_preset_combo.currentText() or "").strip()
+            presets = self._layout_presets()
+            names = ["Default"] + sorted(name for name in presets if name != "Default")
+            self.layout_preset_combo.blockSignals(True)
+            self.layout_preset_combo.clear()
+            self.layout_preset_combo.addItems(names)
+            index = self.layout_preset_combo.findText(current_text)
+            if index < 0:
+                index = self.layout_preset_combo.findText("kOt")
+            if index < 0:
+                index = 0
+            self.layout_preset_combo.setCurrentIndex(index)
+            self.layout_preset_combo.blockSignals(False)
+
+        def _load_selected_layout_preset(self, *_args):
+            preset_name = str(self.layout_preset_combo.currentText() or "").strip()
+            presets = self._layout_presets()
+            layout_map = presets.get(preset_name)
+            if layout_map is None:
+                QtWidgets.QMessageBox.warning(self, "Preset", f"Preset not found: {preset_name}")
+                return
+            self._write_layout_map(layout_map)
+            self._rebuild_param_panel()
+            self.statusBar().showMessage(f"Preset loaded: {preset_name}")
+
+        def _save_layout_preset(self, *_args):
+            preset_name, accepted = QtWidgets.QInputDialog.getText(
+                self,
+                "Save Preset",
+                "Preset name:",
+                text=str(self.layout_preset_combo.currentText() or "").strip() or "New Preset",
+            )
+            preset_name = str(preset_name or "").strip()
+            if not accepted or not preset_name:
+                return
+            if preset_name == "Default":
+                QtWidgets.QMessageBox.warning(self, "Preset", "Default preset cannot be overwritten.")
+                return
+            presets = load_launcher_layout_presets()
+            presets[preset_name] = self._current_layout_map()
+            save_launcher_layout_presets(presets)
+            self._refresh_layout_preset_combo(preset_name)
+            self.statusBar().showMessage(f"Preset saved: {preset_name}")
+
+        def _delete_layout_preset(self, *_args):
+            preset_name = str(self.layout_preset_combo.currentText() or "").strip()
+            if not preset_name or preset_name == "Default":
+                QtWidgets.QMessageBox.information(self, "Preset", "Default preset cannot be deleted.")
+                return
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Delete Preset",
+                f"Delete preset '{preset_name}'?",
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            presets = load_launcher_layout_presets()
+            if preset_name in presets:
+                del presets[preset_name]
+                save_launcher_layout_presets(presets)
+            self._refresh_layout_preset_combo("Default")
+            self.statusBar().showMessage(f"Preset deleted: {preset_name}")
+
         def _load_hidden_layout_map(self):
-            path = launcher_field_layout_path()
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except FileNotFoundError:
-                return {}
-            except json.JSONDecodeError:
-                return {}
-            if not isinstance(data, dict):
-                return {}
-            result = {}
-            for key, value in data.items():
-                if isinstance(value, list):
-                    result[str(key)] = {
-                        "hidden": [str(item) for item in value if str(item).strip()],
-                        "labels": {},
-                        "order": [],
-                    }
-                elif isinstance(value, dict):
-                    hidden = value.get("hidden", [])
-                    labels = value.get("labels", {})
-                    order = value.get("order", [])
-                    if not isinstance(hidden, list):
-                        hidden = []
-                    if not isinstance(labels, dict):
-                        labels = {}
-                    if not isinstance(order, list):
-                        order = []
-                    result[str(key)] = {
-                        "hidden": [str(item) for item in hidden if str(item).strip()],
-                        "labels": {
-                            str(label_key): str(label_value)
-                            for label_key, label_value in labels.items()
-                            if str(label_key).strip() and str(label_value).strip()
-                        },
-                        "order": [str(item) for item in order if str(item).strip()],
-                    }
-            return result
+            return self._current_layout_map()
 
         def _load_hidden_param_names(self, path):
             data = self._load_hidden_layout_map()
@@ -1515,8 +1703,6 @@ if QtWidgets is not None:
             return list(data.get(favourite_path_key(path), {}).get("order", []))
 
         def _save_field_layout(self, path, hidden_names, label_overrides, order_names):
-            layout_path = launcher_field_layout_path()
-            layout_path.parent.mkdir(parents=True, exist_ok=True)
             data = self._load_hidden_layout_map()
             data[favourite_path_key(path)] = {
                 "hidden": sorted(set(hidden_names)),
@@ -1530,10 +1716,7 @@ if QtWidgets is not None:
                     if str(name).strip()
                 ],
             }
-            layout_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
+            self._write_layout_map(data)
 
         def _current_list_mode(self):
             index = self.list_mode_tabs.currentIndex()
@@ -1664,6 +1847,7 @@ if QtWidgets is not None:
                 self.favorite_button.setEnabled(False)
                 self.field_editor_button.setEnabled(False)
                 self.run_button.setEnabled(False)
+                self.pause_button.setEnabled(False)
                 self._update_command_preview()
                 return
 
@@ -1688,6 +1872,7 @@ if QtWidgets is not None:
                 self.param_layout.addWidget(placeholder)
                 self.param_layout.addStretch(1)
                 self.run_button.setEnabled(False)
+                self.pause_button.setEnabled(False)
                 self._update_command_preview()
                 return
 
@@ -1735,6 +1920,8 @@ if QtWidgets is not None:
 
             self.param_layout.addStretch(1)
             self.run_button.setEnabled(True)
+            self.pause_button.setEnabled(False)
+            self.pause_button.setText("Pause")
             self._update_command_preview()
 
         def _collect_command_tokens(self, strict=False):
@@ -1792,13 +1979,31 @@ if QtWidgets is not None:
         def _open_field_editor(self, *_args):
             if self.current_node is None or self.current_node.is_group:
                 return
-            descriptors = order_param_descriptors(
+            base_descriptors = filter_descriptors_for_platform(
                 describe_command(self.current_node.command),
+                self.current_node.path,
+                os.name,
+            )
+            descriptors = order_param_descriptors(
+                base_descriptors,
                 self._load_param_order(self.current_node.path),
             )
             hidden_names = self._load_hidden_param_names(self.current_node.path)
             label_overrides = self._load_label_overrides(self.current_node.path)
-            dialog = FieldEditorDialog(descriptors, hidden_names, label_overrides, parent=self)
+            factory_layout = self._factory_layout_map().get(favourite_path_key(self.current_node.path), {})
+            factory_descriptors = order_param_descriptors(
+                list(base_descriptors),
+                factory_layout.get("order", []),
+            )
+            dialog = FieldEditorDialog(
+                descriptors,
+                hidden_names,
+                label_overrides,
+                factory_descriptors=factory_descriptors,
+                factory_hidden_names=factory_layout.get("hidden", []),
+                factory_label_overrides=factory_layout.get("labels", {}),
+                parent=self,
+            )
             if dialog.exec_() != QtWidgets.QDialog.Accepted:
                 return
             self._save_field_layout(
@@ -1910,6 +2115,9 @@ if QtWidgets is not None:
 
             self._log_lines = []
             self._current_log_line = ""
+            self._stop_requested = False
+            self._pause_requested = False
+            self.pause_button.setText("Pause")
             preview_line = preview_command_text(preview_tokens)
             if redirect_output:
                 preview_line = f"{preview_line} > {shlex.quote(redirect_output)}"
@@ -1922,12 +2130,47 @@ if QtWidgets is not None:
                 QtWidgets.QMessageBox.warning(self, "Launch Failed", "Unable to start the selected command.")
                 return
             self.run_button.setEnabled(False)
+            self.pause_button.setEnabled(launcher_supports_process_pause(os.name))
             self.stop_button.setEnabled(True)
             self.statusBar().showMessage("Process started.")
+
+        def _toggle_pause_process(self, *_args):
+            if self._process is None or self._process.state() == QtCore.QProcess.NotRunning:
+                return
+            if not launcher_supports_process_pause(os.name):
+                self.statusBar().showMessage("Pause/Resume is not supported on this platform.", 3000)
+                return
+            pid = int(self._process.processId() or 0)
+            if pid <= 0:
+                self.statusBar().showMessage("Unable to pause this process.", 3000)
+                return
+            try:
+                if self._pause_requested:
+                    os.kill(pid, signal.SIGCONT)
+                    self._pause_requested = False
+                    self.pause_button.setText("Pause")
+                    self.statusBar().showMessage("Process resumed.", 3000)
+                else:
+                    os.kill(pid, signal.SIGSTOP)
+                    self._pause_requested = True
+                    self.pause_button.setText("Resume")
+                    self.statusBar().showMessage("Process paused.", 3000)
+            except OSError as exc:
+                self.statusBar().showMessage(f"Pause/Resume failed: {exc}", 3000)
 
         def _stop_process(self, *_args):
             if self._process is None or self._process.state() == QtCore.QProcess.NotRunning:
                 return
+            self._stop_requested = True
+            if self._pause_requested and launcher_supports_process_pause(os.name):
+                pid = int(self._process.processId() or 0)
+                if pid > 0:
+                    try:
+                        os.kill(pid, signal.SIGCONT)
+                    except OSError:
+                        pass
+                self._pause_requested = False
+                self.pause_button.setText("Pause")
             self._process.terminate()
             QtCore.QTimer.singleShot(2000, self._kill_process_if_needed)
             self.statusBar().showMessage("Stopping process...")
@@ -1937,18 +2180,35 @@ if QtWidgets is not None:
                 self._process.kill()
 
         def _process_finished(self, exit_code, exit_status):
-            status_text = "finished" if exit_status == QtCore.QProcess.NormalExit else "crashed"
-            self._append_log_chunk(f"\n[process {status_text}, exit code {exit_code}]\n")
+            if self._stop_requested:
+                self.statusBar().showMessage("Process stopped.", 3000)
+            else:
+                status_text = "finished" if exit_status == QtCore.QProcess.NormalExit else "crashed"
+                self._append_log_chunk(f"\n[process {status_text}, exit code {exit_code}]\n")
+                self.statusBar().showMessage(f"Process {status_text}.", 3000)
             self.run_button.setEnabled(self.current_node is not None and not self.current_node.is_group)
+            self.pause_button.setEnabled(False)
+            self.pause_button.setText("Pause")
             self.stop_button.setEnabled(False)
-            self.statusBar().showMessage(f"Process {status_text}.", 3000)
+            self._stop_requested = False
+            self._pause_requested = False
 
         def _process_error(self, error):
+            if self._stop_requested:
+                return
             self._append_log_chunk(f"\n[process error: {error}]\n")
             self.statusBar().showMessage("Process error.", 3000)
 
         def closeEvent(self, event):
             if self._process is not None and self._process.state() != QtCore.QProcess.NotRunning:
+                self._stop_requested = True
+                if self._pause_requested and launcher_supports_process_pause(os.name):
+                    pid = int(self._process.processId() or 0)
+                    if pid > 0:
+                        try:
+                            os.kill(pid, signal.SIGCONT)
+                        except OSError:
+                            pass
                 self._process.terminate()
                 if not self._process.waitForFinished(1500):
                     self._process.kill()
