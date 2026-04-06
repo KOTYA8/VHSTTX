@@ -94,6 +94,7 @@ dist\VHSTTX-Windows\TTViewer.exe
 
 ## **VHSTTX (GUI)** - ✅ realized
 * Quick launch of teletext commands - ✅ realized
+* Checking for updates - ✅ realized
 
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
