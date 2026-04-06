@@ -4,14 +4,15 @@ VHS Teletext X - advanced features of [vhs-teletext](https://github.com/ali1234/
 Thanks **ali1234** for creating: [vhs-teletext](https://github.com/ali1234/vhs-teletext)
 
 # Install
-## Ubuntu
+## Ubuntu (Installation without libraries)
+Runs on Ubuntu 24.04 LTS
 ```
 source myvenv/bin/activate
 git clone https://github.com/KOTYA8/VHSTTX.git
 cd VHSTTX
 python3 setup.py install
 ```
-### Install library
+### Install library (for Apps)
 ```
 pip install PyQt5
 pipx install -e .[qt] --force
@@ -26,6 +27,7 @@ python3 setup.py install
 In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `teletext-1-py3.12.egg-info` folders. 
 
 ## Windows
+Runs on latest Python 3.14.3
 ```
 python -m pip install -e .[qt,viewer,spellcheck]
 python -m pip install pyinstaller
@@ -240,7 +242,6 @@ teletext squash test.t42 > tests.t42 -md V1
 
 # Installation
 ### Installation VHSTTX
-The entire installation was performed on Ubuntu 24.04 LTS.
 ```
 sudo apt update
 sudo apt upgrade
