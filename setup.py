@@ -54,17 +54,13 @@ setup(
             'decoder.qml',
             'editor.ui',
             'teletext.png',
-            'teletext.css',
-            'teletext-noscanlines.css',
             'teletext2.ttf',
-            'teletext4.ttf',
         ]
     },
     entry_points={
         'console_scripts': [
             'teletext = teletext.cli.teletext:teletext',
             'ttviewer-install = teletext.gui.install:main',
-            'ttviewer-uninstall = teletext.gui.install:uninstall_main',
         ],
         'gui_scripts': [
             'ttviewer = teletext.gui.viewer:main',
@@ -81,7 +77,7 @@ setup(
         'OpenCL': ['pyopencl'],
         'viewer': ['PyOpenGL'],
         'profiler': ['plop'],
-        'qt': ['PyQt5', 'PyQtWebEngine'],
+        'qt': ['PyQt5'],
         'audio': ['spectrum', 'miniaudio'],
     }
 )
