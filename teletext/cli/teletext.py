@@ -4556,7 +4556,7 @@ teletext.add_command(vbi)
 try:
     from teletext.cli.celp import celp
     teletext.add_command(celp)
-except ImportError:
+except Exception:
     pass
 
 
