@@ -70,6 +70,8 @@ dist\VHSTTX-Windows\TTViewer.exe
 * Cutting frames from VBI - ✅ realized
 * Adding VBI Files - ✅ realized
 * Checking for errors in VBI - ✅ realized
+* Changing VBI strings and inserting strings from any VBI - ✅ realized
+* Real-time VBI diagnostics with Teletext Monitor - ✅ realized
 
 ## **T42 Tool** - ✅ realized
 * Frame-by-frame viewing - ✅ realized
@@ -80,6 +82,7 @@ dist\VHSTTX-Windows\TTViewer.exe
 * Checking the first line by frame/page/subpage - ✅ realized
 * Adding/replacing pages/subpages from a .t42 file - ✅ realized
 * View teletext on a page/subpage - ✅ realized
+* Inserting lines from any teletext into your - ✅ realized
 
 ## **VBI Repair** - ✅ realized
 * Frame-by-frame viewing - ✅ realized
@@ -88,6 +91,9 @@ dist\VHSTTX-Windows\TTViewer.exe
 * Saving to VBI/T42 file - ✅ realized
 * Real-time VBI diagnostics with Teletext Monitor - ✅ realized
 * Stabilize VBI - ⚠️bugs
+
+## **VHSTTX (GUI)** - ✅ realized
+* Quick launch of teletext commands - ✅ realized
 
 # Apps
 * **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
@@ -113,6 +119,7 @@ teletext t42tool test.vbi
 ```
 teletext vbirepair test.vbi
 ```
+* **VHSTTX (GUI)** - Running all commands through the visual shell.
 
 # Future Functions
 * **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
@@ -185,15 +192,15 @@ teletext deconvolve test.vbi -u -r 0
 teletext record test.vbi -tm 5m
 ```
 
-* **Capture Card Settings** for **record**/**deconvolve**/**vbiview** (`-vs/--vbi-start` `-vc/--vbi-count` `-vt/--vbi-terminate-reset`)
+* **Capture Card Settings** for **record**/**deconvolve**/**vbiview** (`-vs/--vbi-start` `-vc/--vbi-count` `-vt/--vbi-terminate-reset`) (`-vs value: how many lines down`/`-vc value: how many lines in total`/`-vt reset to default`)
 ```
-teletext record test.vbi -vs 7 320 -vc 16 16
-```
-```
-teletext deconvolve test.vbi > test.t42 -vs 7 320 -vc 16 16
+teletext record test.vbi -vs 1 -vc 32
 ```
 ```
-teletext vbiview test.vbi -vs 7 320 -vc 16 16
+teletext deconvolve test.vbi > test.t42 -vs 1 -vc 32
+```
+```
+teletext vbiview test.vbi -vs 1 -vc 32
 ```
 
 * **Mode**: V1|V3|auto for **squash** (`-md/--mode`)
@@ -268,28 +275,23 @@ pip install pycuda
 pipx install -e .[CUDA,spellcheck,viewer] --force
 pip install PyQt5
 ```
-### Installation Teletext Viewer
-1. Install PyQt5 and QT   
+## Installation Apps
+### Install Library 
 ```
 pip install PyQt5
-```
-```
 pipx install -e .[qt] --force
 ```
-2. Install   
+### Install Apps 
 ```
 ttviewer-install
+vhsttx-install
 ```
-### Delete Teletext Viewer
+### Delete Apps
 ```
 ttviewer-uninstall
+vhsttx-uninstall
 ```
-### Installation Apps
-1. Install QT
-```
-pipx install -e .[qt] --force
-```
-### Preparing BT878
+## Preparing BT878
 1. Installing the QV4L2 Control Panel:
 ```
 sudo apt install qv4l2
