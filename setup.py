@@ -1,8 +1,14 @@
+from pathlib import Path
+
 from setuptools import setup
+
+
+about = {}
+exec(Path('teletext/__init__.py').read_text(encoding='utf-8'), about)
 
 setup(
     name='teletext',
-    version='1',
+    version=about['__version__'],
     author='kOt',
     author_email='',
     url='http://github.com/KOTYA8/VHSTTX',
@@ -54,21 +60,31 @@ setup(
             'decoder.qml',
             'editor.ui',
             'teletext.png',
+            'vhsttxgui.png',
+            'teletext.css',
+            'teletext-noscanlines.css',
             'teletext2.ttf',
+            'teletext4.ttf',
         ]
     },
     entry_points={
         'console_scripts': [
             'teletext = teletext.cli.teletext:teletext',
             'ttviewer-install = teletext.gui.install:main',
+            'ttviewer-uninstall = teletext.gui.install:uninstall_main',
+            'vhsttx-install = teletext.gui.vhsttx_install:main',
+            'vhsttx-uninstall = teletext.gui.vhsttx_install:uninstall_main',
         ],
         'gui_scripts': [
+            'vhsttx = teletext.gui.launcher:main',
             'ttviewer = teletext.gui.viewer:main',
             'tteditor = teletext.gui.editor:main',
         ],
     },
     install_requires=[
-        'numpy<2', 'scipy', 'matplotlib', 'click', 'tqdm',  'pyzmq', 'watchdog', 'pyserial',
+        'numpy<2;platform_system!="Windows"',
+        'numpy;platform_system=="Windows"',
+        'scipy', 'matplotlib', 'click', 'tqdm',  'pyzmq', 'watchdog', 'pyserial',
         'windows-curses;platform_system=="Windows"',
     ],
     extras_require={
@@ -77,7 +93,7 @@ setup(
         'OpenCL': ['pyopencl'],
         'viewer': ['PyOpenGL'],
         'profiler': ['plop'],
-        'qt': ['PyQt5'],
+        'qt': ['PyQt5', 'PyQtWebEngine'],
         'audio': ['spectrum', 'miniaudio'],
     }
 )

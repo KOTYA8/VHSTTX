@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=VHSTTX
+Comment=Launch the VHSTTX toolkit
+Exec=vhsttx
+Icon=vhsttxgui
+Terminal=false
+Categories=AudioVideo;Utility;
+StartupNotify=true
