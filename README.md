@@ -102,6 +102,7 @@ dist\VHSTTX-Windows\TTEditor.exe
 * Checking for updates - ✅ realized
 
 ## **TeleText Editor** - ✅ realized
+* Opening T42 and HTML files and folders - ✅ realized
 * Split individual pages in HTML and T42 - ✅ realized
 * Setting up pages, 8/30 service, Fastext, adding pictures, managing strings and control codes - ✅ realized
 * Changing pages in different languages - ✅ realized
