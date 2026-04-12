@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=TeleText Editor
+Comment=Launch the TeleText Editor
+Exec=tteditor %f
+Icon=tteditor
+Terminal=false
+Categories=AudioVideo;Utility;Graphics;
+StartupNotify=true

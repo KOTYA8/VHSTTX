@@ -38,4 +38,4 @@ if command -v xdg-mime >/dev/null 2>&1; then
     xdg-mime default ttviewer.desktop application/x-teletext-t42
 fi
 
-echo "Installed Teletext Viewer desktop integration for .t42 files."
+echo "Installed TeleText Viewer desktop integration for .t42 files."

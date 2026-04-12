@@ -55,6 +55,28 @@ class TestCmdSquash(TestCommandTeletext):
         self.assertIn('v1', result.output)
         self.assertIn('v3', result.output)
         self.assertIn('auto', result.output)
+        self.assertIn('custom', result.output)
+        self.assertIn('profile', result.output)
+        self.assertIn('--profile', result.output)
+        self.assertIn('--profile-name', result.output)
+        self.assertIn('balanced', result.output)
+
+    def test_profile_mode_requires_profile_path(self):
+        result = self.runner.invoke(self.cmd, ['--mode', 'profile'])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn('requires --profile or --profile-name', result.output)
+
+    def test_profile_mode_accepts_named_profile(self):
+        result = self.runner.invoke(self.cmd, ['--mode', 'profile', '--profile-name', 'balanced'], input='')
+        self.assertEqual(result.exit_code, 0)
+
+
+class TestCmdSquashTool(TestCommandTeletext):
+    cmd = teletext.cli.teletext.squashtool
+
+
+class TestCmdSquashTuneAlias(TestCommandTeletext):
+    cmd = teletext.cli.teletext.squashtune
 
 
 class TestCmdSpellcheck(TestCommandTeletext):

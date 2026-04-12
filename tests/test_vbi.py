@@ -3,6 +3,7 @@ import tempfile
 import os
 import types
 import unittest.mock
+from collections import deque
 from types import SimpleNamespace
 
 import numpy as np
@@ -32,6 +33,7 @@ from teletext.subpage import Subpage
 from teletext.vbi.config import Config
 from teletext.gui.vbituner import (
     ANALYSIS_KIND_AUTO_TUNE,
+    ANALYSIS_KIND_SIGNAL_CONTROLS,
     ARGS_APPLY_SCOPE_ALL,
     ARGS_APPLY_SCOPE_SELECTED,
     ANALYSIS_MODE_FULL,
@@ -41,11 +43,14 @@ from teletext.gui.vbituner import (
     _resolve_args_line_selection,
     analyse_vbi_file,
     _analysis_frame_indices,
+    _row_order_stats_from_entries,
     _sample_analysis_preview_lines,
     _section_display_title,
     _section_tooltip,
+    _text_score_from_text,
     auto_lock_preview,
     _normalise_signal_controls_tuple,
+    auto_signal_controls_preview,
     auto_tune_preview,
     load_analysis_history_entry,
     delete_local_preset,
@@ -535,6 +540,119 @@ class TestSignalControls(unittest.TestCase):
             self.assertEqual(result['page'], 0x359)
             self.assertEqual(result['subpage'], 0x3003)
             self.assertEqual(result['subpage_hex'], '3003')
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_repair_deconvolve_page_t42_uses_selected_frame_range(self):
+        diagnostics = object.__new__(VBIRepairDiagnostics)
+        diagnostics._runtime = lambda: {'decoder_tuning': {'quality_threshold': 50}}
+        diagnostics._signature_for_runtime = lambda runtime: ('sig',)
+        diagnostics._reset_runtime_cache = lambda signature=None: None
+        diagnostics._frame_history = deque(maxlen=15)
+        diagnostics._last_signature = None
+        diagnostics._last_frame_index = None
+        diagnostics._last_frame_results = ()
+        diagnostics._last_frame_packets = ()
+        diagnostics._last_processed_frame = None
+        diagnostics._temporal_state = {}
+        diagnostics._temporal_profile_states = {}
+        diagnostics._last_page_render_key = None
+        diagnostics._last_page_render_text = None
+        diagnostics._all_row_zero_render_key = None
+        diagnostics._all_row_zero_render_text = None
+
+        subpage = Subpage(prefill=True, magazine=3)
+        subpage.header.page = 0x59
+        subpage.header.subpage = 0x3003
+        subpage.packet(1).displayable.place_string('HELLO WORLD')
+        packets = tuple(subpage.packets)
+        called_frames = []
+
+        def fake_decode(frame_index, runtime):
+            called_frames.append(int(frame_index))
+            if int(frame_index) != 10:
+                return (), ()
+            results = tuple(
+                {
+                    'logical_line': index + 1,
+                    'status': 'packet',
+                    'packet': packet,
+                    'quality': 80,
+                    'reason': '',
+                }
+                for index, packet in enumerate(packets)
+            )
+            return results, packets
+
+        diagnostics._decode_current_frame = fake_decode
+        diagnostics._collect_page_subpages = lambda *args, **kwargs: (0x359, '359', 0x3003, '3003', [subpage])
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.t42') as handle:
+            path = handle.name
+        try:
+            result = diagnostics.deconvolve_page_t42(10, 1, '359', '3003', path, hide_noisy=False)
+            with open(path, 'rb') as saved:
+                content = saved.read()
+            self.assertGreaterEqual(len(content), 42)
+            self.assertEqual(result['page'], 0x359)
+            self.assertEqual(result['subpage'], 0x3003)
+            self.assertEqual(result['subpage_hex'], '3003')
+            self.assertEqual(result['start_frame'], 10)
+            self.assertEqual(result['end_frame'], 10)
+            self.assertGreater(result['packet_count'], 0)
+            self.assertEqual(called_frames, [10])
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_repair_deconvolve_t42_row_mode_filters_requested_row(self):
+        diagnostics = object.__new__(VBIRepairDiagnostics)
+        diagnostics._runtime = lambda: {'decoder_tuning': {'quality_threshold': 50}}
+        diagnostics._signature_for_runtime = lambda runtime: ('sig',)
+        diagnostics._reset_runtime_cache = lambda signature=None: None
+        diagnostics._frame_history = deque(maxlen=15)
+        diagnostics._last_signature = None
+        diagnostics._last_frame_index = None
+        diagnostics._last_frame_results = ()
+        diagnostics._last_frame_packets = ()
+        diagnostics._last_processed_frame = None
+        diagnostics._temporal_state = {}
+        diagnostics._temporal_profile_states = {}
+        diagnostics._last_page_render_key = None
+        diagnostics._last_page_render_text = None
+        diagnostics._all_row_zero_render_key = None
+        diagnostics._all_row_zero_render_text = None
+
+        class _FakePacket:
+            def __init__(self, magazine, row):
+                self.mrag = types.SimpleNamespace(magazine=magazine, row=row)
+
+            def to_bytes(self):
+                return bytes([int(self.mrag.magazine), int(self.mrag.row)]) * 21
+
+        packet_row_0 = _FakePacket(1, 0)
+        packet_row_5 = _FakePacket(1, 5)
+
+        def fake_decode(frame_index, runtime):
+            results = (
+                {'logical_line': 1, 'status': 'packet', 'packet': packet_row_0, 'quality': 80, 'reason': ''},
+                {'logical_line': 2, 'status': 'packet', 'packet': packet_row_5, 'quality': 80, 'reason': ''},
+            )
+            return results, (packet_row_0, packet_row_5)
+
+        diagnostics._decode_current_frame = fake_decode
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.t42') as handle:
+            path = handle.name
+        try:
+            result = diagnostics.deconvolve_t42(10, 1, path, mode='row', row=5, hide_noisy=False)
+            with open(path, 'rb') as saved:
+                content = saved.read()
+            self.assertEqual(result['mode'], 'row')
+            self.assertEqual(result['row'], 5)
+            self.assertEqual(result['packet_count'], 1)
+            self.assertEqual(len(content), 42)
         finally:
             if os.path.exists(path):
                 os.unlink(path)
@@ -1397,6 +1515,54 @@ class TestSignalControls(unittest.TestCase):
         self.assertTrue(any(item['phase'] == 'Evaluating Auto Tune' for item in progress))
         self.assertEqual(progress[-1]['percent'], 100)
 
+    def test_analyse_vbi_file_signal_controls_uses_signal_analysis(self):
+        config = Config(card='bt8x8')
+        frame_size = config.line_bytes * config.field_lines * 2
+        fd, path = tempfile.mkstemp()
+        os.close(fd)
+        progress = []
+        original = analyse_vbi_file.__globals__['auto_signal_controls_preview']
+        try:
+            with open(path, 'wb') as handle:
+                handle.write((b'\x55' * frame_size) * 4)
+
+            def fake_signal(preview_lines, config, tape_format, controls, decoder_tuning=None, line_selection=None, progress_callback=None):
+                updated = list(controls)
+                updated[0] = 55
+                updated[1] = 65
+                if callable(progress_callback):
+                    progress_callback(2, 4, 'Evaluating Auto Signal Controls')
+                return tuple(updated), decoder_tuning, {
+                    'score': 222.0,
+                    'teletext_lines': 8,
+                    'analysed_lines': len(preview_lines),
+                    'text_score': 44.0,
+                    'text_score_average': 5.5,
+                    'text_scored_lines': 8,
+                }
+
+            analyse_vbi_file.__globals__['auto_signal_controls_preview'] = fake_signal
+            result = analyse_vbi_file(
+                ANALYSIS_KIND_SIGNAL_CONTROLS,
+                path,
+                config,
+                'vhs',
+                DEFAULT_CONTROLS,
+                decoder_tuning=None,
+                mode=ANALYSIS_MODE_QUICK,
+                quick_frames=2,
+                progress_callback=progress.append,
+            )
+        finally:
+            analyse_vbi_file.__globals__['auto_signal_controls_preview'] = original
+            os.unlink(path)
+
+        self.assertEqual(result['controls'][0], 55)
+        self.assertEqual(result['controls'][1], 65)
+        self.assertEqual(result['frames_analysed'], 2)
+        self.assertTrue(any(item['phase'] == 'Evaluating Auto Signal Controls' for item in progress))
+        self.assertEqual(progress[-1]['percent'], 100)
+
     def test_sample_analysis_preview_lines_limits_work(self):
         preview_lines = tuple((index, bytes([index % 256])) for index in range(2000))
 
@@ -1616,6 +1782,102 @@ class TestSignalControls(unittest.TestCase):
         self.assertGreaterEqual(values[10], 15)
         self.assertIsNone(decoder_tuning)
         self.assertGreaterEqual(stats['teletext_lines'], 8)
+
+    def test_text_score_prefers_readable_text(self):
+        self.assertGreater(
+            _text_score_from_text('NEWS 123 WEATHER SPORT'),
+            _text_score_from_text('\x01\x02\x03\ufffd\ufffd'),
+        )
+
+    def test_auto_signal_controls_preview_prefers_signal_controls(self):
+        class FakeConfig:
+            def __init__(self):
+                self.extra_roll = 0
+                self.line_start_range = (0, 0)
+
+            def retuned(self, extra_roll=0, line_start_range=(0, 0)):
+                updated = FakeConfig()
+                updated.extra_roll = int(extra_roll)
+                updated.line_start_range = tuple(line_start_range)
+                return updated
+
+        original_evaluate = auto_signal_controls_preview.__globals__['_evaluate_preview_candidate']
+        try:
+            def fake_evaluate(preview_lines, config, tape_format, controls, decoder_tuning=None, line_selection=None):
+                teletext_lines = 6
+                score = float(teletext_lines * 1000)
+                score += float(controls[0] >= 55) * 120.0
+                score += float(controls[1] >= 65) * 120.0
+                score += float(controls[2] >= 55) * 120.0
+                score += float(controls[3] >= 55) * 120.0
+                return score, teletext_lines, len(preview_lines)
+
+            auto_signal_controls_preview.__globals__['_evaluate_preview_candidate'] = fake_evaluate
+            values, decoder_tuning, stats = auto_signal_controls_preview(
+                preview_lines=((0, b'line0'), (1, b'line1')),
+                config=FakeConfig(),
+                tape_format='vhs',
+                controls=(
+                    50, 50, 50, 50,
+                    48.0, 3.0, 0.5, 0.5,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                ),
+                decoder_tuning=None,
+                line_selection=frozenset({1, 2}),
+            )
+        finally:
+            auto_signal_controls_preview.__globals__['_evaluate_preview_candidate'] = original_evaluate
+
+        self.assertGreaterEqual(values[0], 55)
+        self.assertGreaterEqual(values[1], 65)
+        self.assertGreaterEqual(values[2], 55)
+        self.assertGreaterEqual(values[3], 55)
+        self.assertIsNone(decoder_tuning)
+        self.assertEqual(stats['teletext_lines'], 6)
+
+    def test_row_order_stats_penalise_duplicate_and_backtrack_rows(self):
+        stats = _row_order_stats_from_entries((
+            (0, 3, 7),
+            (0, 3, 8),
+            (0, 3, 8),
+            (0, 3, 10),
+            (0, 3, 9),
+        ))
+
+        self.assertEqual(stats['row_order_matches'], 1)
+        self.assertEqual(stats['row_order_duplicates'], 1)
+        self.assertEqual(stats['row_order_gaps'], 1)
+        self.assertEqual(stats['row_order_backtracks'], 1)
+        self.assertLess(stats['order_score'], 0.0)
+
+    def test_row_order_stats_reset_sequence_for_new_page_header(self):
+        stats = _row_order_stats_from_entries((
+            (0, 3, 0, 0x100, 0x0001),
+            (0, 3, 7, None, None),
+            (0, 3, 8, None, None),
+            (0, 3, 0, 0x101, 0x0002),
+            (0, 3, 8, None, None),
+            (0, 3, 9, None, None),
+        ))
+
+        self.assertEqual(stats['row_order_duplicates'], 0)
+        self.assertEqual(stats['row_order_backtracks'], 0)
+        self.assertEqual(stats['header_conflicts'], 1)
+        self.assertEqual(stats['row_order_matches'], 2)
+
+    def test_sample_analysis_preview_lines_can_preserve_whole_frames(self):
+        preview_lines = tuple(
+            (line, f'f{frame}-l{line}'.encode('ascii'))
+            for frame in range(6)
+            for line in range(4)
+        )
+
+        sampled = _sample_analysis_preview_lines(preview_lines, limit=8, preserve_frames=True)
+
+        self.assertEqual(len(sampled), 8)
+        self.assertEqual([number for number, _ in sampled[:4]], [0, 1, 2, 3])
+        self.assertEqual([number for number, _ in sampled[4:]], [0, 1, 2, 3])
 
     def test_adaptive_threshold_changes_local_normalisation(self):
         dummy = object.__new__(Line)

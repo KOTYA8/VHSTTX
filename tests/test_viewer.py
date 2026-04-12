@@ -14,7 +14,9 @@ from teletext.service import Service
 from teletext.subpage import Subpage
 from teletext.viewer import DirectPageBuffer, ServiceNavigator, describe_service_metadata
 from teletext.viewer import (
+    build_t42_packet_entries,
     build_split_pattern,
+    collect_t42_subpage_occurrence_entries,
     count_html_outputs,
     ensure_html_assets,
     count_split_t42_outputs,
@@ -264,6 +266,73 @@ class TestServiceNavigator(unittest.TestCase):
         navigator = ServiceNavigator(service)
         self.assertEqual(navigator.current_page_label, 'P100')
 
+    def test_raw_hidden_occurrences_can_extend_subpage_count_beyond_service_duplicates(self):
+        base = make_subpage(1, 0x00, 0x0000, header_text='100 BASE OCC')
+        duplicate_two = make_subpage(1, 0x00, 0x0000, header_text='100 DUP TWO')
+        duplicate_three = make_subpage(1, 0x00, 0x0000, header_text='100 DUP THREE')
+
+        service = Service()
+        service.insert_page(base)
+        service.magazines[1].pages[0x00].subpages[0x0000].duplicates.append(duplicate_two)
+
+        raw_packets = (
+            [packet.to_bytes() for packet in base.packets]
+            + [packet.to_bytes() for packet in duplicate_two.packets]
+            + [packet.to_bytes() for packet in duplicate_three.packets]
+        )
+        raw_entries = build_t42_packet_entries(raw_packets)
+
+        navigator = ServiceNavigator(service, raw_entries=raw_entries)
+        navigator.set_hidden_subpages_mode('raw')
+        navigator.set_hidden_subpages_enabled(True)
+
+        self.assertEqual(navigator.current_subpage_count, 3)
+        navigator.go_next_subpage()
+        navigator.go_next_subpage()
+        self.assertEqual(navigator.current_subpage_occurrence, 3)
+        header_text = bytes(navigator.current_subpage.header.displayable.bytes_no_parity).decode('ascii', errors='ignore')
+        self.assertIn('DUP THREE', header_text)
+
+    def test_hidden_occurrences_default_to_legacy_mode_even_with_raw_entries(self):
+        base = make_subpage(1, 0x00, 0x0000, header_text='100 BASE OCC')
+        duplicate_two = make_subpage(1, 0x00, 0x0000, header_text='100 DUP TWO')
+        duplicate_three = make_subpage(1, 0x00, 0x0000, header_text='100 DUP THREE')
+
+        service = Service()
+        service.insert_page(base)
+        service.magazines[1].pages[0x00].subpages[0x0000].duplicates.append(duplicate_two)
+
+        raw_packets = (
+            [packet.to_bytes() for packet in base.packets]
+            + [packet.to_bytes() for packet in duplicate_two.packets]
+            + [packet.to_bytes() for packet in duplicate_three.packets]
+        )
+        raw_entries = build_t42_packet_entries(raw_packets)
+
+        navigator = ServiceNavigator(service, raw_entries=raw_entries)
+        navigator.set_hidden_subpages_enabled(True)
+
+        self.assertEqual(navigator.hidden_subpages_mode, 'legacy')
+        self.assertEqual(navigator.current_subpage_count, 2)
+
+    def test_exact_hidden_occurrence_stops_at_next_header_in_same_magazine(self):
+        first = make_subpage(1, 0x00, 0x0000, header_text='100 FIRST OCC')
+        other = make_subpage(1, 0x01, 0x0000, header_text='101 OTHER PAGE')
+        second = make_subpage(1, 0x00, 0x0000, header_text='100 SECOND OCC')
+        first_packets = list(first.packets)
+        other_packets = list(other.packets)
+        second_packets = list(second.packets)
+
+        raw_packets = (
+            [packet.to_bytes() for packet in first_packets[:3]]
+            + [packet.to_bytes() for packet in other_packets[:3]]
+            + [packet.to_bytes() for packet in second_packets[:3]]
+        )
+        raw_entries = build_t42_packet_entries(raw_packets)
+
+        first_occurrence_entries = collect_t42_subpage_occurrence_entries(raw_entries, 0x100, 0x0000, 1)
+        self.assertEqual([int(entry.packet_index) for entry in first_occurrence_entries], [0, 1, 2])
+
 
 class TestServiceMetadata(unittest.TestCase):
     def make_temp_capture(self, stem='capture'):
@@ -275,6 +344,13 @@ class TestServiceMetadata(unittest.TestCase):
             os.close(fd)
             raise
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def make_packet_capture(self, packets, stem='capture'):
+        path = self.make_temp_capture(stem)
+        with open(path, 'wb') as handle:
+            for packet in packets:
+                handle.write(packet.to_bytes())
         return path
 
     def test_metadata_infers_ort_from_filename_and_titles_without_830(self):
@@ -339,10 +415,102 @@ class TestServiceMetadata(unittest.TestCase):
         metadata = describe_service_metadata(service, self.make_temp_capture('BBC2-19990521-sq'))
 
         self.assertFalse(metadata.broadcast_present)
+        self.assertEqual(metadata.likely_service_brand, 'CEEFAX')
         self.assertEqual(metadata.likely_broadcaster, 'BBC2')
         self.assertEqual(metadata.likely_language, 'English')
         self.assertEqual(metadata.likely_country, 'United Kingdom')
         self.assertEqual(metadata.confidence, 'medium')
+
+    def test_metadata_infers_c4_and_english_from_teletex_headers(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='TELETEXT 100 MAR09'))
+        service.insert_page(make_subpage(1, 0x02, 0x0000, header_text='TELETEXT 102 MAR09'))
+        service.insert_page(make_subpage(1, 0x05, 0x0000, header_text='TELETEXT 105 MAR09'))
+        service.insert_page(make_subpage(1, 0x52, 0x0000, header_text='TELETEXT 152 MAR09'))
+
+        metadata = describe_service_metadata(service, self.make_temp_capture('C4-19990309-sq'))
+
+        self.assertEqual(metadata.likely_service_brand, 'TELETEXT')
+        self.assertEqual(metadata.likely_broadcaster, 'C4')
+        self.assertEqual(metadata.likely_language, 'English')
+        self.assertEqual(metadata.likely_country, 'United Kingdom')
+        self.assertEqual(metadata.confidence, 'medium')
+
+    def test_metadata_infers_itv1_without_false_russian_hints(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='TELETEXT 100 APR15'))
+        service.insert_page(make_subpage(1, 0x01, 0x0000, header_text='TELETEXT 101 APR15'))
+        service.insert_page(make_subpage(1, 0x02, 0x0000, header_text='TELETEXT 102 APR15'))
+        service.insert_page(make_subpage(1, 0x50, 0x0000, header_text='TELETEXT 150 APR15'))
+
+        metadata = describe_service_metadata(service, self.make_temp_capture('ITV120080415-sq'))
+
+        self.assertEqual(metadata.likely_service_brand, 'TELETEXT')
+        self.assertEqual(metadata.likely_broadcaster, 'ITV1')
+        self.assertEqual(metadata.likely_language, 'English')
+        self.assertEqual(metadata.likely_country, 'United Kingdom')
+        self.assertNotIn('NOVOSTI', ' '.join(metadata.evidence))
+
+    def test_metadata_reports_flags_dates_times_and_packet_presence(self):
+        service = Service()
+        subpage = make_subpage(1, 0x00, 0x0000, header_text='TELETEXT 100 Fri 21 May 18:35/19')
+        subpage.header.control = int(subpage.header.control) | 0x001 | 0x002 | 0x010
+        subpage.displayable.place_string('MEETING 27.01.99 18:30', y=0)
+        service.insert_page(subpage)
+
+        metadata = describe_service_metadata(service, self.make_packet_capture(subpage.packets, 'teletex-meta'))
+
+        self.assertEqual(metadata.codepages, (0,))
+        self.assertEqual(metadata.national_options, metadata.codepages)
+        self.assertEqual(metadata.likely_service_brand, 'TELETEXT')
+        self.assertEqual(dict(metadata.page_flag_counts)['Erase Page'], 1)
+        self.assertEqual(dict(metadata.page_flag_counts)['Newsflash'], 1)
+        self.assertEqual(dict(metadata.page_flag_counts)['Update Page'], 1)
+        self.assertEqual(dict(metadata.packet_presence), {'8/30': False, '27': True, '28': False, '29': False})
+        self.assertIn('27.01.99', metadata.detected_dates)
+        self.assertIn('18:30', metadata.detected_times)
+
+    def test_metadata_detects_level_1_for_basic_service(self):
+        service = Service()
+        service.insert_page(make_subpage(1, 0x00, 0x0000, header_text='100 INDEX PAGE'))
+
+        metadata = describe_service_metadata(service, self.make_temp_capture('level1'))
+
+        self.assertEqual(metadata.teletext_level, '1')
+        self.assertIn('basic Level 1 packets only', metadata.teletext_level_evidence)
+
+    def test_metadata_detects_level_15_from_x26_packets(self):
+        service = Service()
+        subpage = make_subpage(1, 0x00, 0x0000, header_text='100 INDEX PAGE')
+        subpage.init_packet(26, 0, 1)
+        service.insert_page(subpage)
+
+        metadata = describe_service_metadata(service, self.make_packet_capture(subpage.packets, 'level15'))
+
+        self.assertEqual(metadata.teletext_level, '1.5')
+        self.assertTrue(any(item.startswith('X/26 present') for item in metadata.teletext_level_evidence))
+
+    def test_metadata_detects_level_35_from_x284_packets(self):
+        service = Service()
+        subpage = make_subpage(1, 0x00, 0x0000, header_text='100 INDEX PAGE')
+        subpage.init_packet(28, 4, 1)
+        service.insert_page(subpage)
+
+        metadata = describe_service_metadata(service, self.make_packet_capture(subpage.packets, 'level35'))
+
+        self.assertEqual(metadata.teletext_level, '3.5')
+        self.assertTrue(any(item.startswith('X/28 present') for item in metadata.teletext_level_evidence))
+
+    def test_metadata_detects_level_25_from_x280_packets(self):
+        service = Service()
+        subpage = make_subpage(1, 0x00, 0x0000, header_text='100 INDEX PAGE')
+        subpage.init_packet(28, 0, 1)
+        service.insert_page(subpage)
+
+        metadata = describe_service_metadata(service, self.make_packet_capture(subpage.packets, 'level25'))
+
+        self.assertEqual(metadata.teletext_level, '2.5')
+        self.assertTrue(any(item.startswith('X/28 present') for item in metadata.teletext_level_evidence))
 
 
 class TestServiceExportHelpers(unittest.TestCase):

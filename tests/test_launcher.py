@@ -4,6 +4,8 @@ import click
 
 from teletext.gui.launcher import (
     ParamDescriptor,
+    SQUASHTOOL_COMMAND_PATH,
+    TTEDITOR_COMMAND_PATH,
     TTVIEWER_COMMAND_PATH,
     _display_version_text,
     _normalise_version_text,
@@ -91,28 +93,31 @@ class TestLauncherHelpers(unittest.TestCase):
         self.assertEqual(format_command_label("vbirepair"), "VBI Repair")
         self.assertEqual(format_command_label("vbiview"), "VBI View")
         self.assertEqual(format_command_label("t42tool"), "T42 Tool")
+        self.assertEqual(format_command_label("squashtool"), "Squash Tool")
         self.assertEqual(format_command_label("spellcheck-analyze"), "Spellcheck Analyze")
 
     def test_primary_mode_contains_expected_main_commands(self):
         tree = build_command_tree(load_teletext_root_command())
         paths = [node.path for node in list_mode_leaf_nodes(tree, LIST_MODE_PRIMARY)]
         self.assertEqual(
-            paths[:8],
+            paths[:9],
             [
-                ("record",),
                 ("vbiview",),
                 ("vbitool",),
                 ("vbirepair",),
                 ("deconvolve",),
                 ("t42tool",),
+                SQUASHTOOL_COMMAND_PATH,
                 ("squash",),
                 TTVIEWER_COMMAND_PATH,
+                TTEDITOR_COMMAND_PATH,
             ],
         )
         self.assertIn(("vbirepair",), paths)
         self.assertIn(("vbitool",), paths)
         self.assertIn(("t42tool",), paths)
         self.assertIn(TTVIEWER_COMMAND_PATH, paths)
+        self.assertIn(TTEDITOR_COMMAND_PATH, paths)
 
     def test_windows_profile_hides_record_and_linux_only_options(self):
         self.assertTrue(is_windows_runtime("nt"))
@@ -148,6 +153,11 @@ class TestLauncherHelpers(unittest.TestCase):
         program, args = launcher_process_command(["teletext", "deconvolve", "test.vbi"])
         self.assertTrue(program)
         self.assertTrue(args)
+
+    def test_launcher_process_command_non_frozen_squashtool(self):
+        program, args = launcher_process_command(["squashtool"])
+        self.assertEqual(program, "squashtool")
+        self.assertEqual(args, [])
 
 
 if __name__ == "__main__":

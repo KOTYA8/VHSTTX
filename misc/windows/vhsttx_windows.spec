@@ -79,13 +79,30 @@ viewer_exe = EXE(
     console=False,
 )
 
+editor_analysis = build_analysis("teletext/gui/editor_bootstrap.py")
+editor_pyz = PYZ(editor_analysis.pure)
+editor_exe = EXE(
+    editor_pyz,
+    editor_analysis.scripts,
+    editor_analysis.binaries,
+    editor_analysis.datas,
+    [],
+    name="TTEditor",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+)
+
 coll = COLLECT(
     launcher_exe,
     teletext_exe,
     viewer_exe,
-    launcher_analysis.binaries + teletext_analysis.binaries + viewer_analysis.binaries,
-    launcher_analysis.zipfiles + teletext_analysis.zipfiles + viewer_analysis.zipfiles,
-    launcher_analysis.datas + teletext_analysis.datas + viewer_analysis.datas,
+    editor_exe,
+    launcher_analysis.binaries + teletext_analysis.binaries + viewer_analysis.binaries + editor_analysis.binaries,
+    launcher_analysis.zipfiles + teletext_analysis.zipfiles + viewer_analysis.zipfiles + editor_analysis.zipfiles,
+    launcher_analysis.datas + teletext_analysis.datas + viewer_analysis.datas + editor_analysis.datas,
     strip=False,
     upx=False,
     name="VHSTTX-Windows",
