@@ -791,6 +791,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._page_clipboard_label = ''
         self._modified_pages = set()
         self._modified_subpages = set()
+        self._modified_subpage_occurrences = set()
         self._enabled_subpage_occurrences = set()
         self._tree_item_change_locked = False
         self._subpage_combo_locked = False
@@ -906,11 +907,6 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._preview_toggle.setToolTip('Show page preview thumbnails in the tree.')
         self._preview_toggle.toggled.connect(self._set_tree_previews_enabled)
         filter_row.addWidget(self._preview_toggle)
-        self._tree_checkboxes_toggle = QtWidgets.QCheckBox('Checkboxes')
-        self._tree_checkboxes_toggle.setChecked(False)
-        self._tree_checkboxes_toggle.setToolTip('Show include/exclude checkboxes in the tree.')
-        self._tree_checkboxes_toggle.toggled.connect(lambda _checked=False: self._rebuild_tree())
-        filter_row.addWidget(self._tree_checkboxes_toggle)
         self._show_hidden_subpages_toggle = QtWidgets.QCheckBox('Hidden Subpages')
         self._show_hidden_subpages_toggle.toggled.connect(lambda _checked=False: self._rebuild_tree())
         filter_row.addWidget(self._show_hidden_subpages_toggle)
@@ -1773,7 +1769,10 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         apply_state(bool(expanded))
 
     def _tree_checkboxes_enabled(self):
-        return bool(getattr(self, '_tree_checkboxes_toggle', None) and self._tree_checkboxes_toggle.isChecked())
+        return False
+
+    def _toggle_tree_checkboxes(self, visible):
+        return
 
     def _hidden_subpages_mode(self):
         combo = getattr(self, '_hidden_subpages_mode_combo', None)
@@ -2360,6 +2359,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._filename = ''
         self._modified_pages.clear()
         self._modified_subpages.clear()
+        self._modified_subpage_occurrences.clear()
         self._enabled_subpage_occurrences.clear()
         self._editor_drafts.clear()
         self._document_history = []
@@ -2513,7 +2513,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             self._blank_subpage_entries(page_number, subpage_number),
         )
         occurrence_number = len(self._page_subpage_occurrences_for_entries(updated_entries, page_number).get(subpage_number, ()))
-        self._mark_modified_subpage(page_number, subpage_number)
+        self._mark_modified_subpage(page_number, subpage_number, occurrence_number)
         self._rebuild_from_entries(
             updated_entries,
             focus_page_number=page_number,
@@ -2558,7 +2558,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
                 self._page_subpage_occurrences_for_entries(updated_entries, page_number).get(subpage_number, ())
             )
         )
-        self._mark_modified_subpage(page_number, subpage_number)
+        self._mark_modified_subpage(page_number, subpage_number, occurrence_number)
         self._rebuild_from_entries(
             updated_entries,
             focus_page_number=page_number,
@@ -2653,7 +2653,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         ):
             return
         duplicate_entries = build_t42_entries(packet.to_bytes() for packet in editable.packets)
-        self._mark_modified_subpage(target_page_number, target_subpage_number)
+        self._mark_modified_subpage(target_page_number, target_subpage_number, target_occurrence_number)
         updated_entries = replace_subpage_in_entries(
             self._entries,
             duplicate_entries,
@@ -2691,9 +2691,13 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         updated_entries = tuple(entry for entry in self._entries if int(entry.page_number or -1) != page_number)
         self._modified_pages.discard(page_number)
         self._modified_subpages = {key for key in self._modified_subpages if int(key[0]) != page_number}
+        self._modified_subpage_occurrences = {
+            key for key in self._modified_subpage_occurrences if int(key[0]) != page_number
+        }
         if not updated_entries:
             self._modified_pages.clear()
             self._modified_subpages.clear()
+            self._modified_subpage_occurrences.clear()
             self._rebuild_from_entries(
                 (),
                 record_history=True,
@@ -2739,9 +2743,11 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             if int(entry.packet_index) not in removed_packets
         )
         self._modified_subpages.discard((page_number, subpage_number))
+        self._modified_subpage_occurrences.discard((page_number, subpage_number, occurrence_number))
         if not updated_entries:
             self._modified_pages.clear()
             self._modified_subpages.clear()
+            self._modified_subpage_occurrences.clear()
             self._rebuild_from_entries(
                 (),
                 record_history=True,
@@ -2799,6 +2805,10 @@ class T42EditorWindow(QtWidgets.QMainWindow):
                 key for key in self._modified_subpages
                 if int(key[0]) != page_number
             }
+            self._modified_subpage_occurrences = {
+                key for key in self._modified_subpage_occurrences
+                if int(key[0]) != page_number
+            }
         for context in selected_subpages:
             removed_entries = collect_subpage_occurrence_entries(
                 self._entries,
@@ -2809,6 +2819,11 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             for entry in removed_entries:
                 removed_packets.add(int(entry.packet_index))
             self._modified_subpages.discard((int(context['page_number']), int(context['subpage_number'])))
+            self._modified_subpage_occurrences.discard((
+                int(context['page_number']),
+                int(context['subpage_number']),
+                int(context.get('occurrence_number', 1) or 1),
+            ))
         updated_entries = tuple(
             entry for entry in self._entries
             if int(entry.packet_index) not in removed_packets
@@ -2816,6 +2831,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         if not updated_entries:
             self._modified_pages.clear()
             self._modified_subpages.clear()
+            self._modified_subpage_occurrences.clear()
             self._rebuild_from_entries(
                 (),
                 record_history=True,
@@ -3188,7 +3204,11 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             occurrence_number,
             target_occurrence_number,
         )
-        self._mark_modified_subpage(context['page_number'], context['subpage_number'])
+        self._mark_modified_subpage(
+            context['page_number'],
+            context['subpage_number'],
+            target_occurrence_number,
+        )
         self._rebuild_from_entries(
             updated_entries,
             focus_page_number=int(context['page_number']),
@@ -3387,8 +3407,9 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             action.setEnabled(editable)
         self._update_editor_history_actions()
 
-    def _modified_entry_marker(self, page_number, subpage_number=None):
+    def _modified_entry_marker(self, page_number, subpage_number=None, occurrence_number=None):
         page_number = int(page_number)
+        current_occurrence_number = max(int(getattr(self, '_current_subpage_occurrence', 1) or 1), 1)
         current_dirty = (
             self._editor_dirty
             and self._current_page_number is not None
@@ -3398,6 +3419,10 @@ class T42EditorWindow(QtWidgets.QMainWindow):
                 or (
                     self._current_subpage_number is not None
                     and int(self._current_subpage_number) == int(subpage_number)
+                    and (
+                        occurrence_number is None
+                        or current_occurrence_number == max(int(occurrence_number or 1), 1)
+                    )
                 )
             )
         )
@@ -3407,14 +3432,27 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             )
             return ' *' if page_modified or current_dirty else ''
         key = (page_number, int(subpage_number))
-        return ' *' if key in self._modified_subpages or current_dirty else ''
+        if occurrence_number is None:
+            return ' *' if key in self._modified_subpages or current_dirty else ''
+        occurrence_key = (page_number, int(subpage_number), max(int(occurrence_number or 1), 1))
+        occurrence_modified = occurrence_key in self._modified_subpage_occurrences
+        logical_modified = key in self._modified_subpages and int(occurrence_number or 1) == 1
+        return ' *' if occurrence_modified or logical_modified or current_dirty else ''
 
     def _mark_modified_page(self, page_number):
         self._modified_pages.add(int(page_number))
 
-    def _mark_modified_subpage(self, page_number, subpage_number):
-        self._modified_pages.add(int(page_number))
-        self._modified_subpages.add((int(page_number), int(subpage_number)))
+    def _mark_modified_subpage(self, page_number, subpage_number, occurrence_number=None):
+        occurrence_number = None if occurrence_number is None else max(int(occurrence_number or 1), 1)
+        if occurrence_number is None or occurrence_number <= 1:
+            self._modified_pages.add(int(page_number))
+            self._modified_subpages.add((int(page_number), int(subpage_number)))
+        if occurrence_number is not None and occurrence_number > 1:
+            self._modified_subpage_occurrences.add((
+                int(page_number),
+                int(subpage_number),
+                occurrence_number,
+            ))
 
     def _page_subpage_labels(self, page_number):
         page_number = int(page_number)
@@ -3546,6 +3584,10 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             'entries': tuple(self._entries),
             'modified_pages': tuple(sorted(int(page) for page in self._modified_pages)),
             'modified_subpages': tuple(sorted((int(page), int(subpage)) for page, subpage in self._modified_subpages)),
+            'modified_subpage_occurrences': tuple(sorted(
+                (int(page), int(subpage), int(occurrence))
+                for page, subpage, occurrence in self._modified_subpage_occurrences
+            )),
             'selection_key': self._current_tree_key(),
             'editor_target': (
                 int(self._current_page_number),
@@ -3568,6 +3610,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             tuple(snapshot.get('entries') or ()),
             tuple(snapshot.get('modified_pages') or ()),
             tuple(snapshot.get('modified_subpages') or ()),
+            tuple(snapshot.get('modified_subpage_occurrences') or ()),
             tuple(snapshot.get('enabled_occurrences') or ()),
         )
 
@@ -3608,6 +3651,10 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             self._modified_subpages = {
                 (int(page), int(subpage))
                 for page, subpage in snapshot.get('modified_subpages') or ()
+            }
+            self._modified_subpage_occurrences = {
+                (int(page), int(subpage), int(occurrence))
+                for page, subpage, occurrence in snapshot.get('modified_subpage_occurrences') or ()
             }
             self._enabled_subpage_occurrences = {
                 (int(page), int(subpage), int(occurrence))
@@ -4140,8 +4187,6 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             tuple((str(page_text), str(subpage_text)) for page_text, subpage_text in snapshot.get('fastext', ())),
             tuple(sorted((snapshot.get('service_830') or {}).items())),
             tuple(sorted(flags.items())),
-            tuple(snapshot.get('cursor') or (None, None)),
-            int(snapshot.get('selected_row', 1)),
         )
 
     def _update_editor_history_actions(self):
@@ -4845,7 +4890,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
                 target_page_number,
                 target_subpage_number,
             )
-        self._mark_modified_subpage(target_page_number, target_subpage_number)
+        self._mark_modified_subpage(target_page_number, target_subpage_number, target_occurrence_number)
         self._rebuild_from_entries(
             updated_entries,
             focus_page_number=target_page_number,
@@ -5530,6 +5575,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._page_summary = ()
         self._modified_pages.clear()
         self._modified_subpages.clear()
+        self._modified_subpage_occurrences.clear()
         self._thumbnail_cache.clear()
         self._thumbnail_queue = deque()
         self._thumbnail_total = 0
@@ -5561,6 +5607,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._page_summary = ()
         self._modified_pages.clear()
         self._modified_subpages.clear()
+        self._modified_subpage_occurrences.clear()
         self._thumbnail_cache.clear()
         self._thumbnail_queue = deque()
         self._thumbnail_total = 0
@@ -5601,6 +5648,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._page_summary = ()
         self._modified_pages.clear()
         self._modified_subpages.clear()
+        self._modified_subpage_occurrences.clear()
         self._enabled_subpage_occurrences.clear()
         self._editor_drafts.clear()
         self._progress.setVisible(False)
@@ -5618,6 +5666,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._page_summary = tuple(page_summary)
         self._modified_pages.clear()
         self._modified_subpages.clear()
+        self._modified_subpage_occurrences.clear()
         self._editor_drafts.clear()
         self._sync_enabled_subpage_occurrences(self._entries, preserve=False)
         self._set_document_caption()
@@ -5727,6 +5776,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._thumbnail_queue = deque()
         self._thumbnail_total = 0
         self._tree_item_change_locked = True
+        blocker = QtCore.QSignalBlocker(self._tree)
         self._tree.setUpdatesEnabled(False)
         self._tree.clear()
 
@@ -5787,7 +5837,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
                         first_packet = int(variant.get('first_packet') or subpage_summary.get('first_packet', 0))
                         page_occurrence_keys.append((int(page_summary['page_number']), subpage_number, occurrence_number))
                         child = QtWidgets.QTreeWidgetItem([
-                            f"{variant['label']}{self._modified_entry_marker(page_summary['page_number'], subpage_number)}",
+                            f"{variant['label']}{self._modified_entry_marker(page_summary['page_number'], subpage_number, occurrence_number)}",
                             str(packet_count),
                             str(first_packet),
                             f"{self._page_label(page_summary['page_number'])}/{subpage_number:04X}/{occurrence_number}",
@@ -5843,6 +5893,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         finally:
             self._tree_item_change_locked = False
             self._tree.setUpdatesEnabled(True)
+            del blocker
 
         self._thumbnail_total = len(self._thumbnail_queue)
         self._restore_tree_selection(selected_key)
