@@ -181,20 +181,35 @@ class VBIViewer(object):
                 pass
 
     def mouse(self, button, state, x, y):
-        if state == GLUT_DOWN:
-            l = self.lines[self.nlines * y//self.height]
+        if state != GLUT_DOWN:
+            return
+        try:
+            l = self._line_at_window_y(y)
+            if l is None:
+                return
+            line_number = self.line_number(l)
+            print(
+                f'Clicked line {line_number if line_number is not None else "?"} '
+                f'(button={button}, teletext={bool(getattr(l, "is_teletext", False))})'
+            )
             if button == 3:
                 l.roll += 1
+                glutPostRedisplay()
             elif button == 4:
                 l.roll -= 1
+                glutPostRedisplay()
             if l.is_teletext:
-                print(l.deconvolve().debug.decode('utf8')[:-1], 'er:', l.roll, l._reason)
+                decoded = l.deconvolve()
+                debug_text = getattr(decoded, 'debug', b'')
+                if isinstance(debug_text, bytes):
+                    debug_text = debug_text.decode('utf8', errors='replace')
+                print(str(debug_text).rstrip(), 'er:', l.roll, getattr(l, '_reason', None))
             else:
-                print(l._reason)
+                print(getattr(l, '_reason', None))
             sample_dtype = np.dtype(self.config.dtype)
-            a = np.frombuffer(l._original_bytes, dtype=sample_dtype)
+            a = np.frombuffer(getattr(l, '_original_bytes', b''), dtype=sample_dtype)
             d = np.diff(a.astype(np.int32))
-            md = np.mean(np.abs(d))
+            md = np.mean(np.abs(d)) if d.size else 0.0
             s = np.sort(a)
             if s.size:
                 steps = np.floor(np.linspace(0, max(s.size - 1, 0), num=11)).astype(np.intp)[[1, 5, 9]]
@@ -202,6 +217,10 @@ class VBIViewer(object):
             else:
                 print(md, '[]')
             sys.stdout.flush()
+        except Exception as exc:
+            # GLUT callbacks must not leak exceptions or the viewer exits.
+            print(f'Line click failed: {exc}', file=sys.stderr)
+            sys.stderr.flush()
 
     def dumpline(self, x, y, teletext):
         if teletext:
@@ -210,7 +229,9 @@ class VBIViewer(object):
         else:
             print('Writing to reject.vbi')
             fn = 'reject.vbi'
-        l = self.lines[self.nlines * y // self.height]
+        l = self._line_at_window_y(y)
+        if l is None:
+            return
         with open(fn, 'ab') as f:
             f.write(l._original_bytes)
 
@@ -227,6 +248,23 @@ class VBIViewer(object):
 
     def set_title(self):
         glutSetWindowTitle(_glut_text(f'{self.name} - {self.line_attr}{" (paused)" if self.pause else ""}'))
+
+    def _line_index_at_window_y(self, y):
+        if not self.lines or self.height <= 0:
+            return None
+        line_count = min(len(self.lines), max(int(self.nlines), 1))
+        index = int(line_count * max(int(y), 0) // max(int(self.height), 1))
+        if index >= line_count:
+            index = line_count - 1
+        if index < 0:
+            index = 0
+        return index
+
+    def _line_at_window_y(self, y):
+        index = self._line_index_at_window_y(y)
+        if index is None:
+            return None
+        return self.lines[index]
 
     def draw_slice(self, slice, r, g, b, a=1.0):
         glColor4f(r, g, b, a)
