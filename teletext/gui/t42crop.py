@@ -5,10 +5,13 @@ import os
 import pathlib
 import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from teletext.file import FileChunker
 from teletext.packet import Packet
+from teletext.service import Service
+from teletext.subpage import Subpage
 
 try:
     from . import vbicrop as _vbicrop
@@ -120,10 +123,12 @@ def _configure_tree_widget_columns(tree):
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.Interactive)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.Interactive)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Interactive)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         header.setMinimumSectionSize(40)
     tree.setColumnWidth(0, 86)
     tree.setColumnWidth(1, 58)
+    tree.setColumnWidth(2, 72)
 
 
 PACKET_SIZE = 42
@@ -239,6 +244,38 @@ def collect_subpage_entries(entries, page_number, subpage_number):
     )
 
 
+def collect_subpage_occurrence_entries(entries, page_number, subpage_number, occurrence_number=1):
+    page_number = int(page_number)
+    subpage_number = int(subpage_number)
+    occurrence_number = max(int(occurrence_number or 1), 1)
+    matching_headers = [
+        entry for entry in entries
+        if (
+            entry.page_number == page_number
+            and entry.subpage_number == subpage_number
+            and entry.row is not None
+            and int(entry.row) == 0
+        )
+    ]
+    if not matching_headers:
+        return ()
+    if occurrence_number > len(matching_headers):
+        occurrence_number = len(matching_headers)
+    start_packet = int(matching_headers[occurrence_number - 1].packet_index)
+    end_packet = None
+    if occurrence_number < len(matching_headers):
+        end_packet = int(matching_headers[occurrence_number].packet_index)
+    return tuple(
+        entry for entry in entries
+        if (
+            entry.page_number == page_number
+            and entry.subpage_number == subpage_number
+            and int(entry.packet_index) >= start_packet
+            and (end_packet is None or int(entry.packet_index) < end_packet)
+        )
+    )
+
+
 def collect_row_entries(entries, page_number, subpage_number, row_number):
     page_number = int(page_number)
     subpage_number = int(subpage_number)
@@ -299,6 +336,128 @@ def parse_subpage_identifier(value):
     if subpage < 0 or subpage > 0x3F7F:
         raise ValueError('Subpage number must be between 0000 and 3F7F.')
     return subpage
+
+
+def blank_subpage_entries(page_number=0x100, subpage_number=0x0000):
+    page_number = int(page_number)
+    subpage_number = int(subpage_number)
+    magazine = page_number >> 8
+    subpage = Subpage(prefill=True, magazine=magazine)
+    subpage.packet(0).mrag.magazine = magazine
+    subpage.header.page = page_number & 0xFF
+    subpage.header.subpage = subpage_number
+    subpage.header.control = 1 << 0
+    subpage.header.displayable[:] = 0x20
+    subpage.displayable[:] = 0x20
+    return build_t42_entries(packet.to_bytes() for packet in subpage.packets)
+
+
+def insert_hidden_subpage_occurrence(entries, page_number, subpage_number, new_entries):
+    page_number = int(page_number)
+    subpage_number = int(subpage_number)
+    new_entries = tuple(new_entries)
+    existing_occurrence = collect_subpage_occurrence_entries(entries, page_number, subpage_number, 999999)
+    if existing_occurrence:
+        last_packet_index = max(int(entry.packet_index) for entry in existing_occurrence)
+        insert_index = next(
+            (
+                index + 1
+                for index, entry in enumerate(entries)
+                if int(entry.packet_index) == last_packet_index
+            ),
+            len(entries),
+        )
+    else:
+        page_positions = [index for index, entry in enumerate(entries) if entry.page_number == page_number]
+        insert_index = (page_positions[-1] + 1) if page_positions else len(entries)
+    return build_t42_entries(
+        [entry.raw for entry in entries[:insert_index]]
+        + [entry.raw for entry in new_entries]
+        + [entry.raw for entry in entries[insert_index:]]
+    )
+
+
+def move_subpage_occurrence_in_entries(entries, page_number, subpage_number, source_occurrence_number, target_occurrence_number):
+    entries = tuple(entries)
+    page_number = int(page_number)
+    subpage_number = int(subpage_number)
+    source_occurrence_number = max(int(source_occurrence_number or 1), 1)
+    target_occurrence_number = max(int(target_occurrence_number or 1), 1)
+    all_occurrences = tuple(page_subpage_occurrences(entries, page_number).get(subpage_number, ()))
+    if len(all_occurrences) <= 1:
+        return entries
+    target_occurrence_number = min(target_occurrence_number, len(all_occurrences))
+    if source_occurrence_number == target_occurrence_number:
+        return entries
+
+    source_entries = collect_subpage_occurrence_entries(
+        entries,
+        page_number,
+        subpage_number,
+        source_occurrence_number,
+    )
+    if not source_entries:
+        return entries
+
+    removed_packet_indices = {int(entry.packet_index) for entry in source_entries}
+    remaining_entries = tuple(
+        entry for entry in entries
+        if int(entry.packet_index) not in removed_packet_indices
+    )
+    remaining_occurrences = tuple(
+        page_subpage_occurrences(remaining_entries, page_number).get(subpage_number, ())
+    )
+
+    if target_occurrence_number <= len(remaining_occurrences):
+        target_entries = collect_subpage_occurrence_entries(
+            remaining_entries,
+            page_number,
+            subpage_number,
+            target_occurrence_number,
+        )
+        if target_entries:
+            first_packet = min(int(entry.packet_index) for entry in target_entries)
+            insert_index = next(
+                (
+                    index
+                    for index, entry in enumerate(remaining_entries)
+                    if int(entry.packet_index) == first_packet
+                ),
+                len(remaining_entries),
+            )
+        else:
+            insert_index = _subpage_insert_index(remaining_entries, page_number, subpage_number)
+    elif remaining_occurrences:
+        last_entries = collect_subpage_occurrence_entries(
+            remaining_entries,
+            page_number,
+            subpage_number,
+            len(remaining_occurrences),
+        )
+        if last_entries:
+            last_packet = max(int(entry.packet_index) for entry in last_entries)
+            insert_index = next(
+                (
+                    index + 1
+                    for index, entry in enumerate(remaining_entries)
+                    if int(entry.packet_index) == last_packet
+                ),
+                len(remaining_entries),
+            )
+        else:
+            insert_index = _subpage_insert_index(remaining_entries, page_number, subpage_number)
+    else:
+        page_positions = [
+            index for index, entry in enumerate(remaining_entries)
+            if entry.page_number == page_number
+        ]
+        insert_index = (page_positions[-1] + 1) if page_positions else len(remaining_entries)
+
+    return build_t42_entries(
+        [entry.raw for entry in remaining_entries[:insert_index]]
+        + [entry.raw for entry in source_entries]
+        + [entry.raw for entry in remaining_entries[insert_index:]]
+    )
 
 
 def retarget_t42_entries(entries, page_number=None, subpage_number=None):
@@ -402,6 +561,64 @@ def replace_subpage_in_entries(entries, replacement_entries, target_page_number=
     )
 
 
+def replace_subpage_occurrence_in_entries(
+    entries,
+    replacement_entries,
+    source_page_number,
+    source_subpage_number,
+    source_occurrence_number=1,
+    target_page_number=None,
+    target_subpage_number=None,
+):
+    if not replacement_entries:
+        return tuple(entries)
+    source_page_number = int(source_page_number)
+    source_subpage_number = int(source_subpage_number)
+    source_occurrence_number = max(int(source_occurrence_number or 1), 1)
+    if target_page_number is None or target_subpage_number is None:
+        page_numbers = [entry.page_number for entry in replacement_entries if entry.page_number is not None]
+        subpage_numbers = [entry.subpage_number for entry in replacement_entries if entry.subpage_number is not None]
+        if not page_numbers or not subpage_numbers:
+            return tuple(entries)
+        if target_page_number is None:
+            target_page_number = int(page_numbers[0])
+        if target_subpage_number is None:
+            target_subpage_number = int(subpage_numbers[0])
+    else:
+        target_page_number = int(target_page_number)
+        target_subpage_number = int(target_subpage_number)
+    source_entries = collect_subpage_occurrence_entries(
+        entries,
+        source_page_number,
+        source_subpage_number,
+        source_occurrence_number,
+    )
+    replacements = retarget_t42_entries(
+        replacement_entries,
+        page_number=target_page_number,
+        subpage_number=target_subpage_number,
+    )
+    if not source_entries:
+        return _replace_entry_slice(
+            entries,
+            lambda entry: False,
+            replacements,
+            _subpage_insert_index(entries, target_page_number, target_subpage_number),
+        )
+    removed_packet_indices = {int(entry.packet_index) for entry in source_entries}
+    positions = [
+        index for index, entry in enumerate(entries)
+        if int(entry.packet_index) in removed_packet_indices
+    ]
+    insert_index = positions[0] if positions else _subpage_insert_index(entries, target_page_number, target_subpage_number)
+    return _replace_entry_slice(
+        entries,
+        lambda entry: int(entry.packet_index) in removed_packet_indices,
+        replacements,
+        insert_index,
+    )
+
+
 def _subpage_insert_index(entries, target_page_number, target_subpage_number):
     target_page_number = int(target_page_number)
     target_subpage_number = int(target_subpage_number)
@@ -471,6 +688,35 @@ def merge_subpage_in_entries(entries, source_entries, target_page_number, target
         lambda entry: entry.page_number == target_page_number and entry.subpage_number == target_subpage_number,
         merged_entries,
         insert_index,
+    )
+
+
+def merge_subpage_occurrence_in_entries(entries, source_entries, target_page_number, target_subpage_number, target_occurrence_number=1):
+    target_occurrence_number = max(int(target_occurrence_number or 1), 1)
+    if target_occurrence_number <= 1:
+        return merge_subpage_in_entries(entries, source_entries, target_page_number, target_subpage_number)
+    existing_entries = collect_subpage_occurrence_entries(
+        entries,
+        target_page_number,
+        target_subpage_number,
+        target_occurrence_number,
+    )
+    if not existing_entries:
+        return merge_subpage_in_entries(entries, source_entries, target_page_number, target_subpage_number)
+    merged_entries = _merge_subpage_packets(
+        existing_entries,
+        source_entries,
+        target_page_number,
+        target_subpage_number,
+    )
+    return replace_subpage_occurrence_in_entries(
+        entries,
+        merged_entries,
+        target_page_number,
+        target_subpage_number,
+        target_occurrence_number,
+        target_page_number=target_page_number,
+        target_subpage_number=target_subpage_number,
     )
 
 
@@ -554,6 +800,59 @@ def add_row_to_subpage_entries(entries, source_entry, target_page_number, target
     )
 
 
+def add_row_to_subpage_occurrence_in_entries(
+    entries,
+    source_entry,
+    target_page_number,
+    target_subpage_number,
+    target_row_number,
+    target_occurrence_number=1,
+    source_header_entry=None,
+):
+    target_occurrence_number = max(int(target_occurrence_number or 1), 1)
+    if target_occurrence_number <= 1:
+        return add_row_to_subpage_entries(
+            entries,
+            source_entry,
+            target_page_number,
+            target_subpage_number,
+            target_row_number,
+            source_header_entry=source_header_entry,
+        )
+    existing_entries = collect_subpage_occurrence_entries(
+        entries,
+        target_page_number,
+        target_subpage_number,
+        target_occurrence_number,
+    )
+    if not existing_entries:
+        return add_row_to_subpage_entries(
+            entries,
+            source_entry,
+            target_page_number,
+            target_subpage_number,
+            target_row_number,
+            source_header_entry=source_header_entry,
+        )
+    updated_occurrence_entries = add_row_to_subpage_entries(
+        existing_entries,
+        source_entry,
+        target_page_number,
+        target_subpage_number,
+        target_row_number,
+        source_header_entry=source_header_entry,
+    )
+    return replace_subpage_occurrence_in_entries(
+        entries,
+        updated_occurrence_entries,
+        target_page_number,
+        target_subpage_number,
+        target_occurrence_number,
+        target_page_number=target_page_number,
+        target_subpage_number=target_subpage_number,
+    )
+
+
 def move_page_in_entries(entries, source_page_number, target_page_number):
     source_page_number = int(source_page_number)
     target_page_number = int(target_page_number)
@@ -617,6 +916,54 @@ def move_subpage_in_entries(entries, source_page_number, source_subpage_number, 
     )
 
 
+def next_available_subpage_number(entries, page_number, preferred_start=None):
+    page_number = int(page_number)
+    used = {
+        int(entry.subpage_number)
+        for entry in entries
+        if entry.page_number == page_number and entry.subpage_number is not None
+    }
+    if preferred_start is None:
+        preferred_start = 0
+    start = max(int(preferred_start), 0)
+    for candidate in range(start, 0x3F80):
+        if candidate not in used:
+            return candidate
+    raise ValueError('No free subpage numbers are available in this page.')
+
+
+def convert_subpage_occurrence_to_real(entries, page_number, subpage_number, occurrence_number=2, target_subpage_number=None):
+    page_number = int(page_number)
+    subpage_number = int(subpage_number)
+    occurrence_number = max(int(occurrence_number or 1), 1)
+    if occurrence_number <= 1:
+        return tuple(entries), subpage_number
+    source_entries = collect_subpage_occurrence_entries(entries, page_number, subpage_number, occurrence_number)
+    if not source_entries:
+        return tuple(entries), subpage_number
+    if target_subpage_number is None:
+        target_subpage_number = next_available_subpage_number(entries, page_number, preferred_start=subpage_number + 1)
+    else:
+        target_subpage_number = int(target_subpage_number)
+    replacements = retarget_t42_entries(
+        source_entries,
+        page_number=page_number,
+        subpage_number=target_subpage_number,
+    )
+    removed_packet_indices = {int(entry.packet_index) for entry in source_entries}
+    remaining_entries = tuple(
+        entry for entry in entries
+        if int(entry.packet_index) not in removed_packet_indices
+    )
+    insert_index = _subpage_insert_index(remaining_entries, page_number, target_subpage_number)
+    updated_entries = build_t42_entries(
+        [entry.raw for entry in remaining_entries[:insert_index]]
+        + [entry.raw for entry in replacements]
+        + [entry.raw for entry in remaining_entries[insert_index:]]
+    )
+    return updated_entries, target_subpage_number
+
+
 
 def normalise_t42_insertions(insertions, total_packets):
     total_packets = max(int(total_packets), 1)
@@ -675,6 +1022,36 @@ def filter_deleted_t42_entries(entries, deleted_pages=(), deleted_subpages=()):
             if entry.subpage_number is not None and (entry.page_number, entry.subpage_number) in deleted_subpages:
                 continue
         yield entry
+
+
+def filter_enabled_occurrence_entries(entries, enabled_occurrences=()):
+    enabled_occurrences = frozenset(
+        (
+            int(page_number),
+            int(subpage_number),
+            max(int(occurrence_number or 1), 1),
+        )
+        for page_number, subpage_number, occurrence_number in enabled_occurrences
+    )
+    if not enabled_occurrences:
+        return tuple(entries)
+    counts = Counter()
+    current_occurrence = {}
+    filtered = []
+    for entry in tuple(entries):
+        if entry.page_number is None or entry.subpage_number is None:
+            filtered.append(entry)
+            continue
+        page_number = int(entry.page_number)
+        subpage_number = int(entry.subpage_number)
+        key = (page_number, subpage_number)
+        if entry.row is not None and int(entry.row) == 0:
+            counts[key] += 1
+            current_occurrence[key] = int(counts[key])
+        occurrence_number = int(current_occurrence.get(key, max(counts.get(key, 0), 1)))
+        if (page_number, subpage_number, occurrence_number) in enabled_occurrences:
+            filtered.append(entry)
+    return tuple(filtered)
 
 
 def edited_t42_entries(base_entries, cut_ranges=(), insertions=(), deleted_pages=(), deleted_subpages=()):
@@ -865,6 +1242,84 @@ def summarise_t42_pages(entries):
     return tuple(result)
 
 
+def _exact_page_subpage_occurrences(entries, page_number=None):
+    occurrences = {}
+    counts = {}
+    active_occurrences = {}
+    for entry in entries:
+        if entry.page_number is None or entry.subpage_number is None:
+            continue
+        current_page_number = int(entry.page_number)
+        if page_number is not None and current_page_number != int(page_number):
+            continue
+        subpage_number = int(entry.subpage_number)
+        key = (current_page_number, subpage_number)
+        if entry.row is not None and int(entry.row) == 0:
+            counts[key] = int(counts.get(key, 0)) + 1
+            title = _header_title_from_text(entry.header_text) if entry.header_text else ''
+            occurrence = {
+                'label': f'{subpage_number:04X}' if counts[key] == 1 else f'{subpage_number:04X} ({counts[key]})',
+                'occurrence': counts[key],
+                'header_title': title,
+                'first_packet': int(entry.packet_index),
+                'packet_count': 0,
+            }
+            occurrences.setdefault(current_page_number, {}).setdefault(subpage_number, []).append(occurrence)
+            active_occurrences[key] = occurrence
+        occurrence = active_occurrences.get(key)
+        if occurrence is not None:
+            occurrence['packet_count'] = int(occurrence.get('packet_count') or 0) + 1
+    return occurrences
+
+
+def legacy_page_subpage_occurrences(entries, page_number=None):
+    entries = tuple(entries)
+    packets = (
+        Packet(entry.raw, number=index)
+        for index, entry in enumerate(entries)
+    )
+    service = Service.from_packets(packets)
+    exact_occurrences = _exact_page_subpage_occurrences(entries, page_number=page_number)
+    summaries = {
+        (int(page_summary['page_number']), int(subpage_summary['subpage_number'])): subpage_summary
+        for page_summary in summarise_t42_pages(entries)
+        if page_number is None or int(page_summary['page_number']) == int(page_number)
+        for subpage_summary in page_summary['subpages']
+    }
+    occurrences = {}
+    for magazine_number, magazine in sorted(service.magazines.items()):
+        for local_page_number, page in sorted(magazine.pages.items()):
+            if not page.subpages:
+                continue
+            full_page_number = (int(magazine_number) << 8) | int(local_page_number)
+            if page_number is not None and full_page_number != int(page_number):
+                continue
+            page_occurrences = occurrences.setdefault(full_page_number, {})
+            for subpage_number, subpage in sorted(page.subpages.items()):
+                variants = [subpage] + list(getattr(subpage, 'duplicates', ()))
+                exact_variants = tuple(exact_occurrences.get(full_page_number, {}).get(int(subpage_number), ()))
+                summary = summaries.get((full_page_number, int(subpage_number)), {})
+                bucket = []
+                for occurrence_number, variant in enumerate(variants, start=1):
+                    exact_variant = exact_variants[occurrence_number - 1] if occurrence_number <= len(exact_variants) else {}
+                    raw_header = bytes(variant.header.displayable.bytes_no_parity).decode('ascii', errors='ignore').strip()
+                    bucket.append({
+                        'label': f'{int(subpage_number):04X}' if occurrence_number == 1 else f'{int(subpage_number):04X} ({occurrence_number})',
+                        'occurrence': occurrence_number,
+                        'header_title': raw_header or str(exact_variant.get('header_title') or summary.get('header_title') or ''),
+                        'first_packet': int(exact_variant.get('first_packet') or summary.get('first_packet') or 0),
+                        'packet_count': int(exact_variant.get('packet_count') or summary.get('packet_count') or 0),
+                    })
+                page_occurrences[int(subpage_number)] = bucket
+    return occurrences
+
+
+def page_subpage_occurrences(entries, page_number=None, mode='raw'):
+    if str(mode or 'raw') != 'raw':
+        return legacy_page_subpage_occurrences(entries, page_number=page_number)
+    return _exact_page_subpage_occurrences(entries, page_number=page_number)
+
+
 def packet_count_to_megabytes(packet_count):
     return (max(int(packet_count), 0) * PACKET_SIZE) / (1024 * 1024)
 
@@ -911,9 +1366,20 @@ if IMPORT_ERROR is None:
             self._open_button = QtWidgets.QPushButton('Open Source .t42...')
             self._open_button.clicked.connect(self._open_source_file)
             file_row.addWidget(self._open_button)
+            file_row.addStretch(1)
+            self._show_hidden_subpages_toggle = QtWidgets.QCheckBox('Hidden Subpages')
+            self._show_hidden_subpages_toggle.toggled.connect(lambda _checked=False: self._rebuild_tree())
+            file_row.addWidget(self._show_hidden_subpages_toggle)
+            file_row.addWidget(QtWidgets.QLabel('Mode'))
+            self._hidden_subpages_mode_combo = QtWidgets.QComboBox()
+            self._hidden_subpages_mode_combo.addItem('Legacy', 'legacy')
+            self._hidden_subpages_mode_combo.addItem('Exact', 'raw')
+            self._hidden_subpages_mode_combo.currentIndexChanged.connect(lambda _index=0: self._rebuild_tree())
+            file_row.addWidget(self._hidden_subpages_mode_combo)
 
             self._tree = QtWidgets.QTreeWidget()
-            self._tree.setHeaderLabels(['Entry', 'Packets', 'Row 0'])
+            self._tree.setHeaderLabels(['Entry', 'Packets', 'At', 'Row 0'])
+            self._tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
             _configure_tree_widget_columns(self._tree)
             self._tree.itemDoubleClicked.connect(self._preview_selected)
             self._tree.itemSelectionChanged.connect(self._sync_buttons)
@@ -1018,29 +1484,47 @@ if IMPORT_ERROR is None:
 
         def _rebuild_tree(self):
             self._tree.clear()
+            occurrences = page_subpage_occurrences(self._entries, mode=self._hidden_subpages_mode())
             for page_summary in summarise_t42_pages(self._entries):
                 page_item = QtWidgets.QTreeWidgetItem([
                     _page_label(page_summary['page_number']),
                     str(page_summary['packet_count']),
+                    str(int(page_summary.get('first_packet', 0))),
                     page_summary['header_title'],
                 ])
                 page_item.setData(0, QtCore.Qt.UserRole, 'page')
                 page_item.setData(0, QtCore.Qt.UserRole + 1, int(page_summary['page_number']))
                 self._tree.addTopLevelItem(page_item)
                 for subpage_summary in page_summary['subpages']:
-                    child = QtWidgets.QTreeWidgetItem([
-                        f"{subpage_summary['subpage_number']:04X}",
-                        str(subpage_summary['packet_count']),
-                        subpage_summary['header_title'],
-                    ])
-                    child.setData(0, QtCore.Qt.UserRole, 'subpage')
-                    child.setData(0, QtCore.Qt.UserRole + 1, int(page_summary['page_number']))
-                    child.setData(0, QtCore.Qt.UserRole + 2, int(subpage_summary['subpage_number']))
-                    page_item.addChild(child)
+                    subpage_number = int(subpage_summary['subpage_number'])
+                    variants = tuple(
+                        occurrences.get(int(page_summary['page_number']), {}).get(subpage_number, ())
+                    ) or ({
+                        'label': f'{subpage_number:04X}',
+                        'occurrence': 1,
+                        'header_title': subpage_summary['header_title'],
+                    },)
+                    if not self._show_hidden_subpages_toggle.isChecked():
+                        variants = variants[:1]
+                    for variant in variants:
+                        child = QtWidgets.QTreeWidgetItem([
+                            str(variant['label']),
+                            str(int(variant.get('packet_count') or subpage_summary['packet_count'])),
+                            str(int(variant.get('first_packet') or subpage_summary.get('first_packet', 0))),
+                            str(variant.get('header_title') or subpage_summary['header_title']),
+                        ])
+                        child.setData(0, QtCore.Qt.UserRole, 'subpage')
+                        child.setData(0, QtCore.Qt.UserRole + 1, int(page_summary['page_number']))
+                        child.setData(0, QtCore.Qt.UserRole + 2, subpage_number)
+                        child.setData(0, QtCore.Qt.UserRole + 3, int(variant.get('occurrence') or 1))
+                        page_item.addChild(child)
                 page_item.setExpanded(True)
             if self._tree.topLevelItemCount():
                 self._tree.setCurrentItem(self._tree.topLevelItem(0))
             self._sync_buttons()
+
+        def _hidden_subpages_mode(self):
+            return str(self._hidden_subpages_mode_combo.currentData() or 'legacy')
 
         def _selected_context(self):
             item = self._tree.currentItem()
@@ -1048,25 +1532,46 @@ if IMPORT_ERROR is None:
                 return None
             item_type = item.data(0, QtCore.Qt.UserRole)
             if item_type == 'page':
-                return ('page', int(item.data(0, QtCore.Qt.UserRole + 1)), None)
+                return ('page', int(item.data(0, QtCore.Qt.UserRole + 1)), None, 1)
             if item_type == 'subpage':
-                return ('subpage', int(item.data(0, QtCore.Qt.UserRole + 1)), int(item.data(0, QtCore.Qt.UserRole + 2)))
+                return (
+                    'subpage',
+                    int(item.data(0, QtCore.Qt.UserRole + 1)),
+                    int(item.data(0, QtCore.Qt.UserRole + 2)),
+                    int(item.data(0, QtCore.Qt.UserRole + 3) or 1),
+                )
             return None
+
+        def _entries_for_context(self, context):
+            if context is None:
+                return ()
+            item_type, page_number, subpage_number, occurrence_number = context
+            if item_type == 'page':
+                return collect_page_entries(self._entries, page_number)
+            if item_type == 'subpage':
+                return collect_subpage_occurrence_entries(
+                    self._entries,
+                    page_number,
+                    subpage_number,
+                    occurrence_number,
+                ) or collect_subpage_entries(self._entries, page_number, subpage_number)
+            return ()
 
         def _preview_selected(self, *_args):
             context = self._selected_context()
             if context is None or not callable(self._preview_callback):
                 return
-            item_type, page_number, subpage_number = context
+            item_type, page_number, subpage_number, _occurrence_number = context
+            entries = self._entries_for_context(context)
             if item_type == 'page':
                 subpage_number = None
-            self._preview_callback(self._entries, self._source_path, page_number, subpage_number)
+            self._preview_callback(entries or self._entries, self._source_path, page_number, subpage_number)
 
         def _import_page(self):
             context = self._selected_context()
             if context is None or context[0] != 'page' or not callable(self._apply_page_callback):
                 return
-            _item_type, source_page_number, _subpage_number = context
+            _item_type, source_page_number, _subpage_number, _occurrence_number = context
             try:
                 target_page_number = parse_page_identifier(self._target_page_input.text()) if self._target_page_input.text().strip() else source_page_number
             except ValueError as exc:
@@ -1078,20 +1583,26 @@ if IMPORT_ERROR is None:
             context = self._selected_context()
             if context is None or context[0] != 'subpage' or not callable(self._apply_subpage_callback):
                 return
-            _item_type, source_page_number, source_subpage_number = context
+            _item_type, source_page_number, source_subpage_number, _occurrence_number = context
             try:
                 target_page_number = parse_page_identifier(self._target_page_input.text()) if self._target_page_input.text().strip() else source_page_number
                 target_subpage_number = parse_subpage_identifier(self._target_subpage_input.text()) if self._target_subpage_input.text().strip() else source_subpage_number
             except ValueError as exc:
                 QtWidgets.QMessageBox.warning(self, 'Source T42', str(exc))
                 return
-            self._apply_subpage_callback(self._entries, source_page_number, source_subpage_number, target_page_number, target_subpage_number)
+            self._apply_subpage_callback(
+                self._entries_for_context(context) or self._entries,
+                source_page_number,
+                source_subpage_number,
+                target_page_number,
+                target_subpage_number,
+            )
 
         def _merge_selected(self):
             context = self._selected_context()
             if context is None:
                 return
-            item_type, source_page_number, source_subpage_number = context
+            item_type, source_page_number, source_subpage_number, _occurrence_number = context
             try:
                 target_page_number = parse_page_identifier(self._target_page_input.text()) if self._target_page_input.text().strip() else source_page_number
                 target_subpage_number = parse_subpage_identifier(self._target_subpage_input.text()) if self._target_subpage_input.text().strip() else source_subpage_number
@@ -1106,7 +1617,7 @@ if IMPORT_ERROR is None:
 
             if callable(self._merge_subpage_callback):
                 self._merge_subpage_callback(
-                    self._entries,
+                    self._entries_for_context(context) or self._entries,
                     source_page_number,
                     source_subpage_number,
                     target_page_number,
@@ -1117,7 +1628,7 @@ if IMPORT_ERROR is None:
             context = self._selected_context()
             if context is None or context[0] != 'subpage' or not callable(self._add_row_callback):
                 return
-            _item_type, source_page_number, source_subpage_number = context
+            _item_type, source_page_number, source_subpage_number, _occurrence_number = context
             try:
                 target_page_number = parse_page_identifier(self._target_page_input.text()) if self._target_page_input.text().strip() else source_page_number
                 target_subpage_number = parse_subpage_identifier(self._target_subpage_input.text()) if self._target_subpage_input.text().strip() else source_subpage_number
@@ -1125,7 +1636,7 @@ if IMPORT_ERROR is None:
                 QtWidgets.QMessageBox.warning(self, 'Source T42', str(exc))
                 return
             self._add_row_callback(
-                self._entries,
+                self._entries_for_context(context) or self._entries,
                 source_page_number,
                 source_subpage_number,
                 int(self._source_row_box.value()),
@@ -1152,6 +1663,7 @@ if IMPORT_ERROR is None:
             self._insertions = ()
             self._deleted_pages = frozenset()
             self._deleted_subpages = frozenset()
+            self._enabled_subpage_occurrences = set()
             self._save_callback = save_callback
             self._updating = False
             self._history = []
@@ -1159,6 +1671,7 @@ if IMPORT_ERROR is None:
             self._cache_dirty = True
             self._page_tree_dirty = True
             self._pages_hidden = False
+            self._page_tree_item_change_locked = False
             self._pending_tree_selection = None
             self._selected_cut_index = None
             self._cuts_render_state = None
@@ -1171,6 +1684,7 @@ if IMPORT_ERROR is None:
             self._playback_direction = 1
             self._playback_speed = DEFAULT_PLAYBACK_SPEED
             self._playback_last_tick = time.monotonic()
+            self._sync_ui_scheduled = False
             self._cached_combined_entries = ()
             self._cached_edited_entries = ()
             self._cached_deleted_packet_count = 0
@@ -1401,6 +1915,7 @@ if IMPORT_ERROR is None:
             self._playback_timer.timeout.connect(self._advance_playback)
             self._playback_timer.start()
 
+            self._sync_enabled_subpage_occurrences(self._entries, preserve=False)
             self._record_history_state(reset_redo=True)
             self._sync_ui()
             QtCore.QTimer.singleShot(0, self._show_terminal_window)
@@ -1432,14 +1947,63 @@ if IMPORT_ERROR is None:
                 return
             QtWidgets.QMessageBox.information(self._dialog_parent(), 'T42 Tool', f'Saved T42 to:\n{filename}')
 
+        def _save_entries_as_html(self, entries, page_number, subpage_number, default_name, title):
+            entries = tuple(entries)
+            if not entries:
+                QtWidgets.QMessageBox.information(self._dialog_parent(), 'T42 Tool', 'Nothing to save.')
+                return
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self._dialog_parent(),
+                title,
+                os.path.join(os.getcwd(), default_name),
+                'HTML files (*.html);;All files (*)',
+            )
+            if not filename:
+                return
+            if not filename.lower().endswith('.html'):
+                filename += '.html'
+            try:
+                packets = (Packet(entry.raw, number=index) for index, entry in enumerate(entries))
+                service = Service.from_packets(packets)
+                from teletext.viewer import export_selected_html
+                export_selected_html(
+                    service,
+                    filename,
+                    int(page_number),
+                    None if subpage_number is None else int(subpage_number),
+                )
+            except Exception as exc:  # pragma: no cover - GUI path
+                QtWidgets.QMessageBox.critical(self._dialog_parent(), 'T42 Tool', str(exc))
+                return
+            QtWidgets.QMessageBox.information(self._dialog_parent(), 'T42 Tool', f'Saved HTML to:\n{filename}')
+
+        def _entries_for_selected_tree_context(self, context):
+            if context is None:
+                return ()
+            self._ensure_edit_cache()
+            page_number = int(context['page_number'])
+            if context['type'] == 'page':
+                return collect_page_entries(self._cached_combined_entries, page_number)
+            subpage_number = int(context['subpage_number'])
+            occurrence_number = int(context.get('occurrence_number') or 1)
+            return collect_subpage_occurrence_entries(
+                self._cached_combined_entries,
+                page_number,
+                subpage_number,
+                occurrence_number,
+            ) or collect_subpage_entries(
+                self._cached_combined_entries,
+                page_number,
+                subpage_number,
+            )
+
         def _save_selected_page(self):
             context = self._selected_tree_context()
             if context is None:
                 QtWidgets.QMessageBox.information(self._dialog_parent(), 'T42 Tool', 'Select a page or subpage first.')
                 return
-            self._ensure_edit_cache()
             page_number = int(context['page_number'])
-            entries = collect_page_entries(self._cached_edited_entries, page_number)
+            entries = self._entries_for_selected_tree_context({'type': 'page', 'page_number': page_number})
             self._save_entries_as_t42(entries, f'{_page_label(page_number)}.t42', 'Save Page T42')
 
         def _save_selected_subpage(self):
@@ -1447,14 +2011,40 @@ if IMPORT_ERROR is None:
             if context is None or context['type'] != 'subpage':
                 QtWidgets.QMessageBox.information(self._dialog_parent(), 'T42 Tool', 'Select a subpage first.')
                 return
-            self._ensure_edit_cache()
             page_number = int(context['page_number'])
             subpage_number = int(context['subpage_number'])
-            entries = collect_subpage_entries(self._cached_edited_entries, page_number, subpage_number)
+            occurrence_number = int(context.get('occurrence_number') or 1)
+            entries = self._entries_for_selected_tree_context(context)
             self._save_entries_as_t42(
                 entries,
-                f'{_page_label(page_number)}-{subpage_number:04X}.t42',
+                f'{_page_label(page_number)}-{subpage_number:04X}{"-occ%d" % occurrence_number if occurrence_number > 1 else ""}.t42',
                 'Save Subpage T42',
+            )
+
+        def _save_selected_page_html(self):
+            context = self._selected_tree_context()
+            if context is None:
+                QtWidgets.QMessageBox.information(self._dialog_parent(), 'T42 Tool', 'Select a page first.')
+                return
+            page_number = int(context['page_number'])
+            entries = self._entries_for_selected_tree_context({'type': 'page', 'page_number': page_number})
+            self._save_entries_as_html(entries, page_number, None, f'{_page_label(page_number)}.html', 'Save Page HTML')
+
+        def _save_selected_subpage_html(self):
+            context = self._selected_tree_context()
+            if context is None or context['type'] != 'subpage':
+                QtWidgets.QMessageBox.information(self._dialog_parent(), 'T42 Tool', 'Select a subpage first.')
+                return
+            page_number = int(context['page_number'])
+            subpage_number = int(context['subpage_number'])
+            occurrence_number = int(context.get('occurrence_number') or 1)
+            entries = self._entries_for_selected_tree_context(context)
+            self._save_entries_as_html(
+                entries,
+                page_number,
+                subpage_number,
+                f'{_page_label(page_number)}-{subpage_number:04X}{"-occ%d" % occurrence_number if occurrence_number > 1 else ""}.html',
+                'Save Subpage HTML',
             )
 
         def _save_selected_entry(self):
@@ -1466,6 +2056,17 @@ if IMPORT_ERROR is None:
                 self._save_selected_subpage()
             else:
                 self._save_selected_page()
+
+        def _target_occurrence_number(self, target_page_number, target_subpage_number):
+            context = self._selected_tree_context()
+            if context is None or context['type'] != 'subpage':
+                return 1
+            if (
+                int(context['page_number']) != int(target_page_number)
+                or int(context['subpage_number']) != int(target_subpage_number)
+            ):
+                return 1
+            return max(int(context.get('occurrence_number') or 1), 1)
 
         def _build_terminal_window(self):
             terminal_window = QtWidgets.QDialog(self)
@@ -1483,10 +2084,29 @@ if IMPORT_ERROR is None:
 
             split_controls = QtWidgets.QHBoxLayout()
             terminal_root.addLayout(split_controls)
-            self._toggle_pages_button = QtWidgets.QPushButton('Hide Pages/Subpages')
-            self._toggle_pages_button.clicked.connect(self._toggle_pages_panel)
-            split_controls.addWidget(self._toggle_pages_button)
             split_controls.addStretch(1)
+            self._terminal_undo_button = QtWidgets.QPushButton('Undo')
+            self._terminal_undo_button.clicked.connect(self._undo)
+            split_controls.addWidget(self._terminal_undo_button)
+            self._terminal_redo_button = QtWidgets.QPushButton('Redo')
+            self._terminal_redo_button.clicked.connect(self._redo)
+            split_controls.addWidget(self._terminal_redo_button)
+            self._terminal_reset_button = QtWidgets.QPushButton('Reset')
+            self._terminal_reset_button.clicked.connect(self._reset_selection)
+            split_controls.addWidget(self._terminal_reset_button)
+            self._show_hidden_subpages_toggle = QtWidgets.QCheckBox('Hidden Subpages')
+            self._show_hidden_subpages_toggle.toggled.connect(self._hidden_subpages_toggled)
+            split_controls.addWidget(self._show_hidden_subpages_toggle)
+            split_controls.addWidget(QtWidgets.QLabel('Mode'))
+            self._hidden_subpages_mode_combo = QtWidgets.QComboBox()
+            self._hidden_subpages_mode_combo.addItem('Legacy', 'legacy')
+            self._hidden_subpages_mode_combo.addItem('Exact', 'raw')
+            self._hidden_subpages_mode_combo.currentIndexChanged.connect(self._hidden_subpages_mode_changed)
+            split_controls.addWidget(self._hidden_subpages_mode_combo)
+            self._show_tree_checkboxes_toggle = QtWidgets.QCheckBox('Checkboxes')
+            self._show_tree_checkboxes_toggle.setChecked(False)
+            self._show_tree_checkboxes_toggle.toggled.connect(self._toggle_page_tree_checkboxes)
+            split_controls.addWidget(self._show_tree_checkboxes_toggle)
 
             split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
             self._splitter = split
@@ -1518,8 +2138,12 @@ if IMPORT_ERROR is None:
             pages_layout = QtWidgets.QVBoxLayout(pages_group)
             self._page_tree = QtWidgets.QTreeWidget()
             self._page_tree.setMinimumHeight(220)
-            self._page_tree.setHeaderLabels(['Entry', 'Packets', 'Row 0'])
+            self._page_tree.setHeaderLabels(['Entry', 'Packets', 'At', 'Row 0'])
+            self._page_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
             _configure_tree_widget_columns(self._page_tree)
+            self._page_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            self._page_tree.customContextMenuRequested.connect(self._show_page_tree_context_menu)
+            self._page_tree.itemChanged.connect(self._page_tree_item_changed)
             self._page_tree.itemSelectionChanged.connect(self._update_page_selection_buttons)
             self._page_tree.itemPressed.connect(self._page_tree_pressed)
             self._page_tree.itemDoubleClicked.connect(self._page_tree_item_double_clicked)
@@ -1548,6 +2172,15 @@ if IMPORT_ERROR is None:
             self._save_entry_button = QtWidgets.QPushButton('Save Page/Subpage...')
             self._save_entry_button.clicked.connect(self._save_selected_entry)
             tree_button_row.addWidget(self._save_entry_button, 1, 2)
+            self._add_blank_page_button = QtWidgets.QPushButton('Add Blank Page...')
+            self._add_blank_page_button.clicked.connect(self._add_blank_page)
+            tree_button_row.addWidget(self._add_blank_page_button, 2, 0)
+            self._add_blank_subpage_button = QtWidgets.QPushButton('Add Blank Subpage...')
+            self._add_blank_subpage_button.clicked.connect(self._add_blank_subpage)
+            tree_button_row.addWidget(self._add_blank_subpage_button, 2, 1)
+            self._add_hidden_subpage_button = QtWidgets.QPushButton('Add Hidden Subpage...')
+            self._add_hidden_subpage_button.clicked.connect(self._add_blank_hidden_subpage)
+            tree_button_row.addWidget(self._add_hidden_subpage_button, 2, 2)
             self._delete_page_button.setEnabled(False)
             self._edit_page_button.setEnabled(False)
             self._save_entry_button.setEnabled(False)
@@ -1556,6 +2189,7 @@ if IMPORT_ERROR is None:
             split.setStretchFactor(0, 3)
             split.setStretchFactor(1, 2)
             split.setSizes([640, 420])
+            self._toggle_page_tree_checkboxes(self._show_tree_checkboxes_toggle.isChecked())
 
         def _position_terminal_window(self):
             if self._terminal_window is None:
@@ -1577,12 +2211,22 @@ if IMPORT_ERROR is None:
         def _show_terminal_window(self):
             if self._terminal_window is None:
                 return
-            if not self._pages_hidden and self._page_tree_dirty:
+            if self._page_tree_dirty:
                 self._refresh_page_tree()
             self._position_terminal_window()
             self._terminal_window.show()
             self._terminal_window.raise_()
             self._terminal_window.activateWindow()
+
+        def _toggle_page_tree_checkboxes(self, enabled):
+            if not hasattr(self, '_page_tree'):
+                return
+            if enabled:
+                self._page_tree.setStyleSheet('')
+            else:
+                self._page_tree.setStyleSheet(
+                    'QTreeView::indicator { width: 0px; height: 0px; }'
+                )
 
         def _preview_mode_changed(self, _index):
             if self._updating:
@@ -1609,6 +2253,10 @@ if IMPORT_ERROR is None:
                 tuple(self._insertions),
                 frozenset(self._deleted_pages),
                 frozenset(self._deleted_subpages),
+                tuple(sorted(
+                    (int(page), int(subpage), int(occurrence))
+                    for page, subpage, occurrence in self._enabled_subpage_occurrences
+                )),
             )
 
         def _record_history_state(self, reset_redo=False):
@@ -1640,11 +2288,16 @@ if IMPORT_ERROR is None:
                 self._insertions = tuple(snapshot[7])
                 self._deleted_pages = frozenset(snapshot[8])
                 self._deleted_subpages = frozenset(snapshot[9])
+                self._enabled_subpage_occurrences = {
+                    (int(page), int(subpage), int(occurrence))
+                    for page, subpage, occurrence in snapshot[10]
+                } if len(snapshot) > 10 else set()
             else:
                 self._keep_ranges = ()
                 self._insertions = tuple(snapshot[6])
                 self._deleted_pages = frozenset(snapshot[7])
                 self._deleted_subpages = frozenset(snapshot[8])
+                self._enabled_subpage_occurrences = set()
             self._selected_cut_index = None
             self._selected_insertion_index = None
             self._pending_tree_selection = None
@@ -1653,7 +2306,15 @@ if IMPORT_ERROR is None:
             self._updating = False
             self._sync_ui()
 
-        def _rebase_entries(self, entries, *, focus_page_number=None, focus_subpage_number=None):
+        def _rebase_entries(
+            self,
+            entries,
+            *,
+            focus_page_number=None,
+            focus_subpage_number=None,
+            focus_occurrence_number=1,
+            enable_occurrences=(),
+        ):
             self._updating = True
             self._entries = tuple(entries)
             self._headers = collect_t42_headers(self._entries)
@@ -1664,6 +2325,11 @@ if IMPORT_ERROR is None:
             self._selected_insertion_index = None
             self._deleted_pages = frozenset()
             self._deleted_subpages = frozenset()
+            self._sync_enabled_subpage_occurrences(self._entries, preserve=True)
+            for page_number, subpage_number, occurrence_number in tuple(enable_occurrences or ()):
+                self._enabled_subpage_occurrences.add(
+                    (int(page_number), int(subpage_number), max(int(occurrence_number), 1))
+                )
             self._packet_slider.setRange(0, self._total_packets - 1)
             self._packet_box.setRange(0, self._total_packets - 1)
             self._start_box.setRange(0, self._total_packets - 1)
@@ -1675,10 +2341,11 @@ if IMPORT_ERROR is None:
             self._pending_tree_selection = None
             if focus_page_number is not None:
                 focus_page_number = int(focus_page_number)
+                focus_occurrence_number = max(int(focus_occurrence_number or 1), 1)
                 if focus_subpage_number is None:
                     self._pending_tree_selection = ('page', focus_page_number, None)
                 else:
-                    self._pending_tree_selection = ('subpage', focus_page_number, int(focus_subpage_number))
+                    self._pending_tree_selection = ('subpage', focus_page_number, int(focus_subpage_number), focus_occurrence_number)
                 for entry in self._entries:
                     if entry.page_number != focus_page_number:
                         continue
@@ -1694,8 +2361,14 @@ if IMPORT_ERROR is None:
             self._sync_ui()
 
         def _update_history_buttons(self):
-            self._undo_button.setEnabled(len(self._history) > 1)
-            self._redo_button.setEnabled(len(self._redo_history) > 0)
+            can_undo = len(self._history) > 1
+            can_redo = len(self._redo_history) > 0
+            self._undo_button.setEnabled(can_undo)
+            self._redo_button.setEnabled(can_redo)
+            if hasattr(self, '_terminal_undo_button'):
+                self._terminal_undo_button.setEnabled(can_undo)
+            if hasattr(self, '_terminal_redo_button'):
+                self._terminal_redo_button.setEnabled(can_redo)
 
         def _current_selected_cut(self):
             if self._selected_cut_index is None:
@@ -1885,6 +2558,58 @@ if IMPORT_ERROR is None:
             self._cache_dirty = True
             self._page_tree_dirty = True
 
+        def _schedule_sync_ui(self):
+            if self._sync_ui_scheduled:
+                return
+            self._sync_ui_scheduled = True
+            QtCore.QTimer.singleShot(0, self._run_scheduled_sync_ui)
+
+        def _run_scheduled_sync_ui(self):
+            self._sync_ui_scheduled = False
+            self._sync_ui()
+
+        def _all_subpage_occurrence_keys(self, entries=None):
+            entries = self._entries if entries is None else tuple(entries)
+            counts = Counter()
+            keys = []
+            for entry in entries:
+                if (
+                    entry.page_number is None
+                    or entry.subpage_number is None
+                    or entry.row is None
+                    or int(entry.row) != 0
+                ):
+                    continue
+                page_number = int(entry.page_number)
+                subpage_number = int(entry.subpage_number)
+                counts[(page_number, subpage_number)] += 1
+                keys.append((page_number, subpage_number, int(counts[(page_number, subpage_number)])))
+            return tuple(keys)
+
+        def _sync_enabled_subpage_occurrences(self, entries=None, *, preserve=True):
+            available = self._all_subpage_occurrence_keys(entries)
+            if not preserve:
+                self._enabled_subpage_occurrences = {
+                    (page_number, subpage_number, occurrence_number)
+                    for page_number, subpage_number, occurrence_number in available
+                }
+                return
+            current = set(self._enabled_subpage_occurrences)
+            updated = set()
+            for key in available:
+                if key in current:
+                    updated.add(key)
+                elif int(key[2]) == 1:
+                    updated.add(key)
+            self._enabled_subpage_occurrences = updated
+
+        def _is_subpage_occurrence_enabled(self, page_number, subpage_number, occurrence_number=1):
+            return (
+                int(page_number),
+                int(subpage_number),
+                max(int(occurrence_number or 1), 1),
+            ) in self._enabled_subpage_occurrences
+
         def _ensure_edit_cache(self):
             if not self._cache_dirty:
                 return
@@ -1893,8 +2618,12 @@ if IMPORT_ERROR is None:
                 cut_ranges=self._cut_ranges,
                 insertions=self._insertions,
             ))
-            self._cached_edited_entries = tuple(filter_deleted_t42_entries(
+            enabled_entries = filter_enabled_occurrence_entries(
                 self._cached_combined_entries,
+                self._enabled_subpage_occurrences,
+            )
+            self._cached_edited_entries = tuple(filter_deleted_t42_entries(
+                enabled_entries,
                 deleted_pages=self._deleted_pages,
                 deleted_subpages=self._deleted_subpages,
             ))
@@ -1983,7 +2712,7 @@ if IMPORT_ERROR is None:
             self._update_page_selection_buttons()
 
             self._preview_text.setPlainText(self._current_preview_text(current_packet))
-            if not self._pages_hidden and self._page_tree_dirty:
+            if self._page_tree_dirty:
                 self._refresh_page_tree()
 
             self._updating = False
@@ -2000,32 +2729,91 @@ if IMPORT_ERROR is None:
                     current_item.data(0, QtCore.Qt.UserRole),
                     current_item.data(0, QtCore.Qt.UserRole + 1),
                     current_item.data(0, QtCore.Qt.UserRole + 2),
+                    current_item.data(0, QtCore.Qt.UserRole + 4),
                 )
 
+            self._page_tree_item_change_locked = True
             self._page_tree.clear()
-            for page_summary in summarise_t42_pages(self._cached_edited_entries):
-                page_item = QtWidgets.QTreeWidgetItem([
-                    _page_label(page_summary['page_number']),
-                    str(page_summary['packet_count']),
-                    page_summary['header_title'],
-                ])
-                page_item.setData(0, QtCore.Qt.UserRole, 'page')
-                page_item.setData(0, QtCore.Qt.UserRole + 1, int(page_summary['page_number']))
-                page_item.setData(0, QtCore.Qt.UserRole + 2, int(page_summary['first_packet']))
-                self._page_tree.addTopLevelItem(page_item)
-
-                for subpage_summary in page_summary['subpages']:
-                    child = QtWidgets.QTreeWidgetItem([
-                        f"{subpage_summary['subpage_number']:04X}",
-                        str(subpage_summary['packet_count']),
-                        subpage_summary['header_title'],
+            try:
+                occurrences = page_subpage_occurrences(
+                    self._cached_edited_entries,
+                    mode=self._hidden_subpages_mode(),
+                )
+                for page_summary in summarise_t42_pages(self._cached_edited_entries):
+                    page_number = int(page_summary['page_number'])
+                    page_item = QtWidgets.QTreeWidgetItem([
+                        _page_label(page_number),
+                        str(page_summary['packet_count']),
+                        str(int(page_summary.get('first_packet', 0))),
+                        page_summary['header_title'],
                     ])
-                    child.setData(0, QtCore.Qt.UserRole, 'subpage')
-                    child.setData(0, QtCore.Qt.UserRole + 1, int(page_summary['page_number']))
-                    child.setData(0, QtCore.Qt.UserRole + 2, int(subpage_summary['subpage_number']))
-                    child.setData(0, QtCore.Qt.UserRole + 3, int(subpage_summary['first_packet']))
-                    page_item.addChild(child)
-                page_item.setExpanded(True)
+                    page_item.setFlags(page_item.flags() | QtCore.Qt.ItemIsUserCheckable)
+                    page_item.setData(0, QtCore.Qt.UserRole, 'page')
+                    page_item.setData(0, QtCore.Qt.UserRole + 1, page_number)
+                    page_item.setData(0, QtCore.Qt.UserRole + 2, int(page_summary['first_packet']))
+                    page_item.setData(0, QtCore.Qt.UserRole + 4, 1)
+                    self._page_tree.addTopLevelItem(page_item)
+
+                    visible_children = 0
+                    checked_children = 0
+                    seen_subpages = set()
+                    for subpage_summary in page_summary['subpages']:
+                        subpage_number = int(subpage_summary['subpage_number'])
+                        variants = tuple(
+                            occurrences.get(page_number, {}).get(subpage_number, ())
+                        ) or ({
+                            'label': f'{subpage_number:04X}',
+                            'occurrence': 1,
+                            'header_title': subpage_summary['header_title'],
+                            'first_packet': int(subpage_summary['first_packet']),
+                            'packet_count': int(subpage_summary['packet_count']),
+                        },)
+                        if not self._show_hidden_subpages_toggle.isChecked():
+                            variants = variants[:1]
+                        for variant in variants:
+                            occurrence_number = max(int(variant.get('occurrence') or 1), 1)
+                            child_checked = (
+                                page_number not in self._deleted_pages
+                                and (
+                                    occurrence_number > 1
+                                    or (page_number, subpage_number) not in self._deleted_subpages
+                                )
+                                and self._is_subpage_occurrence_enabled(
+                                    page_number,
+                                    subpage_number,
+                                    occurrence_number,
+                                )
+                            )
+                            child = QtWidgets.QTreeWidgetItem([
+                                str(variant.get('label') or f'{subpage_number:04X}'),
+                                str(int(variant.get('packet_count') or subpage_summary['packet_count'])),
+                                str(int(variant.get('first_packet') or subpage_summary.get('first_packet', 0))),
+                                str(variant.get('header_title') or subpage_summary['header_title']),
+                            ])
+                            child.setFlags(child.flags() | QtCore.Qt.ItemIsUserCheckable)
+                            child.setData(0, QtCore.Qt.UserRole, 'subpage')
+                            child.setData(0, QtCore.Qt.UserRole + 1, page_number)
+                            child.setData(0, QtCore.Qt.UserRole + 2, subpage_number)
+                            child.setData(0, QtCore.Qt.UserRole + 3, int(variant.get('first_packet') or subpage_summary['first_packet']))
+                            child.setData(0, QtCore.Qt.UserRole + 4, occurrence_number)
+                            child.setCheckState(0, QtCore.Qt.Checked if child_checked else QtCore.Qt.Unchecked)
+                            page_item.addChild(child)
+                            if subpage_number not in seen_subpages:
+                                seen_subpages.add(subpage_number)
+                                visible_children += 1
+                            if child_checked:
+                                checked_children += 1
+
+                    total_children = page_item.childCount()
+                    if total_children and checked_children == total_children:
+                        page_item.setCheckState(0, QtCore.Qt.Checked)
+                    elif checked_children == 0:
+                        page_item.setCheckState(0, QtCore.Qt.Unchecked)
+                    else:
+                        page_item.setCheckState(0, QtCore.Qt.PartiallyChecked)
+                    page_item.setExpanded(True)
+            finally:
+                self._page_tree_item_change_locked = False
 
             if current_data is not None:
                 self._restore_tree_selection(current_data)
@@ -2033,19 +2821,23 @@ if IMPORT_ERROR is None:
             self._page_tree_dirty = False
             _configure_tree_widget_columns(self._page_tree)
 
-        def _toggle_pages_panel(self):
-            self._pages_hidden = not self._pages_hidden
-            self._pages_group.setVisible(not self._pages_hidden)
-            self._toggle_pages_button.setText('Show Pages/Subpages' if self._pages_hidden else 'Hide Pages/Subpages')
-            if self._pages_hidden:
-                self._splitter.setSizes([1, 0])
-            else:
-                if self._page_tree_dirty:
-                    self._refresh_page_tree()
-                self._splitter.setSizes([700, 300])
+        def _hidden_subpages_toggled(self, _checked):
+            self._page_tree_dirty = True
+            self._refresh_page_tree()
+
+        def _hidden_subpages_mode(self):
+            return str(self._hidden_subpages_mode_combo.currentData() or 'legacy')
+
+        def _hidden_subpages_mode_changed(self, _index):
+            self._page_tree_dirty = True
+            self._refresh_page_tree()
 
         def _restore_tree_selection(self, current_data):
-            item_type, value1, value2 = current_data
+            if len(current_data) >= 4:
+                item_type, value1, value2, occurrence_number = current_data[:4]
+            else:
+                item_type, value1, value2 = current_data
+                occurrence_number = 1
             for page_index in range(self._page_tree.topLevelItemCount()):
                 page_item = self._page_tree.topLevelItem(page_index)
                 if item_type == 'page' and (
@@ -2061,6 +2853,7 @@ if IMPORT_ERROR is None:
                             child.data(0, QtCore.Qt.UserRole) == 'subpage'
                             and child.data(0, QtCore.Qt.UserRole + 1) == value1
                             and child.data(0, QtCore.Qt.UserRole + 2) == value2
+                            and int(child.data(0, QtCore.Qt.UserRole + 4) or 1) == int(occurrence_number or 1)
                         ):
                             self._page_tree.setCurrentItem(child)
                             return
@@ -2081,8 +2874,340 @@ if IMPORT_ERROR is None:
                     'type': 'subpage',
                     'page_number': int(item.data(0, QtCore.Qt.UserRole + 1)),
                     'subpage_number': int(item.data(0, QtCore.Qt.UserRole + 2)),
+                    'occurrence_number': int(item.data(0, QtCore.Qt.UserRole + 4) or 1),
                 }
             return None
+
+        def _selected_tree_contexts(self):
+            items = list(self._page_tree.selectedItems() or ())
+            if not items:
+                current = self._page_tree.currentItem()
+                if current is not None:
+                    items = [current]
+            contexts = []
+            seen = set()
+            for item in items:
+                item_type = item.data(0, QtCore.Qt.UserRole)
+                if item_type == 'page':
+                    key = ('page', int(item.data(0, QtCore.Qt.UserRole + 1)))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    contexts.append({
+                        'type': 'page',
+                        'page_number': key[1],
+                        'subpage_number': None,
+                        'occurrence_number': 1,
+                    })
+                elif item_type == 'subpage':
+                    key = (
+                        'subpage',
+                        int(item.data(0, QtCore.Qt.UserRole + 1)),
+                        int(item.data(0, QtCore.Qt.UserRole + 2)),
+                        int(item.data(0, QtCore.Qt.UserRole + 4) or 1),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    contexts.append({
+                        'type': 'subpage',
+                        'page_number': key[1],
+                        'subpage_number': key[2],
+                        'occurrence_number': key[3],
+                    })
+            return tuple(contexts)
+
+        def _page_subpage_occurrences_for_entries(self, entries, page_number):
+            page_number = int(page_number)
+            return page_subpage_occurrences(
+                tuple(entries),
+                page_number,
+                mode=self._hidden_subpages_mode(),
+            ).get(page_number, {})
+
+        def _page_has_hidden_subpages_terminal(self, page_number):
+            self._ensure_edit_cache()
+            return any(
+                len(tuple(variants)) > 1
+                for variants in self._page_subpage_occurrences_for_entries(
+                    self._cached_combined_entries,
+                    page_number,
+                ).values()
+            )
+
+        def _convert_selected_hidden_subpage_to_real(self):
+            contexts = tuple(
+                context for context in self._selected_tree_contexts()
+                if context['type'] == 'subpage' and int(context.get('occurrence_number') or 1) > 1
+            )
+            if not contexts:
+                return
+            self._ensure_edit_cache()
+            working_entries = tuple(self._cached_combined_entries)
+            converted = []
+            for page_number, subpage_number in sorted({
+                (int(context['page_number']), int(context['subpage_number']))
+                for context in contexts
+            }):
+                selected_occurrences = sorted(
+                    {
+                        int(context['occurrence_number'])
+                        for context in contexts
+                        if int(context['page_number']) == page_number and int(context['subpage_number']) == subpage_number
+                    },
+                    reverse=True,
+                )
+                for occurrence_number in selected_occurrences:
+                    variants = tuple(self._page_subpage_occurrences_for_entries(working_entries, page_number).get(subpage_number, ()))
+                    if occurrence_number <= 1 or occurrence_number > len(variants):
+                        continue
+                    working_entries, new_subpage_number = convert_subpage_occurrence_to_real(
+                        working_entries,
+                        page_number,
+                        subpage_number,
+                        occurrence_number,
+                    )
+                    converted.append((int(page_number), int(new_subpage_number)))
+            if not converted:
+                return
+            focus_page_number, focus_subpage_number = converted[-1]
+            self._rebase_entries(
+                working_entries,
+                focus_page_number=focus_page_number,
+                focus_subpage_number=focus_subpage_number,
+                focus_occurrence_number=1,
+            )
+            QtWidgets.QMessageBox.information(
+                self._dialog_parent(),
+                'T42 Tool',
+                f'Converted {len(converted)} selected hidden subpage(s) to real.',
+            )
+
+        def _convert_page_hidden_subpages_to_real(self):
+            context = self._selected_tree_context()
+            if context is None:
+                return
+            page_number = int(context['page_number'])
+            self._ensure_edit_cache()
+            working_entries = tuple(self._cached_combined_entries)
+            converted = []
+            base_occurrences = self._page_subpage_occurrences_for_entries(working_entries, page_number)
+            for base_subpage_number in sorted(base_occurrences):
+                while len(tuple(self._page_subpage_occurrences_for_entries(working_entries, page_number).get(base_subpage_number, ()))) > 1:
+                    working_entries, new_subpage_number = convert_subpage_occurrence_to_real(
+                        working_entries,
+                        page_number,
+                        base_subpage_number,
+                        2,
+                    )
+                    converted.append(int(new_subpage_number))
+            if not converted:
+                return
+            self._rebase_entries(working_entries, focus_page_number=page_number)
+            QtWidgets.QMessageBox.information(
+                self._dialog_parent(),
+                'T42 Tool',
+                'Converted hidden subpages: ' + ', '.join(f'{value:04X}' for value in converted),
+            )
+
+        def _show_page_tree_context_menu(self, position):
+            item = self._page_tree.itemAt(position)
+            if item is None:
+                return
+            self._page_tree.setCurrentItem(item)
+            context = self._selected_tree_context()
+            if context is None:
+                return
+            selected_contexts = self._selected_tree_contexts()
+            has_multi_selection = len(selected_contexts) > 1
+            menu = QtWidgets.QMenu(self._page_tree)
+            save_t42_action = menu.addAction('Save as T42...')
+            save_t42_action.triggered.connect(self._save_selected_entry)
+            save_html_action = menu.addAction('Save as HTML...')
+            if context['type'] == 'subpage':
+                save_html_action.triggered.connect(self._save_selected_subpage_html)
+            else:
+                save_html_action.triggered.connect(self._save_selected_page_html)
+            menu.addSeparator()
+            if context['type'] == 'page':
+                add_blank_page_action = menu.addAction('Add Blank Page...')
+                add_blank_page_action.triggered.connect(self._add_blank_page)
+                add_blank_subpage_action = menu.addAction('Add Blank Subpage...')
+                add_blank_subpage_action.triggered.connect(self._add_blank_subpage)
+                add_hidden_action = menu.addAction('Add Blank Hidden Subpage...')
+                add_hidden_action.triggered.connect(self._add_blank_hidden_subpage)
+                menu.addSeparator()
+                delete_action = menu.addAction('Delete Page')
+                delete_action.triggered.connect(self._delete_selected_page_entry)
+                if self._page_has_hidden_subpages_terminal(context['page_number']):
+                    convert_action = menu.addAction('Convert Hidden Subpages to Real')
+                    convert_action.triggered.connect(self._convert_page_hidden_subpages_to_real)
+            else:
+                add_blank_subpage_action = menu.addAction('Add Blank Subpage...')
+                add_blank_subpage_action.triggered.connect(self._add_blank_subpage)
+                add_hidden_action = menu.addAction('Add Blank Hidden Subpage...')
+                add_hidden_action.triggered.connect(self._add_blank_hidden_subpage)
+                menu.addSeparator()
+                rename_action = menu.addAction('Change Page/Subpage Number...')
+                rename_action.triggered.connect(self._edit_selected_page_entry)
+                if int(context.get('occurrence_number') or 1) > 1:
+                    move_action = menu.addAction('Change Hidden Sequence...')
+                    move_action.triggered.connect(self._change_selected_hidden_subpage_sequence)
+                menu.addSeparator()
+                delete_action = menu.addAction('Delete Subpage')
+                delete_action.triggered.connect(self._delete_selected_page_entry)
+                if int(context.get('occurrence_number') or 1) > 1:
+                    convert_action = menu.addAction('Convert Hidden to Real Subpage')
+                    convert_action.triggered.connect(self._convert_selected_hidden_subpage_to_real)
+            if has_multi_selection:
+                menu.addSeparator()
+                delete_selected_action = menu.addAction('Delete Selected')
+                delete_selected_action.triggered.connect(self._delete_selected_page_entry)
+                if any(
+                    selected_context['type'] == 'subpage' and int(selected_context.get('occurrence_number') or 1) > 1
+                    for selected_context in selected_contexts
+                ):
+                    convert_selected_action = menu.addAction('Convert Selected Hidden to Real')
+                    convert_selected_action.triggered.connect(self._convert_selected_hidden_subpage_to_real)
+            menu.exec_(self._page_tree.viewport().mapToGlobal(position))
+
+        def _update_page_tree_item_check_state(self, page_item):
+            if page_item is None:
+                return
+            enabled = 0
+            disabled = 0
+            for child_index in range(page_item.childCount()):
+                child = page_item.child(child_index)
+                if child.checkState(0) == QtCore.Qt.Checked:
+                    enabled += 1
+                else:
+                    disabled += 1
+            if enabled and not disabled:
+                page_item.setCheckState(0, QtCore.Qt.Checked)
+            elif disabled and not enabled:
+                page_item.setCheckState(0, QtCore.Qt.Unchecked)
+            else:
+                page_item.setCheckState(0, QtCore.Qt.PartiallyChecked)
+
+        def _page_tree_item_changed(self, item, column):
+            if item is None or int(column) != 0 or self._page_tree_item_change_locked:
+                return
+            item_type = item.data(0, QtCore.Qt.UserRole)
+            if item_type == 'page':
+                page_number = item.data(0, QtCore.Qt.UserRole + 1)
+                if page_number is None:
+                    return
+                page_number = int(page_number)
+                checked = item.checkState(0) != QtCore.Qt.Unchecked
+                updated_occurrences = set(self._enabled_subpage_occurrences)
+                if checked:
+                    self._deleted_pages = frozenset(
+                        candidate for candidate in self._deleted_pages
+                        if int(candidate) != page_number
+                    )
+                    self._deleted_subpages = frozenset(
+                        key for key in self._deleted_subpages
+                        if int(key[0]) != page_number
+                    )
+                    for key in self._all_subpage_occurrence_keys():
+                        if int(key[0]) == page_number:
+                            updated_occurrences.add(key)
+                else:
+                    self._deleted_pages = frozenset(set(self._deleted_pages) | {page_number})
+                    self._deleted_subpages = frozenset(
+                        key for key in self._deleted_subpages
+                        if int(key[0]) != page_number
+                    )
+                    updated_occurrences = {
+                        key for key in updated_occurrences
+                        if int(key[0]) != page_number
+                    }
+                self._enabled_subpage_occurrences = updated_occurrences
+                self._page_tree_item_change_locked = True
+                try:
+                    for child_index in range(item.childCount()):
+                        child = item.child(child_index)
+                        occurrence_number = int(child.data(0, QtCore.Qt.UserRole + 4) or 1)
+                        child.setCheckState(
+                            0,
+                            QtCore.Qt.Checked
+                            if (
+                                checked
+                                and self._is_subpage_occurrence_enabled(
+                                    int(child.data(0, QtCore.Qt.UserRole + 1)),
+                                    int(child.data(0, QtCore.Qt.UserRole + 2)),
+                                    occurrence_number,
+                                )
+                            )
+                            else QtCore.Qt.Unchecked,
+                        )
+                finally:
+                    self._page_tree_item_change_locked = False
+                self._mark_cache_dirty()
+                self._record_history_state(reset_redo=True)
+                self._schedule_sync_ui()
+                return
+            if item_type != 'subpage':
+                return
+            page_number = item.data(0, QtCore.Qt.UserRole + 1)
+            subpage_number = item.data(0, QtCore.Qt.UserRole + 2)
+            if page_number is None or subpage_number is None:
+                return
+            page_number = int(page_number)
+            subpage_number = int(subpage_number)
+            occurrence_number = int(item.data(0, QtCore.Qt.UserRole + 4) or 1)
+            checked = item.checkState(0) == QtCore.Qt.Checked
+            updated_occurrences = set(self._enabled_subpage_occurrences)
+            if occurrence_number == 1:
+                self._deleted_pages = frozenset(
+                    candidate for candidate in self._deleted_pages
+                    if int(candidate) != page_number
+                )
+                updated = set(self._deleted_subpages)
+                if checked:
+                    updated.discard((page_number, subpage_number))
+                    updated_occurrences.add((page_number, subpage_number, 1))
+                else:
+                    updated.add((page_number, subpage_number))
+                    updated_occurrences = {
+                        key for key in updated_occurrences
+                        if not (int(key[0]) == page_number and int(key[1]) == subpage_number)
+                    }
+                self._deleted_subpages = frozenset(updated)
+            else:
+                if checked:
+                    updated_occurrences.add((page_number, subpage_number, occurrence_number))
+                else:
+                    updated_occurrences.discard((page_number, subpage_number, occurrence_number))
+            self._enabled_subpage_occurrences = updated_occurrences
+            self._page_tree_item_change_locked = True
+            try:
+                parent = item.parent()
+                if parent is not None:
+                    for child_index in range(parent.childCount()):
+                        child = parent.child(child_index)
+                        if (
+                            int(child.data(0, QtCore.Qt.UserRole + 1)) == page_number
+                            and int(child.data(0, QtCore.Qt.UserRole + 2)) == subpage_number
+                        ):
+                            child_occurrence = int(child.data(0, QtCore.Qt.UserRole + 4) or 1)
+                            child.setCheckState(
+                                0,
+                                QtCore.Qt.Checked
+                                if self._is_subpage_occurrence_enabled(page_number, subpage_number, child_occurrence)
+                                and page_number not in self._deleted_pages
+                                and (
+                                    child_occurrence > 1
+                                    or (page_number, subpage_number) not in self._deleted_subpages
+                                )
+                                else QtCore.Qt.Unchecked,
+                            )
+                    self._update_page_tree_item_check_state(parent)
+            finally:
+                self._page_tree_item_change_locked = False
+            self._mark_cache_dirty()
+            self._record_history_state(reset_redo=True)
+            self._schedule_sync_ui()
 
         def _update_page_selection_buttons(self):
             context = self._selected_tree_context()
@@ -2092,6 +3217,197 @@ if IMPORT_ERROR is None:
             self._edit_page_button.setEnabled(has_selection)
             if hasattr(self, '_save_entry_button'):
                 self._save_entry_button.setEnabled(has_selection)
+            if hasattr(self, '_add_hidden_subpage_button'):
+                self._add_hidden_subpage_button.setEnabled(True)
+            if hasattr(self, '_add_blank_page_button'):
+                self._add_blank_page_button.setEnabled(True)
+            if hasattr(self, '_add_blank_subpage_button'):
+                self._add_blank_subpage_button.setEnabled(True)
+
+        def _add_blank_page(self):
+            self._ensure_edit_cache()
+            context = self._selected_tree_context()
+            default_page_number = 0x100
+            if context is not None:
+                default_page_number = int(context['page_number'])
+            page_text, accepted = QtWidgets.QInputDialog.getText(
+                self._dialog_parent(),
+                'Add Blank Page',
+                'Page (hex):',
+                text=f"{(int(default_page_number) >> 8):X}{(int(default_page_number) & 0xFF):02X}",
+            )
+            if not accepted:
+                return
+            try:
+                target_page_number = parse_page_identifier(page_text)
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self._dialog_parent(), 'T42 Tool', str(exc))
+                return
+            target_subpage_number = 0x0000
+            if tuple(self._page_subpage_occurrences_for_entries(self._cached_combined_entries, target_page_number).get(target_subpage_number, ())):
+                self._rebase_entries(
+                    self._cached_combined_entries,
+                    focus_page_number=target_page_number,
+                    focus_subpage_number=target_subpage_number,
+                    focus_occurrence_number=1,
+                )
+                QtWidgets.QMessageBox.information(
+                    self._dialog_parent(),
+                    'T42 Tool',
+                    f'{_page_label(target_page_number)} / {target_subpage_number:04X} already exists.',
+                )
+                return
+            updated_entries = replace_subpage_in_entries(
+                self._cached_combined_entries,
+                blank_subpage_entries(target_page_number, target_subpage_number),
+                target_page_number=target_page_number,
+                target_subpage_number=target_subpage_number,
+            )
+            self._rebase_entries(
+                updated_entries,
+                focus_page_number=target_page_number,
+                focus_subpage_number=target_subpage_number,
+                focus_occurrence_number=1,
+                enable_occurrences=((target_page_number, target_subpage_number, 1),),
+            )
+            QtWidgets.QMessageBox.information(
+                self._dialog_parent(),
+                'T42 Tool',
+                f'Added blank page {_page_label(target_page_number)} / {target_subpage_number:04X}.',
+            )
+
+        def _add_blank_subpage(self):
+            self._ensure_edit_cache()
+            context = self._selected_tree_context()
+            default_page_number = 0x100
+            default_subpage_number = 0x0000
+            if context is not None:
+                default_page_number = int(context['page_number'])
+                if context['type'] == 'subpage':
+                    default_subpage_number = min(int(context['subpage_number']) + 1, 0x3F7F)
+            page_text, accepted = QtWidgets.QInputDialog.getText(
+                self._dialog_parent(),
+                'Add Blank Subpage',
+                'Page (hex):',
+                text=f"{(int(default_page_number) >> 8):X}{(int(default_page_number) & 0xFF):02X}",
+            )
+            if not accepted:
+                return
+            try:
+                target_page_number = parse_page_identifier(page_text)
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self._dialog_parent(), 'T42 Tool', str(exc))
+                return
+            subpage_text, accepted = QtWidgets.QInputDialog.getText(
+                self._dialog_parent(),
+                'Add Blank Subpage',
+                f'Subpage for {_page_label(target_page_number)} (hex):',
+                text=f'{int(default_subpage_number):04X}',
+            )
+            if not accepted:
+                return
+            try:
+                target_subpage_number = parse_subpage_identifier(subpage_text)
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self._dialog_parent(), 'T42 Tool', str(exc))
+                return
+            if tuple(self._page_subpage_occurrences_for_entries(self._cached_combined_entries, target_page_number).get(target_subpage_number, ())):
+                self._rebase_entries(
+                    self._cached_combined_entries,
+                    focus_page_number=target_page_number,
+                    focus_subpage_number=target_subpage_number,
+                    focus_occurrence_number=1,
+                )
+                QtWidgets.QMessageBox.information(
+                    self._dialog_parent(),
+                    'T42 Tool',
+                    f'{_page_label(target_page_number)} / {target_subpage_number:04X} already exists.',
+                )
+                return
+            updated_entries = replace_subpage_in_entries(
+                self._cached_combined_entries,
+                blank_subpage_entries(target_page_number, target_subpage_number),
+                target_page_number=target_page_number,
+                target_subpage_number=target_subpage_number,
+            )
+            self._rebase_entries(
+                updated_entries,
+                focus_page_number=target_page_number,
+                focus_subpage_number=target_subpage_number,
+                focus_occurrence_number=1,
+                enable_occurrences=((target_page_number, target_subpage_number, 1),),
+            )
+            QtWidgets.QMessageBox.information(
+                self._dialog_parent(),
+                'T42 Tool',
+                f'Added blank subpage {_page_label(target_page_number)} / {target_subpage_number:04X}.',
+            )
+
+        def _add_blank_hidden_subpage(self):
+            self._ensure_edit_cache()
+            context = self._selected_tree_context()
+            default_page_number = 0x100
+            default_subpage_number = 0x0000
+            if context is not None:
+                default_page_number = int(context['page_number'])
+                if context['type'] == 'subpage':
+                    default_subpage_number = int(context['subpage_number'])
+            current_page_text = f"{(int(default_page_number) >> 8):X}{(int(default_page_number) & 0xFF):02X}"
+            page_text, accepted = QtWidgets.QInputDialog.getText(
+                self._dialog_parent(),
+                'Add Blank Hidden Subpage',
+                'Page (hex):',
+                text=current_page_text,
+            )
+            if not accepted:
+                return
+            try:
+                target_page_number = parse_page_identifier(page_text)
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self._dialog_parent(), 'T42 Tool', str(exc))
+                return
+            subpage_text, accepted = QtWidgets.QInputDialog.getText(
+                self._dialog_parent(),
+                'Add Blank Hidden Subpage',
+                f'Subpage for {_page_label(target_page_number)} (hex):',
+                text=f'{int(default_subpage_number):04X}',
+            )
+            if not accepted:
+                return
+            try:
+                target_subpage_number = parse_subpage_identifier(subpage_text)
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self._dialog_parent(), 'T42 Tool', str(exc))
+                return
+            updated_entries = insert_hidden_subpage_occurrence(
+                self._cached_combined_entries,
+                target_page_number,
+                target_subpage_number,
+                blank_subpage_entries(target_page_number, target_subpage_number),
+            )
+            occurrence_number = max(
+                len(
+                    tuple(
+                        self._page_subpage_occurrences_for_entries(
+                            updated_entries,
+                            target_page_number,
+                        ).get(target_subpage_number, ())
+                    )
+                ),
+                1,
+            )
+            self._rebase_entries(
+                updated_entries,
+                focus_page_number=target_page_number,
+                focus_subpage_number=target_subpage_number,
+                focus_occurrence_number=occurrence_number,
+                enable_occurrences=((target_page_number, target_subpage_number, occurrence_number),),
+            )
+            QtWidgets.QMessageBox.information(
+                self._dialog_parent(),
+                'T42 Tool',
+                f'Added hidden subpage {_page_label(target_page_number)} / {int(target_subpage_number):04X} ({occurrence_number}).',
+            )
 
         def _tree_packet_index(self, item):
             if item is None:
@@ -2107,7 +3423,7 @@ if IMPORT_ERROR is None:
             if item is None:
                 return
             modifiers = QtWidgets.QApplication.keyboardModifiers()
-            if not (modifiers & QtCore.Qt.ControlModifier):
+            if not (modifiers & QtCore.Qt.AltModifier):
                 return
             packet_index = self._tree_packet_index(item)
             if packet_index is None:
@@ -2125,7 +3441,16 @@ if IMPORT_ERROR is None:
             self._ensure_edit_cache()
             page_number = int(context['page_number'])
             subpage_number = None if context['type'] == 'page' else int(context['subpage_number'])
-            self._show_preview_window(self._cached_edited_entries, self._input_path or 'current.t42', page_number, subpage_number)
+            entries = self._cached_combined_entries
+            if context['type'] == 'subpage':
+                occurrence_number = int(context.get('occurrence_number') or 1)
+                entries = collect_subpage_occurrence_entries(
+                    self._cached_combined_entries,
+                    page_number,
+                    subpage_number,
+                    occurrence_number,
+                ) or collect_subpage_entries(self._cached_combined_entries, page_number, subpage_number)
+            self._show_preview_window(entries, self._input_path or 'current.t42', page_number, subpage_number)
 
         def _cleanup_preview_window(self, window, temp_path):
             self._preview_windows = [candidate for candidate in self._preview_windows if candidate is not window]
@@ -2191,7 +3516,7 @@ if IMPORT_ERROR is None:
                 return
             self._ensure_edit_cache()
             updated_entries = replace_page_in_entries(
-                self._cached_edited_entries,
+                self._cached_combined_entries,
                 page_entries,
                 target_page_number=target_page_number,
             )
@@ -2202,22 +3527,35 @@ if IMPORT_ERROR is None:
             if not subpage_entries:
                 return
             self._ensure_edit_cache()
-            updated_entries = replace_subpage_in_entries(
-                self._cached_edited_entries,
-                subpage_entries,
-                target_page_number=target_page_number,
-                target_subpage_number=target_subpage_number,
-            )
+            target_occurrence_number = self._target_occurrence_number(target_page_number, target_subpage_number)
+            if target_occurrence_number > 1:
+                updated_entries = replace_subpage_occurrence_in_entries(
+                    self._cached_combined_entries,
+                    subpage_entries,
+                    target_page_number,
+                    target_subpage_number,
+                    target_occurrence_number,
+                    target_page_number=target_page_number,
+                    target_subpage_number=target_subpage_number,
+                )
+            else:
+                updated_entries = replace_subpage_in_entries(
+                    self._cached_combined_entries,
+                    subpage_entries,
+                    target_page_number=target_page_number,
+                    target_subpage_number=target_subpage_number,
+                )
             self._rebase_entries(
                 updated_entries,
                 focus_page_number=target_page_number,
                 focus_subpage_number=target_subpage_number,
+                focus_occurrence_number=target_occurrence_number,
             )
 
         def _merge_imported_page(self, source_entries, source_page_number, target_page_number):
             self._ensure_edit_cache()
             updated_entries = merge_page_in_entries(
-                self._cached_edited_entries,
+                self._cached_combined_entries,
                 source_entries,
                 source_page_number,
                 target_page_number,
@@ -2229,16 +3567,19 @@ if IMPORT_ERROR is None:
             if not subpage_entries:
                 return
             self._ensure_edit_cache()
-            updated_entries = merge_subpage_in_entries(
-                self._cached_edited_entries,
+            target_occurrence_number = self._target_occurrence_number(target_page_number, target_subpage_number)
+            updated_entries = merge_subpage_occurrence_in_entries(
+                self._cached_combined_entries,
                 subpage_entries,
                 target_page_number,
                 target_subpage_number,
+                target_occurrence_number,
             )
             self._rebase_entries(
                 updated_entries,
                 focus_page_number=target_page_number,
                 focus_subpage_number=target_subpage_number,
+                focus_occurrence_number=target_occurrence_number,
             )
 
         def _add_imported_row(self, source_entries, source_page_number, source_subpage_number, source_row_number, target_page_number, target_subpage_number, target_row_number):
@@ -2262,12 +3603,14 @@ if IMPORT_ERROR is None:
             ), None)
             self._ensure_edit_cache()
             try:
-                updated_entries = add_row_to_subpage_entries(
-                    self._cached_edited_entries,
+                target_occurrence_number = self._target_occurrence_number(target_page_number, target_subpage_number)
+                updated_entries = add_row_to_subpage_occurrence_in_entries(
+                    self._cached_combined_entries,
                     source_entry,
                     target_page_number,
                     target_subpage_number,
                     target_row_number,
+                    target_occurrence_number,
                     source_header_entry=source_header_entry,
                 )
             except ValueError as exc:
@@ -2277,6 +3620,7 @@ if IMPORT_ERROR is None:
                 updated_entries,
                 focus_page_number=target_page_number,
                 focus_subpage_number=target_subpage_number,
+                focus_occurrence_number=target_occurrence_number,
             )
 
         def _open_source_dialog(self):
@@ -2317,16 +3661,25 @@ if IMPORT_ERROR is None:
                 return None
 
             if selection_mode == 'page' and len(summary) == 1:
-                return ('page', int(summary[0]['page_number']), None)
+                return ('page', int(summary[0]['page_number']), None, 1)
 
+            occurrences = page_subpage_occurrences(entries)
             available_subpages = [
-                (int(page_summary['page_number']), int(subpage_summary['subpage_number']))
+                (
+                    int(page_summary['page_number']),
+                    int(subpage_summary['subpage_number']),
+                    int(variant.get('occurrence') or 1),
+                )
                 for page_summary in summary
                 for subpage_summary in page_summary['subpages']
+                for variant in (
+                    tuple(occurrences.get(int(page_summary['page_number']), {}).get(int(subpage_summary['subpage_number']), ()))
+                    or ({'occurrence': 1},)
+                )
             ]
             if selection_mode == 'subpage' and len(available_subpages) == 1:
-                page_number, subpage_number = available_subpages[0]
-                return ('subpage', page_number, subpage_number)
+                page_number, subpage_number, occurrence_number = available_subpages[0]
+                return ('subpage', page_number, subpage_number, occurrence_number)
 
             dialog = QtWidgets.QDialog(self._terminal_window if self._terminal_window is not None else self)
             dialog.setWindowTitle(f'Select {selection_mode.title()} - {pathlib.Path(source_path).name}')
@@ -2353,19 +3706,30 @@ if IMPORT_ERROR is None:
                     page_item.setFlags(QtCore.Qt.ItemIsEnabled)
                 tree.addTopLevelItem(page_item)
                 for subpage_summary in page_summary['subpages']:
-                    child = QtWidgets.QTreeWidgetItem([
-                        f"{subpage_summary['subpage_number']:04X}",
-                        str(subpage_summary['packet_count']),
-                        subpage_summary['header_title'],
-                    ])
-                    child.setData(0, QtCore.Qt.UserRole, 'subpage')
-                    child.setData(0, QtCore.Qt.UserRole + 1, int(page_summary['page_number']))
-                    child.setData(0, QtCore.Qt.UserRole + 2, int(subpage_summary['subpage_number']))
-                    if selection_mode == 'subpage':
-                        child.setFlags(child.flags() | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
-                    else:
-                        child.setFlags(QtCore.Qt.ItemIsEnabled)
-                    page_item.addChild(child)
+                    subpage_number = int(subpage_summary['subpage_number'])
+                    variants = tuple(
+                        occurrences.get(int(page_summary['page_number']), {}).get(subpage_number, ())
+                    ) or ({
+                        'label': f'{subpage_number:04X}',
+                        'occurrence': 1,
+                        'header_title': subpage_summary['header_title'],
+                        'packet_count': int(subpage_summary['packet_count']),
+                    },)
+                    for variant in variants:
+                        child = QtWidgets.QTreeWidgetItem([
+                            str(variant.get('label') or f'{subpage_number:04X}'),
+                            str(int(variant.get('packet_count') or subpage_summary['packet_count'])),
+                            str(variant.get('header_title') or subpage_summary['header_title']),
+                        ])
+                        child.setData(0, QtCore.Qt.UserRole, 'subpage')
+                        child.setData(0, QtCore.Qt.UserRole + 1, int(page_summary['page_number']))
+                        child.setData(0, QtCore.Qt.UserRole + 2, subpage_number)
+                        child.setData(0, QtCore.Qt.UserRole + 3, int(variant.get('occurrence') or 1))
+                        if selection_mode == 'subpage':
+                            child.setFlags(child.flags() | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+                        else:
+                            child.setFlags(QtCore.Qt.ItemIsEnabled)
+                        page_item.addChild(child)
                 page_item.setExpanded(True)
 
             button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -2395,12 +3759,13 @@ if IMPORT_ERROR is None:
                 return None
             item_type = item.data(0, QtCore.Qt.UserRole)
             if item_type == 'page':
-                return ('page', int(item.data(0, QtCore.Qt.UserRole + 1)), None)
+                return ('page', int(item.data(0, QtCore.Qt.UserRole + 1)), None, 1)
             if item_type == 'subpage':
                 return (
                     'subpage',
                     int(item.data(0, QtCore.Qt.UserRole + 1)),
                     int(item.data(0, QtCore.Qt.UserRole + 2)),
+                    int(item.data(0, QtCore.Qt.UserRole + 3) or 1),
                 )
             return None
 
@@ -2431,7 +3796,7 @@ if IMPORT_ERROR is None:
             if source is None:
                 return
             _filename, source_entries, choice = source
-            _kind, source_page_number, _source_subpage_number = choice
+            _kind, source_page_number, _source_subpage_number, _source_occurrence_number = choice
             self._ensure_edit_cache()
             context = self._selected_tree_context()
             target_page_number = source_page_number
@@ -2444,7 +3809,7 @@ if IMPORT_ERROR is None:
             if source is None:
                 return
             _filename, source_entries, choice = source
-            _kind, source_page_number, source_subpage_number = choice
+            _kind, source_page_number, source_subpage_number, source_occurrence_number = choice
             self._ensure_edit_cache()
             context = self._selected_tree_context()
             target_page_number = source_page_number
@@ -2453,7 +3818,23 @@ if IMPORT_ERROR is None:
                 target_page_number = int(context['page_number'])
                 if context['type'] == 'subpage':
                     target_subpage_number = int(context['subpage_number'])
-            self._apply_imported_subpage(source_entries, source_page_number, source_subpage_number, target_page_number, target_subpage_number)
+            selected_source_entries = collect_subpage_occurrence_entries(
+                source_entries,
+                source_page_number,
+                source_subpage_number,
+                source_occurrence_number,
+            ) or collect_subpage_entries(
+                source_entries,
+                source_page_number,
+                source_subpage_number,
+            )
+            self._apply_imported_subpage(
+                selected_source_entries,
+                source_page_number,
+                source_subpage_number,
+                target_page_number,
+                target_subpage_number,
+            )
 
         def _edit_selected_page_entry(self):
             context = self._selected_tree_context()
@@ -2478,7 +3859,7 @@ if IMPORT_ERROR is None:
 
             if context['type'] == 'page':
                 updated_entries = move_page_in_entries(
-                    self._cached_edited_entries,
+                    self._cached_combined_entries,
                     context['page_number'],
                     target_page_number,
                 )
@@ -2500,17 +3881,90 @@ if IMPORT_ERROR is None:
                 QtWidgets.QMessageBox.warning(self._dialog_parent(), 'T42 Tool', str(exc))
                 return
 
-            updated_entries = move_subpage_in_entries(
-                self._cached_edited_entries,
-                context['page_number'],
-                context['subpage_number'],
-                target_page_number,
-                target_subpage_number,
-            )
+            occurrence_number = int(context.get('occurrence_number') or 1)
+            if occurrence_number > 1:
+                source_entries = collect_subpage_occurrence_entries(
+                    self._cached_combined_entries,
+                    context['page_number'],
+                    context['subpage_number'],
+                    occurrence_number,
+                )
+                updated_entries = replace_subpage_occurrence_in_entries(
+                    self._cached_combined_entries,
+                    source_entries,
+                    context['page_number'],
+                    context['subpage_number'],
+                    occurrence_number,
+                    target_page_number=target_page_number,
+                    target_subpage_number=target_subpage_number,
+                )
+                focus_occurrence_number = max(
+                    len(tuple(self._page_subpage_occurrences_for_entries(updated_entries, target_page_number).get(target_subpage_number, ()))),
+                    1,
+                )
+            else:
+                updated_entries = move_subpage_in_entries(
+                    self._cached_combined_entries,
+                    context['page_number'],
+                    context['subpage_number'],
+                    target_page_number,
+                    target_subpage_number,
+                )
+                focus_occurrence_number = 1
             self._rebase_entries(
                 updated_entries,
                 focus_page_number=target_page_number,
                 focus_subpage_number=target_subpage_number,
+                focus_occurrence_number=focus_occurrence_number,
+            )
+
+        def _change_selected_hidden_subpage_sequence(self):
+            context = self._selected_tree_context()
+            if context is None or context['type'] != 'subpage':
+                return
+            occurrence_number = max(int(context.get('occurrence_number') or 1), 1)
+            if occurrence_number <= 1:
+                return
+            self._ensure_edit_cache()
+            variants = tuple(
+                self._page_subpage_occurrences_for_entries(
+                    self._cached_combined_entries,
+                    int(context['page_number']),
+                ).get(int(context['subpage_number']), ())
+            )
+            total_occurrences = len(variants)
+            if total_occurrences <= 1:
+                return
+            target_occurrence_number, accepted = QtWidgets.QInputDialog.getInt(
+                self._dialog_parent(),
+                'Change Hidden Sequence',
+                'Sequence number:',
+                value=occurrence_number,
+                min=1,
+                max=total_occurrences,
+            )
+            if not accepted:
+                return
+            target_occurrence_number = int(target_occurrence_number)
+            if target_occurrence_number == occurrence_number:
+                return
+            updated_entries = move_subpage_occurrence_in_entries(
+                self._cached_combined_entries,
+                context['page_number'],
+                context['subpage_number'],
+                occurrence_number,
+                target_occurrence_number,
+            )
+            self._rebase_entries(
+                updated_entries,
+                focus_page_number=int(context['page_number']),
+                focus_subpage_number=int(context['subpage_number']),
+                focus_occurrence_number=target_occurrence_number,
+            )
+            QtWidgets.QMessageBox.information(
+                self._dialog_parent(),
+                'T42 Tool',
+                f'Hidden subpage moved to sequence {target_occurrence_number}.',
             )
 
         def _packet_slider_changed(self, value):
@@ -2652,23 +4106,46 @@ if IMPORT_ERROR is None:
             self._sync_ui()
 
         def _delete_selected_page_entry(self):
-            item = self._page_tree.currentItem()
-            if item is None:
+            contexts = self._selected_tree_contexts()
+            if not contexts:
                 return
-            item_type = item.data(0, QtCore.Qt.UserRole)
-            if item_type == 'page':
-                page_number = int(item.data(0, QtCore.Qt.UserRole + 1))
-                self._deleted_pages = frozenset(set(self._deleted_pages) | {page_number})
-                self._deleted_subpages = frozenset(
-                    key for key in self._deleted_subpages
-                    if int(key[0]) != page_number
-                )
-            elif item_type == 'subpage':
-                page_number = int(item.data(0, QtCore.Qt.UserRole + 1))
-                subpage_number = int(item.data(0, QtCore.Qt.UserRole + 2))
-                self._deleted_subpages = frozenset(set(self._deleted_subpages) | {(page_number, subpage_number)})
-            else:
-                return
+            selected_pages = {
+                int(context['page_number'])
+                for context in contexts
+                if context['type'] == 'page'
+            }
+            selected_subpages = [
+                context for context in contexts
+                if context['type'] == 'subpage' and int(context['page_number']) not in selected_pages
+            ]
+            updated_deleted_pages = set(self._deleted_pages)
+            updated_deleted_subpages = set(self._deleted_subpages)
+            updated_occurrences = set(self._enabled_subpage_occurrences)
+            for page_number in selected_pages:
+                updated_deleted_pages.add(page_number)
+                updated_deleted_subpages = {
+                    key for key in updated_deleted_subpages
+                    if int(key[0]) != int(page_number)
+                }
+                updated_occurrences = {
+                    key for key in updated_occurrences
+                    if int(key[0]) != int(page_number)
+                }
+            for context in selected_subpages:
+                page_number = int(context['page_number'])
+                subpage_number = int(context['subpage_number'])
+                occurrence_number = int(context.get('occurrence_number') or 1)
+                if occurrence_number == 1:
+                    updated_deleted_subpages.add((page_number, subpage_number))
+                    updated_occurrences = {
+                        key for key in updated_occurrences
+                        if not (int(key[0]) == page_number and int(key[1]) == subpage_number)
+                    }
+                else:
+                    updated_occurrences.discard((page_number, subpage_number, occurrence_number))
+            self._deleted_pages = frozenset(updated_deleted_pages)
+            self._deleted_subpages = frozenset(updated_deleted_subpages)
+            self._enabled_subpage_occurrences = updated_occurrences
             self._mark_cache_dirty()
             self._record_history_state(reset_redo=True)
             self._sync_ui()
@@ -2708,6 +4185,7 @@ if IMPORT_ERROR is None:
             self._selected_insertion_index = None
             self._deleted_pages = frozenset()
             self._deleted_subpages = frozenset()
+            self._sync_enabled_subpage_occurrences(self._entries, preserve=False)
             self._pending_tree_selection = None
             self._mark_cache_dirty()
             self._record_history_state(reset_redo=True)

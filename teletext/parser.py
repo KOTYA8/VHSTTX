@@ -66,7 +66,7 @@ class Parser(object):
         else:
             self._state['rendered'] = True
 
-    def emitcode(self):
+    def emitcode(self, code=None):
         if self._held:
             tmp = self._state['solid']
             self._state['solid'] = self._heldsolid
@@ -75,62 +75,62 @@ class Parser(object):
         else:
             self._emitcharacter(' ')
 
-    def setat(self, **kwargs):
+    def setat(self, code=None, **kwargs):
         self.setstate(**kwargs)
-        self.emitcode()
+        self.emitcode(code)
 
-    def setafter(self, **kwargs):
-        self.emitcode()
+    def setafter(self, code=None, **kwargs):
+        self.emitcode(code)
         self.setstate(**kwargs)
 
     def parsebyte(self, b, prev):
         h, l = int(b&0xf0), int(b&0x0f)
         if h == 0x0:
             if l < 8:
-                self.setafter(fg=l, mosaic=False, conceal=False)
+                self.setafter(code=b, fg=l, mosaic=False, conceal=False)
                 self._heldmosaic = ' '
             elif l == 0x8: # flashing
-                self.setafter(flash=True)
+                self.setafter(code=b, flash=True)
             elif l == 0x9: # steady
-                self.setat(flash=False)
+                self.setat(code=b, flash=False)
             elif l == 0xa:
                 if prev == 0xa: # end box - set at because we're triggering on the second one
-                    self.setat(boxed=False)
+                    self.setat(code=b, boxed=False)
                 else:
-                    self.emitcode()
+                    self.emitcode(b)
             elif l == 0xb:
                 if prev == 0xb: # start box - set at because we're triggering on the second one
-                    self.setat(boxed=True)
+                    self.setat(code=b, boxed=True)
                 else:
-                    self.emitcode()
+                    self.emitcode(b)
             else: # sizes
                 dh, dw = bool(l&1), bool(l&2)
                 if dh or dw:
-                    self.setafter(dh=dh, dw=dw)
+                    self.setafter(code=b, dh=dh, dw=dw)
                 else:
-                    self.setat(dh=dh, dw=dw)
+                    self.setat(code=b, dh=dh, dw=dw)
 
         elif h == 0x10:
             if l < 8:
-                self.setafter(fg=l, mosaic=True, conceal=False)
+                self.setafter(code=b, fg=l, mosaic=True, conceal=False)
             elif l == 0x8: # conceal
-                self.setat(conceal=True)
+                self.setat(code=b, conceal=True)
             elif l == 0x9: # contiguous mosaic
-                self.setat(solid=True)
+                self.setat(code=b, solid=True)
             elif l == 0xa: # separated mosaic
-                self.setat(solid=False)
+                self.setat(code=b, solid=False)
             elif l == 0xb: # esc/switch
-                self.emitcode()
+                self.emitcode(b)
                 self._esc = not self._esc
             elif l == 0xc: # black background
-                self.setat(bg = 0)
+                self.setat(code=b, bg = 0)
             elif l == 0xd: # new background
-                self.setat(bg = self._state['fg'])
+                self.setat(code=b, bg = self._state['fg'])
             elif l == 0xe: # hold mosaic
                 self._held = True
-                self.emitcode()
+                self.emitcode(b)
             elif l == 0xf: # release mosaic
-                self.emitcode()
+                self.emitcode(b)
                 self._held = False
         else:
             c = self.ttchar(b)

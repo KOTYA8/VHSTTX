@@ -19,7 +19,7 @@ def desktop_entry(exec_command='ttviewer'):
         '[Desktop Entry]\n'
         'Version=1.0\n'
         'Type=Application\n'
-        'Name=Teletext Viewer\n'
+        'Name=TeleText Viewer\n'
         'Comment=Open teletext .t42 captures\n'
         f'Exec={exec_command} %f\n'
         'Icon=teletext\n'
@@ -132,16 +132,16 @@ def uninstall_desktop_integration(data_home=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Install Teletext Viewer desktop integration for .t42 files.')
+    parser = argparse.ArgumentParser(description='Install TeleText Viewer desktop integration for .t42 files.')
     parser.add_argument('--data-home', help='Override XDG data directory (default: ~/.local/share).')
     parser.add_argument('--exec', dest='exec_command', default='ttviewer', help='Command used in the desktop launcher.')
     parser.add_argument('--no-default', action='store_true', help='Do not register ttviewer.desktop as the default handler.')
-    parser.add_argument('--uninstall', action='store_true', help='Remove Teletext Viewer desktop integration.')
+    parser.add_argument('--uninstall', action='store_true', help='Remove TeleText Viewer desktop integration.')
     args = parser.parse_args(argv)
 
     if args.uninstall:
         removed = uninstall_desktop_integration(data_home=args.data_home)
-        print('Removed Teletext Viewer desktop integration.')
+        print('Removed TeleText Viewer desktop integration.')
         for key, path in removed.items():
             print(f'{key}: {path}')
         return 0
@@ -152,19 +152,19 @@ def main(argv=None):
         set_default=not args.no_default,
     )
 
-    print('Installed Teletext Viewer desktop integration.')
+    print('Installed TeleText Viewer desktop integration.')
     for key, path in installed.items():
         print(f'{key}: {path}')
     return 0
 
 
 def uninstall_main(argv=None):
-    parser = argparse.ArgumentParser(description='Remove Teletext Viewer desktop integration.')
+    parser = argparse.ArgumentParser(description='Remove TeleText Viewer desktop integration.')
     parser.add_argument('--data-home', help='Override XDG data directory (default: ~/.local/share).')
     args = parser.parse_args(argv)
 
     removed = uninstall_desktop_integration(data_home=args.data_home)
-    print('Removed Teletext Viewer desktop integration.')
+    print('Removed TeleText Viewer desktop integration.')
     for key, path in removed.items():
         print(f'{key}: {path}')
     return 0

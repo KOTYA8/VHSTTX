@@ -1,7 +1,9 @@
+import faulthandler
 import os
 import pathlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -26,6 +28,42 @@ else:
         QtWebEngineWidgets = None
     IMPORT_ERROR = None
 
+try:
+    faulthandler.enable(all_threads=True)
+except Exception:
+    pass
+
+
+def _copy_text_to_system_clipboard(text):
+    text = '' if text is None else str(text)
+    commands = ()
+    if sys.platform.startswith('linux'):
+        commands = (
+            ('wl-copy',),
+            ('xclip', '-selection', 'clipboard', '-in'),
+            ('xsel', '--clipboard', '--input'),
+        )
+    elif sys.platform == 'darwin':
+        commands = (('pbcopy',),)
+    elif os.name == 'nt':
+        commands = (('clip',),)
+    for command in commands:
+        executable = shutil.which(command[0])
+        if not executable:
+            continue
+        try:
+            subprocess.run(
+                (executable, *command[1:]),
+                input=text.encode('utf-8'),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            return True
+        except Exception:
+            continue
+    return False
+
 if IMPORT_ERROR is None:
     from teletext.gui.decoder import Decoder
     from teletext.file import FileChunker
@@ -35,6 +73,7 @@ if IMPORT_ERROR is None:
         DirectPageBuffer,
         OverviewEntry,
         ServiceNavigator,
+        append_t42_packet_entry,
         build_split_pattern,
         count_html_outputs,
         count_split_t42_outputs,
@@ -48,10 +87,12 @@ if IMPORT_ERROR is None:
         load_service_from_t42_directory,
         nearest_html_pages,
         normalise_html_subpage_fragment,
+        render_subpage_text,
     )
 
 
 if QtCore is not None:
+    VIEWER_APP_NAME = 'TeleText Viewer'
     HOTKEY_SETTINGS_ORGANISATION = 'VHSTTX'
     HOTKEY_SETTINGS_APPLICATION = 'TeletextViewer'
 
@@ -287,23 +328,26 @@ if QtCore is not None:
                     started_at = time.monotonic()
                     processed = 0
                     last_emitted = 0
+                    current_page = {}
+                    raw_entries = []
 
                     def packets():
                         nonlocal processed, last_emitted
                         for number, data in chunks:
+                            raw = bytes(data)
+                            append_t42_packet_entry(raw_entries, current_page, number, raw)
                             processed += 1
                             if total and (processed == 1 or processed - last_emitted >= 4096 or processed == total):
                                 last_emitted = processed
                                 self.progress.emit(processed, total, time.monotonic() - started_at)
-                            yield Packet(data, number)
-
+                            yield Packet(raw, number)
                     service = Service.from_packets(packets())
                     if total:
                         self.progress.emit(total, total, time.monotonic() - started_at)
             except Exception as exc:  # pragma: no cover - GUI error path
                 self.failed.emit(str(exc))
             else:
-                self.loaded.emit(service)
+                self.loaded.emit((service, tuple(raw_entries)))
 
 
     class DirectoryServiceLoader(QtCore.QThread):
@@ -342,11 +386,11 @@ if QtCore is not None:
             except Exception as exc:  # pragma: no cover - GUI error path
                 self.failed.emit(str(exc))
             else:
-                self.loaded.emit(service)
+                self.loaded.emit((service, ()))
 
 
     class PageOverviewDialog(QtWidgets.QDialog):
-        selectionRequested = QtCore.pyqtSignal(int, int)
+        selectionRequested = QtCore.pyqtSignal(int, int, int)
 
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -357,7 +401,7 @@ if QtCore is not None:
             self._loaded_count = 0
             self._current_entries = ()
             self._last_scroll_value = 0
-            self.setWindowTitle('Teletext Pages')
+            self.setWindowTitle('TeleText Pages')
             self.resize(920, 620)
 
             root = QtWidgets.QVBoxLayout(self)
@@ -377,6 +421,11 @@ if QtCore is not None:
             self._subpages_toggle.setChecked(True)
             self._subpages_toggle.toggled.connect(self._rebuild_items)
             controls.addWidget(self._subpages_toggle)
+
+            self._hidden_subpages_toggle = QtWidgets.QCheckBox('Hidden')
+            self._hidden_subpages_toggle.setChecked(False)
+            self._hidden_subpages_toggle.toggled.connect(self._rebuild_items)
+            controls.addWidget(self._hidden_subpages_toggle)
 
             self._hex_pages_toggle = QtWidgets.QCheckBox('Hex Pages')
             self._hex_pages_toggle.setChecked(True)
@@ -428,10 +477,14 @@ if QtCore is not None:
         def include_hex_pages(self):
             return self._hex_pages_toggle.isChecked()
 
+        @property
+        def include_hidden_subpages(self):
+            return self._hidden_subpages_toggle.isChecked()
+
         def clear_icon_cache(self):
             self._icon_cache.clear()
 
-        def populate(self, entries, preview_callback, include_subpages=None, include_hex_pages=None, icon_cache=None):
+        def populate(self, entries, preview_callback, include_subpages=None, include_hidden_subpages=None, include_hex_pages=None, icon_cache=None):
             self._entries = tuple(entries)
             self._preview_callback = preview_callback
             if icon_cache is not None and icon_cache is not self._icon_cache:
@@ -440,6 +493,10 @@ if QtCore is not None:
                 blocked = self._subpages_toggle.blockSignals(True)
                 self._subpages_toggle.setChecked(include_subpages)
                 self._subpages_toggle.blockSignals(blocked)
+            if include_hidden_subpages is not None:
+                blocked = self._hidden_subpages_toggle.blockSignals(True)
+                self._hidden_subpages_toggle.setChecked(include_hidden_subpages)
+                self._hidden_subpages_toggle.blockSignals(blocked)
             if include_hex_pages is not None:
                 blocked = self._hex_pages_toggle.blockSignals(True)
                 self._hex_pages_toggle.setChecked(include_hex_pages)
@@ -449,12 +506,15 @@ if QtCore is not None:
         def _filtered_entries(self):
             pattern = self._filter_input.text().strip().upper()
             include_subpages = self._subpages_toggle.isChecked()
+            include_hidden_subpages = self._hidden_subpages_toggle.isChecked()
             include_hex_pages = self._hex_pages_toggle.isChecked()
             filtered = []
             seen_pages = set()
 
             for entry in self._entries:
                 if not include_hex_pages and not ServiceNavigator.is_decimal_page(entry.page_number):
+                    continue
+                if not include_hidden_subpages and int(entry.occurrence_number or 1) > 1:
                     continue
                 if not include_subpages and entry.page_number in seen_pages:
                     continue
@@ -473,7 +533,7 @@ if QtCore is not None:
             self._current_entries = tuple(self._filtered_entries())
             self._thumbnail_queue = [
                 entry for entry in self._current_entries
-                if (entry.page_number, entry.subpage_number) not in self._icon_cache
+                if (entry.page_number, entry.subpage_number, entry.occurrence_number) not in self._icon_cache
             ]
             self._loaded_count = len(self._current_entries) - len(self._thumbnail_queue)
             self._open_button.setEnabled(False)
@@ -504,7 +564,7 @@ if QtCore is not None:
             for entry in self._current_entries:
                 text = f'{entry.page_label}\n{entry.subpage_label}'
                 item = QtWidgets.QListWidgetItem(text)
-                key = (entry.page_number, entry.subpage_number)
+                key = (entry.page_number, entry.subpage_number, entry.occurrence_number)
                 item.setData(QtCore.Qt.UserRole, key)
                 item.setToolTip(text.replace('\n', ' '))
                 cached_icon = self._icon_cache.get(key)
@@ -535,8 +595,9 @@ if QtCore is not None:
                 entry = self._thumbnail_queue.pop(0)
                 page_number = entry.page_number
                 subpage_number = entry.subpage_number
-                key = (page_number, subpage_number)
-                icon = self._preview_callback(page_number, subpage_number, self._list.iconSize())
+                occurrence_number = entry.occurrence_number
+                key = (page_number, subpage_number, occurrence_number)
+                icon = self._preview_callback(page_number, subpage_number, occurrence_number, self._list.iconSize())
                 if icon is not None:
                     self._icon_cache[key] = icon
                 self._loaded_count += 1
@@ -545,8 +606,8 @@ if QtCore is not None:
         def _activate_item(self, item):
             if item is None:
                 return
-            page_number, subpage_number = item.data(QtCore.Qt.UserRole)
-            self.selectionRequested.emit(int(page_number), int(subpage_number))
+            page_number, subpage_number, occurrence_number = item.data(QtCore.Qt.UserRole)
+            self.selectionRequested.emit(int(page_number), int(subpage_number), int(occurrence_number))
             self.accept()
 
         def _open_current_item(self):
@@ -567,7 +628,7 @@ if QtCore is not None:
     class ServiceInfoDialog(QtWidgets.QDialog):
         def __init__(self, parent=None):
             super().__init__(parent)
-            self.setWindowTitle('Teletext Info')
+            self.setWindowTitle('TeleText Info')
             self.resize(760, 560)
 
             root = QtWidgets.QVBoxLayout(self)
@@ -897,9 +958,13 @@ if QtCore is not None:
                 return True
             return False
 
-        def _service_loaded(self, service):
+        def _service_loaded(self, payload):
+            raw_entries = ()
+            service = payload
+            if isinstance(payload, tuple) and len(payload) == 2:
+                service, raw_entries = payload
             try:
-                self._navigator = ServiceNavigator(service)
+                self._navigator = ServiceNavigator(service, raw_entries=raw_entries)
             except ValueError as exc:
                 self._navigator = None
                 self._clear_decoder()
@@ -950,6 +1015,7 @@ if QtCore is not None:
             subpage = self._navigator.subpage(
                 self._navigator.current_page_number,
                 self._navigator.current_subpage_number,
+                self._navigator.current_subpage_occurrence,
             )
             header = np.full((40,), fill_value=0x20, dtype=np.uint8)
             magazine, page = ServiceNavigator.split_page_number(self._navigator.current_page_number)
@@ -990,6 +1056,8 @@ if QtCore is not None:
             if self._navigator is None:
                 return
             self._navigator.set_hex_pages_enabled(not self._owner._no_hex_pages_action.isChecked())
+            self._navigator.set_hidden_subpages_mode(self._owner._hidden_subpages_mode())
+            self._navigator.set_hidden_subpages_enabled(self._owner._hidden_subpages_enabled())
             if not self._owner._subpages_enabled():
                 self._navigator.go_to_page(self._navigator.current_page_number)
 
@@ -2738,6 +2806,7 @@ if QtCore is not None:
                         entries.append(OverviewEntry(
                             page_number=folder_entry.page_number,
                             subpage_number=selection_id,
+                            occurrence_number=1,
                             page_label=page_label,
                             subpage_label=subpage_label,
                         ))
@@ -2755,6 +2824,7 @@ if QtCore is not None:
                     entries.append(OverviewEntry(
                         page_number=folder_entry.page_number,
                         subpage_number=selection_id,
+                        occurrence_number=1,
                         page_label=page_label,
                         subpage_label=subpage_label,
                     ))
@@ -2829,7 +2899,7 @@ if QtCore is not None:
                 f'<style>\n{css}\n</style>',
             )
 
-        def _make_html_overview_icon(self, page_number, selection_id, icon_size):
+        def _make_html_overview_icon(self, page_number, selection_id, _occurrence_number, icon_size):
             source = self._overview_selection_map.get((page_number, selection_id))
             if source is None:
                 return None
@@ -2861,7 +2931,7 @@ if QtCore is not None:
                 )
             )
 
-        def _open_html_overview_selection(self, page_number, selection_id):
+        def _open_html_overview_selection(self, page_number, selection_id, _occurrence_number):
             source = self._overview_selection_map.get((page_number, selection_id))
             if source is None:
                 return
@@ -3516,7 +3586,7 @@ if QtCore is not None:
             self._overview_preload_timer.setInterval(0)
             self._overview_preload_timer.timeout.connect(self._preload_overview_batch)
 
-            self.setWindowTitle('Teletext Viewer')
+            self.setWindowTitle(VIEWER_APP_NAME)
             self.setAcceptDrops(True)
             if os.path.exists(self._icon_path):
                 self.setWindowIcon(QtGui.QIcon(self._icon_path))
@@ -3532,15 +3602,25 @@ if QtCore is not None:
 
         def _build_ui(self):
             central = QtWidgets.QWidget()
+            central.setFocusPolicy(QtCore.Qt.StrongFocus)
             root = QtWidgets.QVBoxLayout(central)
             root.setContentsMargins(*self._normal_layout_margins)
             root.setSpacing(self._normal_layout_spacing)
             self._root_layout = root
 
             self._toolbar_widget = QtWidgets.QWidget()
-            toolbar = QtWidgets.QHBoxLayout(self._toolbar_widget)
+            self._toolbar_widget.setObjectName('viewerToolbar')
+            toolbar = QtWidgets.QVBoxLayout(self._toolbar_widget)
             toolbar.setContentsMargins(0, 0, 0, 0)
-            toolbar.setSpacing(8)
+            toolbar.setSpacing(4)
+
+            menu_row = QtWidgets.QHBoxLayout()
+            menu_row.setContentsMargins(0, 0, 0, 0)
+            menu_row.setSpacing(2)
+
+            controls_row = QtWidgets.QHBoxLayout()
+            controls_row.setContentsMargins(0, 0, 0, 0)
+            controls_row.setSpacing(8)
 
             self._open_action = QtWidgets.QAction('Open .t42...', self)
             self._open_action.triggered.connect(self.open_dialog)
@@ -3561,7 +3641,7 @@ if QtCore is not None:
             self._open_menu.addAction(self._open_html_folder_action)
             self._open_menu.addAction(self._open_html_file_action)
             self._open_button.setMenu(self._open_menu)
-            toolbar.addWidget(self._open_button)
+            menu_row.addWidget(self._open_button)
 
             self._split_export_action = QtWidgets.QAction('Export...', self)
             self._split_export_action.triggered.connect(self.show_split_dialog)
@@ -3571,7 +3651,7 @@ if QtCore is not None:
             self._split_menu = QtWidgets.QMenu(self._split_button)
             self._split_menu.addAction(self._split_export_action)
             self._split_button.setMenu(self._split_menu)
-            toolbar.addWidget(self._split_button)
+            menu_row.addWidget(self._split_button)
 
             self._screenshot_action = QtWidgets.QAction('Screenshot (File)...', self)
             self._screenshot_action.triggered.connect(self.save_screenshot)
@@ -3603,7 +3683,7 @@ if QtCore is not None:
             self._functions_menu.addAction(self._fullscreen_action)
             self._functions_menu.addAction(self._load_overview_action)
             self._functions_button.setMenu(self._functions_menu)
-            toolbar.addWidget(self._functions_button)
+            menu_row.addWidget(self._functions_button)
 
             self._fullscreen_button = QtWidgets.QPushButton('Fullscreen')
             self._fullscreen_button.setCheckable(True)
@@ -3614,27 +3694,47 @@ if QtCore is not None:
             self._settings_button.setText('Settings')
             self._settings_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
             self._settings_menu = QtWidgets.QMenu(self._settings_button)
-            self._single_height_action = self._settings_menu.addAction('Single Height')
+            self._single_height_action = QtWidgets.QAction('Single Height', self)
             self._single_height_action.setCheckable(True)
             self._single_height_action.toggled.connect(self._set_single_height)
-            self._single_width_action = self._settings_menu.addAction('Single Width')
+            self._single_width_action = QtWidgets.QAction('Single Width', self)
             self._single_width_action.setCheckable(True)
             self._single_width_action.toggled.connect(self._set_single_width)
-            self._no_flash_action = self._settings_menu.addAction('No Flash')
+            self._no_flash_action = QtWidgets.QAction('No Flash', self)
             self._no_flash_action.setCheckable(True)
             self._no_flash_action.toggled.connect(self._set_no_flash)
+            self._single_height_action.toggled.connect(self._sync_edit_toggle_state)
+            self._single_width_action.toggled.connect(self._sync_edit_toggle_state)
+            self._no_flash_action.toggled.connect(self._sync_edit_toggle_state)
+            self._settings_menu.addAction(self._single_height_action)
+            self._settings_menu.addAction(self._single_width_action)
+            self._settings_menu.addAction(self._no_flash_action)
             self._highlight_text_action = self._settings_menu.addAction('Highlight Characters')
             self._highlight_text_action.setCheckable(True)
             self._highlight_text_action.toggled.connect(self._set_highlight_text)
             self._reveal_all_action = self._settings_menu.addAction('All Symbols')
             self._reveal_all_action.setCheckable(True)
             self._reveal_all_action.toggled.connect(self._set_reveal_all)
+            self._show_control_codes_action = self._settings_menu.addAction('Show Control Codes')
+            self._show_control_codes_action.setCheckable(True)
+            self._show_control_codes_action.toggled.connect(self._set_show_control_codes)
             self._mouse_wheel_pages_action = self._settings_menu.addAction('Mouse Wheel Pages')
             self._mouse_wheel_pages_action.setCheckable(True)
             self._mouse_wheel_pages_action.setChecked(True)
             self._row_order_action = self._settings_menu.addAction('Row Order')
             self._row_order_action.setCheckable(True)
             self._row_order_action.toggled.connect(self._set_row_order_visible)
+
+            self._copy_mode_menu = self._settings_menu.addMenu('Copy Mode')
+            self._copy_mode_group = QtWidgets.QActionGroup(self)
+            self._copy_mode_group.setExclusive(True)
+            self._copy_page_action = self._copy_mode_menu.addAction('Page')
+            self._copy_page_action.setCheckable(True)
+            self._copy_mode_group.addAction(self._copy_page_action)
+            self._copy_row_action = self._copy_mode_menu.addAction('Row')
+            self._copy_row_action.setCheckable(True)
+            self._copy_row_action.setChecked(True)
+            self._copy_mode_group.addAction(self._copy_row_action)
 
             zoom_widget = QtWidgets.QWidget()
             zoom_layout = QtWidgets.QHBoxLayout(zoom_widget)
@@ -3717,8 +3817,31 @@ if QtCore is not None:
             self._subpages_enabled_action.setCheckable(True)
             self._subpages_enabled_action.setChecked(False)
             self._subpages_enabled_action.toggled.connect(lambda checked=False: self._set_subpages_enabled(not checked))
+
+            self._hidden_subpages_action = self._settings_menu.addAction('Hidden Subpages')
+            self._hidden_subpages_action.setCheckable(True)
+            self._hidden_subpages_action.setChecked(False)
+            self._hidden_subpages_action.toggled.connect(self._set_hidden_subpages_enabled)
+            self._hidden_subpages_mode_menu = self._settings_menu.addMenu('Hidden Subpages Mode')
+            self._hidden_subpages_mode_group = QtWidgets.QActionGroup(self)
+            self._hidden_subpages_mode_group.setExclusive(True)
+            self._hidden_subpages_mode_legacy_action = self._hidden_subpages_mode_menu.addAction('Legacy')
+            self._hidden_subpages_mode_legacy_action.setCheckable(True)
+            self._hidden_subpages_mode_legacy_action.setChecked(True)
+            self._hidden_subpages_mode_legacy_action.toggled.connect(
+                lambda checked=False: checked and self._set_hidden_subpages_mode('legacy')
+            )
+            self._hidden_subpages_mode_group.addAction(self._hidden_subpages_mode_legacy_action)
+            self._hidden_subpages_mode_exact_action = self._hidden_subpages_mode_menu.addAction('Exact')
+            self._hidden_subpages_mode_exact_action.setCheckable(True)
+            self._hidden_subpages_mode_exact_action.setChecked(False)
+            self._hidden_subpages_mode_exact_action.toggled.connect(
+                lambda checked=False: checked and self._set_hidden_subpages_mode('raw')
+            )
+            self._hidden_subpages_mode_group.addAction(self._hidden_subpages_mode_exact_action)
             self._no_hex_pages_action = self._settings_menu.addAction('No Hex Pages')
             self._no_hex_pages_action.setCheckable(True)
+            self._no_hex_pages_action.setChecked(True)
             self._no_hex_pages_action.toggled.connect(self._set_no_hex_pages)
             self._language_menu = self._settings_menu.addMenu('Language')
             self._language_action_group = QtWidgets.QActionGroup(self)
@@ -3742,49 +3865,86 @@ if QtCore is not None:
             self._settings_menu.addSeparator()
             self._hotkeys_menu = self._settings_menu.addMenu('Hotkeys')
             self._settings_button.setMenu(self._settings_menu)
-            toolbar.addWidget(self._settings_button)
+            menu_row.addWidget(self._settings_button)
+            menu_row.addStretch(1)
 
-            toolbar.addWidget(QtWidgets.QLabel('Page'))
+            for button in (
+                self._open_button,
+                self._split_button,
+                self._functions_button,
+                self._settings_button,
+            ):
+                button.setAutoRaise(True)
+                button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+                button.setFocusPolicy(QtCore.Qt.NoFocus)
+                button.setStyleSheet(
+                    'QToolButton {'
+                    'border: 1px solid transparent;'
+                    'border-radius: 4px;'
+                    'padding: 5px 10px;'
+                    'background: transparent;'
+                    '}'
+                    'QToolButton::menu-indicator {'
+                    'image: none;'
+                    'width: 0px;'
+                    '}'
+                    'QToolButton:hover {'
+                    'background: rgba(0, 0, 0, 0.045);'
+                    'border-color: rgba(0, 0, 0, 0.08);'
+                    '}'
+                    'QToolButton:pressed, QToolButton::menu-open {'
+                    'background: rgba(0, 0, 0, 0.08);'
+                    'border-color: rgba(0, 0, 0, 0.12);'
+                    '}'
+                )
+
+            controls_row.addWidget(QtWidgets.QLabel('Page'))
             self._page_input = QtWidgets.QLineEdit()
             self._page_input.setMaxLength(4)
             self._page_input.setFixedWidth(80)
             self._page_input.setPlaceholderText('100')
             self._page_input.returnPressed.connect(self.go_to_page_text)
             self._page_input.installEventFilter(self)
-            toolbar.addWidget(self._page_input)
+            controls_row.addWidget(self._page_input)
 
             self._go_button = QtWidgets.QPushButton('Go')
             self._go_button.clicked.connect(self.go_to_page_text)
-            toolbar.addWidget(self._go_button)
+            controls_row.addWidget(self._go_button)
 
             self._auto_toggle = QtWidgets.QCheckBox('Auto')
             self._auto_toggle.toggled.connect(self._set_auto_scroll)
             self._auto_toggle.setChecked(False)
-            toolbar.addWidget(self._auto_toggle)
+            controls_row.addWidget(self._auto_toggle)
 
             self._stretch_toggle = QtWidgets.QCheckBox('Zoom')
             self._stretch_toggle.toggled.connect(self._set_stretch)
-            toolbar.addWidget(self._stretch_toggle)
+            controls_row.addWidget(self._stretch_toggle)
 
             self._crt_toggle = QtWidgets.QCheckBox('CRT')
             self._crt_toggle.setChecked(True)
             self._crt_toggle.toggled.connect(self._set_crt_effect)
-            toolbar.addWidget(self._crt_toggle)
-            self._hotkey_controller = ShortcutConfigController(
-                self,
-                'main',
-                self._hotkeys_menu,
-                self._build_hotkey_bindings(),
-                'Viewer Hotkeys',
-            )
+            controls_row.addWidget(self._crt_toggle)
 
-            toolbar.addStretch(1)
+            controls_row.addStretch(1)
 
             self._page_label = QtWidgets.QLabel('Page: ---')
-            toolbar.addWidget(self._page_label)
+            controls_row.addWidget(self._page_label)
 
             self._subpage_label = QtWidgets.QLabel('Subpage: --/--')
-            toolbar.addWidget(self._subpage_label)
+            controls_row.addWidget(self._subpage_label)
+
+            self._toolbar_divider = QtWidgets.QFrame()
+            self._toolbar_divider.setObjectName('viewerToolbarDivider')
+            self._toolbar_divider.setFixedHeight(1)
+            self._toolbar_divider.setStyleSheet(
+                'QFrame#viewerToolbarDivider {'
+                'background-color: rgba(0, 0, 0, 0.14);'
+                'border: none;'
+                '}'
+            )
+            toolbar.addLayout(menu_row)
+            toolbar.addWidget(self._toolbar_divider)
+            toolbar.addLayout(controls_row)
 
             root.addWidget(self._toolbar_widget)
 
@@ -3796,6 +3956,7 @@ if QtCore is not None:
             self._decoder.zoom = self.base_zoom
             self._decoder_widget.setFixedSize(self._decoder.size())
             self._decoder_area = QtWidgets.QWidget()
+            self._decoder_area.setFocusPolicy(QtCore.Qt.StrongFocus)
             self._decoder_area.installEventFilter(self)
             decoder_layout = QtWidgets.QHBoxLayout(self._decoder_area)
             decoder_layout.setContentsMargins(0, 0, 0, 0)
@@ -3808,14 +3969,11 @@ if QtCore is not None:
             decoder_layout.addStretch(1)
             self._decoder_widget.installEventFilter(self)
             root.addWidget(self._decoder_area, 0, QtCore.Qt.AlignCenter)
-            self._decoder.doubleheight = False
-            self._decoder.doublewidth = False
-            self._decoder.flashenabled = False
+            self._decoder.doubleheight = True
+            self._decoder.doublewidth = True
+            self._decoder.flashenabled = True
             self._decoder.highlighttext = False
             for action in (
-                self._single_height_action,
-                self._single_width_action,
-                self._no_flash_action,
                 self._mouse_wheel_pages_action,
                 self._language_actions['default'],
             ):
@@ -3845,26 +4003,54 @@ if QtCore is not None:
             nav.addWidget(self._next_subpage_button)
 
             nav.addStretch(1)
-            nav.addWidget(QtWidgets.QLabel('Keyboard: Up/Down = page, Left/Right = subpage'))
+
+            self._edit_toggle = QtWidgets.QCheckBox('Edit')
+            self._edit_toggle.setToolTip('Enable Single Height, Single Width and No Flash together.')
+            self._edit_toggle.toggled.connect(self._set_edit_mode)
+            nav.addWidget(self._edit_toggle)
+
+            self._copy_toggle = QtWidgets.QCheckBox('Copy')
+            self._copy_toggle.setToolTip('Click the teletext area to copy the current page or a single row.')
+            nav.addWidget(self._copy_toggle)
 
             root.addWidget(self._nav_widget)
+
+            self._hotkey_controller = ShortcutConfigController(
+                self,
+                'main',
+                self._hotkeys_menu,
+                self._build_hotkey_bindings(),
+                'Viewer Hotkeys',
+            )
 
             self._fastext_widget = QtWidgets.QWidget()
             fastext = QtWidgets.QHBoxLayout(self._fastext_widget)
             fastext.setContentsMargins(0, 0, 0, 0)
             fastext.setSpacing(8)
             self._fastext_buttons = []
+            self._active_fastext_index = None
+            self._fastext_highlight_timer = QtCore.QTimer(self)
+            self._fastext_highlight_timer.setSingleShot(True)
+            self._fastext_highlight_timer.timeout.connect(self._clear_fastext_highlight)
             for index, (background, foreground) in enumerate(self.fastext_colours):
                 button = QtWidgets.QPushButton('---')
                 button.setMinimumHeight(44)
                 button.setMinimumWidth(110)
+                button.setCheckable(True)
                 button.setStyleSheet(
                     'QPushButton {'
                     f'background-color: {background};'
                     f'color: {foreground};'
                     'font-weight: bold;'
-                    'border: none;'
-                    'padding: 8px 14px;'
+                    'border: 2px solid transparent;'
+                    'border-radius: 4px;'
+                    'padding: 6px 12px;'
+                    '}'
+                    'QPushButton:checked {'
+                    'border-color: white;'
+                    '}'
+                    'QPushButton:checked:disabled {'
+                    'border-color: white;'
                     '}'
                     'QPushButton:disabled {'
                     'color: rgba(255, 255, 255, 0.55);'
@@ -3891,16 +4077,32 @@ if QtCore is not None:
             QtWidgets.QShortcut(QtGui.QKeySequence('Ctrl+O'), self, activated=self.open_dialog)
             QtWidgets.QShortcut(QtGui.QKeySequence('Escape'), self, activated=self._leave_fullscreen_shortcut)
 
+        def _clear_fastext_highlight(self):
+            self._active_fastext_index = None
+            for button in self._fastext_buttons:
+                blocked = button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(blocked)
+
+        def _highlight_fastext_button(self, index):
+            self._active_fastext_index = index
+            for current_index, button in enumerate(self._fastext_buttons):
+                blocked = button.blockSignals(True)
+                button.setChecked(current_index == index)
+                button.blockSignals(blocked)
+            self._fastext_highlight_timer.start(1200)
+
         def _build_hotkey_bindings(self):
             return (
-                {'id': 'single_height', 'label': 'Single Height', 'default': 'Ctrl+1', 'handler': self._single_height_action.toggle},
-                {'id': 'single_width', 'label': 'Single Width', 'default': 'Ctrl+2', 'handler': self._single_width_action.toggle},
-                {'id': 'no_flash', 'label': 'No Flash', 'default': 'Ctrl+3', 'handler': self._no_flash_action.toggle},
+                {'id': 'edit_mode', 'label': 'Edit', 'default': 'Ctrl+1', 'handler': self._edit_toggle.toggle},
                 {'id': 'highlight_text', 'label': 'Highlight Characters', 'default': 'Ctrl+4', 'handler': self._highlight_text_action.toggle},
                 {'id': 'all_symbols', 'label': 'All Symbols', 'default': 'Ctrl+5', 'handler': self._reveal_all_action.toggle},
+                {'id': 'show_control_codes', 'label': 'Show Control Codes', 'default': 'Ctrl+Shift+5', 'handler': self._show_control_codes_action.toggle},
+                {'id': 'copy_toggle', 'label': 'Copy', 'default': 'Ctrl+Shift+X', 'handler': self._copy_toggle.toggle},
                 {'id': 'wheel_pages', 'label': 'Mouse Wheel Pages', 'default': 'Ctrl+6', 'handler': self._mouse_wheel_pages_action.toggle},
                 {'id': 'row_order', 'label': 'Row Order', 'default': 'Ctrl+9', 'handler': self._row_order_action.toggle},
                 {'id': 'no_subpages', 'label': 'No Subpages', 'default': 'Ctrl+7', 'handler': self._subpages_enabled_action.toggle},
+                {'id': 'hidden_subpages', 'label': 'Hidden Subpages', 'default': 'Ctrl+Shift+7', 'handler': self._hidden_subpages_action.toggle},
                 {'id': 'no_hex', 'label': 'No Hex Pages', 'default': 'Ctrl+8', 'handler': self._no_hex_pages_action.toggle},
                 {'id': 'language', 'label': 'Language', 'default': 'Ctrl+L', 'handler': self._cycle_language_shortcut},
                 {'id': 'fullscreen', 'label': 'Fullscreen', 'default': 'F11', 'handler': self._toggle_fullscreen_shortcut},
@@ -3957,6 +4159,21 @@ if QtCore is not None:
         def _subpages_enabled(self):
             return not self._subpages_enabled_action.isChecked()
 
+        def _hidden_subpages_enabled(self):
+            return self._hidden_subpages_action.isChecked()
+
+        def _hidden_subpages_mode(self):
+            if getattr(self, '_hidden_subpages_mode_exact_action', None) is not None and self._hidden_subpages_mode_exact_action.isChecked():
+                return 'raw'
+            return 'legacy'
+
+        def _ensure_metadata_cache(self):
+            if self._navigator is None:
+                return None
+            if self._metadata_cache is None:
+                self._metadata_cache = self._navigator.metadata(self._filename)
+            return self._metadata_cache
+
         def _header_row(self, page_number, subpage):
             header = np.full((40,), fill_value=0x20, dtype=np.uint8)
             magazine, page = self._navigator.split_page_number(page_number)
@@ -3971,11 +4188,12 @@ if QtCore is not None:
             decoder.highlighttext = self._highlight_text_action.isChecked()
             decoder.reveal = self._reveal_all_action.isChecked()
             decoder.showallsymbols = self._reveal_all_action.isChecked()
+            decoder.showcontrolcodes = self._show_control_codes_action.isChecked()
             decoder.language = self._current_language_key()
             decoder.crteffect = False if preview else self._crt_toggle.isChecked()
 
-        def _paint_decoder(self, decoder, page_number, subpage_number):
-            subpage = self._navigator.subpage(page_number, subpage_number)
+        def _paint_decoder(self, decoder, page_number, subpage_number, occurrence_number=None):
+            subpage = self._navigator.subpage(page_number, subpage_number, occurrence_number)
             decoder.pagecodepage = subpage.codepage
             decoder[0] = self._header_row(page_number, subpage)
             decoder[1:] = subpage.displayable[:]
@@ -3993,14 +4211,14 @@ if QtCore is not None:
             self._preview_decoder = Decoder(self._preview_widget, font_family=self._font_family)
             self._preview_decoder.zoom = 1
 
-        def _make_overview_icon(self, page_number, subpage_number, icon_size):
+        def _make_overview_icon(self, page_number, subpage_number, occurrence_number, icon_size):
             if self._navigator is None:
                 return None
             try:
                 self._ensure_preview_renderer()
                 self._preview_decoder.zoom = 1
                 self._apply_decoder_preferences(self._preview_decoder, preview=True)
-                self._paint_decoder(self._preview_decoder, page_number, subpage_number)
+                self._paint_decoder(self._preview_decoder, page_number, subpage_number, occurrence_number)
                 self._preview_decoder.fullscreenmode = False
                 self._preview_decoder.fullscreenstretch = False
                 self._preview_widget.setFixedSize(self._preview_decoder.size())
@@ -4026,6 +4244,7 @@ if QtCore is not None:
             return self._navigator.overview_entries(
                 include_subpages=self._subpages_enabled(),
                 include_hex_pages=not self._no_hex_pages_action.isChecked(),
+                include_hidden_subpages=self._hidden_subpages_enabled(),
             )
 
         def _update_overview_status_label(self):
@@ -4056,7 +4275,7 @@ if QtCore is not None:
             self._overview_preload_total = len(entries)
             self._overview_preload_queue = [
                 entry for entry in entries
-                if (entry.page_number, entry.subpage_number) not in self._overview_icon_cache
+                if (entry.page_number, entry.subpage_number, entry.occurrence_number) not in self._overview_icon_cache
             ]
             self._overview_preload_loaded = self._overview_preload_total - len(self._overview_preload_queue)
 
@@ -4079,9 +4298,14 @@ if QtCore is not None:
                     return
 
                 entry = self._overview_preload_queue.pop(0)
-                key = (entry.page_number, entry.subpage_number)
+                key = (entry.page_number, entry.subpage_number, entry.occurrence_number)
                 if key not in self._overview_icon_cache:
-                    icon = self._make_overview_icon(entry.page_number, entry.subpage_number, icon_size)
+                    icon = self._make_overview_icon(
+                        entry.page_number,
+                        entry.subpage_number,
+                        entry.occurrence_number,
+                        icon_size,
+                    )
                     if icon is not None:
                         self._overview_icon_cache[key] = icon
                 self._overview_preload_loaded += 1
@@ -4124,7 +4348,13 @@ if QtCore is not None:
                 top_padding=border,
                 bottom_padding=border,
             )
-            self._decoder_area.setFixedSize(self._decoder_area.sizeHint())
+            layout = self._decoder_area.layout()
+            decoder_area_width = self._decoder_widget.width()
+            if self._row_order_widget.isVisible():
+                decoder_area_width += self._row_order_widget.width()
+                if layout is not None:
+                    decoder_area_width += max(0, layout.spacing())
+            self._decoder_area.setFixedSize(decoder_area_width, self._decoder_widget.height())
             if self.centralWidget() is not None:
                 self.centralWidget().adjustSize()
 
@@ -4138,7 +4368,11 @@ if QtCore is not None:
 
         def _restore_navigation_focus(self):
             self._page_input.clearFocus()
-            self.centralWidget().setFocus(QtCore.Qt.OtherFocusReason)
+            self._page_input.deselect()
+            if getattr(self, '_decoder_area', None) is not None:
+                self._decoder_area.setFocus(QtCore.Qt.OtherFocusReason)
+            elif self.centralWidget() is not None:
+                self.centralWidget().setFocus(QtCore.Qt.OtherFocusReason)
             self.activateWindow()
 
         def _set_auto_scroll(self, enabled):
@@ -4240,6 +4474,28 @@ if QtCore is not None:
             self._invalidate_overview_cache()
             self._refresh_compare_dialog()
 
+        def _sync_edit_toggle_state(self, *_args):
+            checked = all((
+                self._single_height_action.isChecked(),
+                self._single_width_action.isChecked(),
+                self._no_flash_action.isChecked(),
+            ))
+            blocked = self._edit_toggle.blockSignals(True)
+            self._edit_toggle.setChecked(checked)
+            self._edit_toggle.blockSignals(blocked)
+
+        def _set_edit_mode(self, enabled):
+            for action, handler in (
+                (self._single_height_action, self._set_single_height),
+                (self._single_width_action, self._set_single_width),
+                (self._no_flash_action, self._set_no_flash),
+            ):
+                blocked = action.blockSignals(True)
+                action.setChecked(bool(enabled))
+                action.blockSignals(blocked)
+                handler(bool(enabled))
+            self._sync_edit_toggle_state()
+
         def _set_highlight_text(self, enabled):
             self._decoder.highlighttext = enabled
             self._invalidate_overview_cache()
@@ -4252,6 +4508,8 @@ if QtCore is not None:
 
         def _set_subpages_enabled(self, enabled):
             self._auto_subpages_action.setEnabled(enabled)
+            self._hidden_subpages_action.setEnabled(enabled)
+            self._hidden_subpages_mode_menu.setEnabled(enabled)
             if self._navigator is not None:
                 if not enabled:
                     self._navigator.go_to_page(self._navigator.current_page_number)
@@ -4261,9 +4519,36 @@ if QtCore is not None:
                 self._sync_auto_scroll()
             self._refresh_compare_dialog()
 
+        def _set_hidden_subpages_enabled(self, enabled):
+            if self._navigator is not None:
+                self._navigator.set_hidden_subpages_enabled(bool(enabled))
+                self._direct_page_buffer.clear()
+                self._render_current_subpage()
+            else:
+                self._sync_auto_scroll()
+            self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
+
+        def _set_hidden_subpages_mode(self, mode):
+            if self._navigator is not None:
+                self._navigator.set_hidden_subpages_mode(mode)
+                self._direct_page_buffer.clear()
+                self._render_current_subpage()
+            else:
+                self._sync_auto_scroll()
+            self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
+
         def _set_reveal_all(self, enabled):
             self._decoder.reveal = enabled
             self._decoder.showallsymbols = enabled
+            if self._navigator is not None:
+                self._render_current_subpage()
+            self._invalidate_overview_cache()
+            self._refresh_compare_dialog()
+
+        def _set_show_control_codes(self, enabled):
+            self._decoder.showcontrolcodes = enabled
             if self._navigator is not None:
                 self._render_current_subpage()
             self._invalidate_overview_cache()
@@ -4331,7 +4616,9 @@ if QtCore is not None:
                 self._decoder.language,
                 self._highlight_text_action.isChecked(),
                 self._reveal_all_action.isChecked(),
+                self._show_control_codes_action.isChecked(),
                 self._subpages_enabled(),
+                self._hidden_subpages_enabled(),
             )
 
         def _set_navigation_enabled(self, enabled):
@@ -4345,6 +4632,8 @@ if QtCore is not None:
                 self._auto_toggle,
                 self._stretch_toggle,
                 self._crt_toggle,
+                self._edit_toggle,
+                self._copy_toggle,
                 self._fullscreen_button,
                 self._prev_page_button,
                 self._next_page_button,
@@ -4356,6 +4645,7 @@ if QtCore is not None:
                 self._screenshot_action,
                 self._screenshot_copy_action,
                 self._overview_action,
+                self._load_overview_action,
                 self._info_action,
                 self._fullscreen_action,
                 self._split_export_action,
@@ -4372,7 +4662,12 @@ if QtCore is not None:
                 self._auto_subpages_action,
                 self._auto_pages_action,
                 self._subpages_enabled_action,
+                self._hidden_subpages_action,
+                self._hidden_subpages_mode_legacy_action,
+                self._hidden_subpages_mode_exact_action,
                 self._reveal_all_action,
+                self._copy_page_action,
+                self._copy_row_action,
                 self._fullscreen_43_action,
                 self._fullscreen_stretch_action,
                 self._no_hex_pages_action,
@@ -4382,6 +4677,13 @@ if QtCore is not None:
             self._viewer_zoom_action.setEnabled(enabled)
             if enabled:
                 self._auto_subpages_action.setEnabled(self._subpages_enabled())
+                self._hidden_subpages_action.setEnabled(self._subpages_enabled())
+                self._hidden_subpages_mode_menu.setEnabled(self._subpages_enabled())
+            else:
+                blocked = self._load_overview_action.blockSignals(True)
+                self._load_overview_action.setChecked(False)
+                self._load_overview_action.blockSignals(blocked)
+                self._stop_overview_preload()
             self._functions_button.setEnabled(True)
             for button in self._fastext_buttons:
                 button.setEnabled(enabled)
@@ -4435,24 +4737,30 @@ if QtCore is not None:
             self._last_t42_source_directory = os.path.dirname(filename)
             self._start_service_loading(filename, ServiceLoader(filename))
 
-        def _service_loaded(self, service):
+        def _service_loaded(self, payload):
+            raw_entries = ()
+            service = payload
+            if isinstance(payload, tuple) and len(payload) == 2:
+                service, raw_entries = payload
             try:
-                self._navigator = ServiceNavigator(service)
+                self._navigator = ServiceNavigator(service, raw_entries=raw_entries)
             except ValueError as exc:
                 self._navigator = None
                 self._clear_decoder()
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, str(exc))
                 self.statusBar().showMessage(str(exc))
             else:
                 self._metadata_cache = None
                 self._overview_dirty = True
                 self._overview_signature = None
                 self._navigator.set_hex_pages_enabled(not self._no_hex_pages_action.isChecked())
+                self._navigator.set_hidden_subpages_mode(self._hidden_subpages_mode())
+                self._navigator.set_hidden_subpages_enabled(self._hidden_subpages_enabled())
                 self._render_current_subpage()
                 self._set_navigation_enabled(True)
                 if self._load_overview_action.isChecked():
                     self._start_overview_preload()
-                self.setWindowTitle(f'Teletext Viewer - {os.path.basename(self._filename)}')
+                self.setWindowTitle(f'{VIEWER_APP_NAME} - {os.path.basename(self._filename)}')
                 self.statusBar().showMessage(self._filename)
 
         def _service_failed(self, message):  # pragma: no cover - GUI error path
@@ -4476,7 +4784,7 @@ if QtCore is not None:
                 self._text_reader_dialog.hide()
             if self._split_dialog is not None:
                 self._split_dialog.hide()
-            QtWidgets.QMessageBox.critical(self, 'Teletext Viewer', message)
+            QtWidgets.QMessageBox.critical(self, VIEWER_APP_NAME, message)
             self.statusBar().showMessage(message)
 
         def _service_finished(self):
@@ -4491,6 +4799,7 @@ if QtCore is not None:
                 self._decoder,
                 self._navigator.current_page_number,
                 self._navigator.current_subpage_number,
+                self._navigator.current_subpage_occurrence,
             )
             self._sync_decoder_size()
 
@@ -4501,6 +4810,10 @@ if QtCore is not None:
             self._page_label.setText(f'Page: {self._navigator.current_page_label}')
             self._subpage_label.setText(
                 f'Subpage: {current_subpage:02d}/{total_subpages:02d} ({self._navigator.current_subpage_number:04X})'
+                + (
+                    f' H({self._navigator.current_subpage_occurrence})'
+                    if self._navigator.current_subpage_occurrence > 1 else ''
+                )
             )
             if not self._direct_page_buffer.text:
                 self._page_input.setText(self._navigator.current_page_label[1:])
@@ -4525,19 +4838,23 @@ if QtCore is not None:
                 self._overview_dialog.selectionRequested.connect(self._open_overview_selection)
                 self._overview_dialog.finished.connect(self._resume_overview_preload)
                 include_subpages = self._subpages_enabled()
+                include_hidden_subpages = self._hidden_subpages_enabled()
                 include_hex_pages = not self._no_hex_pages_action.isChecked()
             else:
                 include_subpages = self._overview_dialog.include_subpages and self._subpages_enabled()
+                include_hidden_subpages = self._overview_dialog.include_hidden_subpages
                 include_hex_pages = self._overview_dialog.include_hex_pages and not self._no_hex_pages_action.isChecked()
             self._stop_overview_preload()
             signature = self._overview_state_signature()
             self._overview_dialog.populate(
                 self._navigator.overview_entries(
                     include_subpages=self._subpages_enabled(),
-                    include_hex_pages=not self._no_hex_pages_action.isChecked(),
+                    include_hex_pages=True,
+                    include_hidden_subpages=True,
                 ),
                 self._make_overview_icon,
                 include_subpages=include_subpages,
+                include_hidden_subpages=include_hidden_subpages,
                 include_hex_pages=include_hex_pages,
                 icon_cache=self._overview_icon_cache,
             )
@@ -4578,7 +4895,7 @@ if QtCore is not None:
 
         def _open_local_path(self, path):
             if not path or not os.path.exists(path):
-                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', f'Path does not exist yet:\n{path}')
+                QtWidgets.QMessageBox.information(self, VIEWER_APP_NAME, f'Path does not exist yet:\n{path}')
                 return False
 
             url = QtCore.QUrl.fromLocalFile(path)
@@ -4595,7 +4912,7 @@ if QtCore is not None:
             except Exception as exc:  # pragma: no cover - GUI error path
                 QtWidgets.QMessageBox.warning(
                     self,
-                    'Teletext Viewer',
+                    VIEWER_APP_NAME,
                     f'Could not open path:\n{path}\n\n{exc}',
                 )
                 return False
@@ -4638,7 +4955,7 @@ if QtCore is not None:
 
         def _open_html_preview(self, filename):
             if not filename or not os.path.exists(filename):
-                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', f'HTML file does not exist:\n{filename}')
+                QtWidgets.QMessageBox.information(self, VIEWER_APP_NAME, f'HTML file does not exist:\n{filename}')
                 return
             self._set_html_export_directory(os.path.dirname(filename))
             dialog = self._ensure_html_preview_dialog()
@@ -4665,7 +4982,7 @@ if QtCore is not None:
             try:
                 dialog.open_html_folder(directory)
             except ValueError as exc:
-                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.information(self, VIEWER_APP_NAME, str(exc))
                 return
             dialog.show()
             dialog.raise_()
@@ -4735,7 +5052,7 @@ if QtCore is not None:
             try:
                 page_number, subpage_number = self._dialog_page_selection()
             except ValueError as exc:
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, str(exc))
                 return
 
             filename, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -4762,7 +5079,7 @@ if QtCore is not None:
             try:
                 page_number, subpage_number = self._dialog_page_selection()
             except ValueError as exc:
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, str(exc))
                 return
 
             filename, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -4834,12 +5151,12 @@ if QtCore is not None:
                 return
             html_dir = self._split_dialog.html_directory()
             if not html_dir:
-                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', 'Choose an HTML export directory first.')
+                QtWidgets.QMessageBox.information(self, VIEWER_APP_NAME, 'Choose an HTML export directory first.')
                 return
             try:
                 ensure_html_assets(html_dir)
             except Exception as exc:
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, str(exc))
                 return
             self._set_html_export_directory(html_dir)
             self.statusBar().showMessage(f'Copied HTML assets to {html_dir}', 5000)
@@ -4848,7 +5165,7 @@ if QtCore is not None:
             if self._split_dialog is None:
                 return
             if not self._split_dialog.t42_enabled() and not self._split_dialog.html_enabled():
-                QtWidgets.QMessageBox.information(self, 'Teletext Viewer', 'Enable T42 or HTML export first.')
+                QtWidgets.QMessageBox.information(self, VIEWER_APP_NAME, 'Enable T42 or HTML export first.')
                 return
 
             written = []
@@ -4867,7 +5184,7 @@ if QtCore is not None:
                         raise ValueError('Choose an HTML export directory.')
                     self._set_html_export_directory(html_dir)
             except Exception as exc:
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, str(exc))
                 return
 
             total_steps += (
@@ -4922,7 +5239,7 @@ if QtCore is not None:
                     ))
             except Exception as exc:
                 progress.close()
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, str(exc))
                 return
 
             progress.setValue(total_steps)
@@ -4960,7 +5277,7 @@ if QtCore is not None:
         def _show_missing_page_dialog(self, requested_page_number):
             previous_page, next_page = self._navigator.nearest_pages(requested_page_number)
             message = QtWidgets.QMessageBox(self)
-            message.setWindowTitle('Teletext Viewer')
+            message.setWindowTitle(VIEWER_APP_NAME)
             message.setIcon(QtWidgets.QMessageBox.Information)
             message.setText(f'Page {self._page_display_label(requested_page_number)} is not present in this file.')
             message.setInformativeText(
@@ -5029,6 +5346,15 @@ if QtCore is not None:
 
             magazines = ', '.join(f'M{magazine}={count}' for magazine, count in metadata.magazine_counts) or 'unavailable'
             codepages = ', '.join(str(codepage) for codepage in metadata.codepages) or 'unavailable'
+            national_options = ', '.join(str(option) for option in metadata.national_options) or 'unavailable'
+            page_flags = ', '.join(f'{label}={count}' for label, count in metadata.page_flag_counts) or 'unavailable'
+            packet_presence = ', '.join(
+                f'{label}={"yes" if present else "no"}'
+                for label, present in metadata.packet_presence
+            ) or 'unavailable'
+            level_evidence = ', '.join(metadata.teletext_level_evidence) or 'unavailable'
+            detected_dates = ', '.join(metadata.detected_dates) or 'unavailable'
+            detected_times = ', '.join(metadata.detected_times) or 'unavailable'
 
             lines = [
                 'Extracted',
@@ -5040,15 +5366,22 @@ if QtCore is not None:
                 f'Subpages: {metadata.subpage_count}',
                 f'Magazines: {magazines}',
                 f'Codepages: {codepages}',
-                f'Broadcast 8/30: {"present" if metadata.broadcast_present else "missing"}',
+                f'National Options: {national_options}',
+                f'Page Flags: {page_flags}',
+                f'Broadcast Packets Present: {packet_presence}',
+                f'Detected Teletext Level: {display(metadata.teletext_level)}',
+                f'Level Evidence: {level_evidence}',
                 f'Initial Page: {display(metadata.initial_page)}',
                 f'Broadcast Label: {display(metadata.broadcast_label)}',
-                f'Broadcast Network: {display(metadata.broadcast_network)}',
+                f'Network ID: {display(metadata.broadcast_network)}',
                 f'Broadcast Country: {display(metadata.broadcast_country)}',
                 f'Broadcast Date: {display(metadata.broadcast_date)}',
                 f'Broadcast Time: {display(metadata.broadcast_time)}',
+                f'Detected Dates: {detected_dates}',
+                f'Detected Times: {detected_times}',
                 '',
                 'Inferred',
+                f'Likely Service Brand: {display(metadata.likely_service_brand)}',
                 f'Likely Broadcaster: {display(metadata.likely_broadcaster)}',
                 f'Likely Language: {display(metadata.likely_language)}',
                 f'Likely Country: {display(metadata.likely_country)}',
@@ -5078,9 +5411,9 @@ if QtCore is not None:
             if self._metadata_cache is None:
                 QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
                 try:
-                    self._metadata_cache = self._navigator.metadata(self._filename)
+                    self._ensure_metadata_cache()
                 except Exception as exc:  # pragma: no cover - GUI error path
-                    QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', f'Could not read teletext info: {exc}')
+                    QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, f'Could not read teletext info: {exc}')
                     return
                 finally:
                     QtWidgets.QApplication.restoreOverrideCursor()
@@ -5105,6 +5438,83 @@ if QtCore is not None:
                 reveal=True,
             )
 
+        def _copy_scope(self):
+            return 'row' if self._copy_row_action.isChecked() else 'page'
+
+        def _set_clipboard_text(self, text, success_message=''):
+            if _copy_text_to_system_clipboard(text):
+                if success_message:
+                    self.statusBar().showMessage(success_message, 3000)
+                return True
+            clipboard = QtWidgets.QApplication.clipboard()
+            if clipboard is None:
+                self.statusBar().showMessage('Clipboard is not available.', 3000)
+                return False
+            text = '' if text is None else str(text)
+            try:
+                clipboard.setText(text, mode=clipboard.Clipboard)
+                if clipboard.supportsSelection():
+                    clipboard.setText(text, mode=clipboard.Selection)
+                QtWidgets.QApplication.processEvents()
+                if success_message:
+                    self.statusBar().showMessage(success_message, 3000)
+                return True
+            except Exception:
+                self.statusBar().showMessage('Clipboard copy failed.', 4000)
+                return False
+
+        def _current_copy_text(self):
+            preview_stack = getattr(self, '_preview_stack', None)
+            raw_browser = getattr(self, '_raw_browser', None)
+            if preview_stack is not None and raw_browser is not None and preview_stack.currentWidget() is raw_browser:
+                return raw_browser.toPlainText()
+            if self._navigator is None:
+                return ''
+            localcodepage = self._current_language_key()
+            if localcodepage == 'default':
+                localcodepage = None
+            return render_subpage_text(
+                self._navigator.current_page_number,
+                self._navigator.current_subpage,
+                localcodepage=localcodepage,
+                doubleheight=not self._single_height_action.isChecked(),
+                doublewidth=not self._single_width_action.isChecked(),
+                flashenabled=not self._no_flash_action.isChecked(),
+                reveal=self._reveal_all_action.isChecked(),
+            )
+
+        def _row_index_from_decoder_pos(self, local_pos):
+            root_object = self._decoder_widget.rootObject()
+            border = float(root_object.property('effectiveBorderSize') or 0) if root_object is not None else 0.0
+            usable_height = max(1.0, float(self._decoder_widget.height()) - (border * 2.0))
+            y_pos = min(max(0.0, float(local_pos.y()) - border), usable_height - 1.0)
+            return int((y_pos / usable_height) * 25)
+
+        def _current_row_text(self, row_index):
+            rows = self._current_copy_text().splitlines()
+            if 0 <= row_index < len(rows):
+                return rows[row_index].rstrip()
+            return ''
+
+        def _copy_visible_text_from_decoder(self, watched, pos):
+            if self._navigator is None or not self._copy_toggle.isChecked():
+                return False
+            local_pos = pos if watched is self._decoder_widget else self._decoder_widget.mapFrom(self._decoder_area, pos)
+            if not self._decoder_widget.rect().contains(local_pos):
+                return False
+            if self._copy_scope() == 'row':
+                row_index = self._row_index_from_decoder_pos(local_pos)
+                copied_text = self._current_row_text(row_index)
+                return self._set_clipboard_text(copied_text, f'Copied row {row_index} to clipboard.')
+            preview_stack = getattr(self, '_preview_stack', None)
+            raw_browser = getattr(self, '_raw_browser', None)
+            label = (
+                'Copied raw text to clipboard.'
+                if preview_stack is not None and raw_browser is not None and preview_stack.currentWidget() is raw_browser
+                else f'Copied {self._navigator.current_page_label} to clipboard.'
+            )
+            return self._set_clipboard_text(self._current_copy_text(), label)
+
         def show_text_reader(self):
             if self._navigator is None:
                 return
@@ -5115,11 +5525,12 @@ if QtCore is not None:
             self._text_reader_dialog.raise_()
             self._text_reader_dialog.activateWindow()
 
-        def _open_overview_selection(self, page_number, subpage_number):
+        def _open_overview_selection(self, page_number, subpage_number, occurrence_number):
             if self._navigator is None:
                 return
             selected_subpage = subpage_number if self._subpages_enabled() else None
-            if self._navigator.go_to_page(page_number, selected_subpage):
+            selected_occurrence = occurrence_number if self._hidden_subpages_enabled() else None
+            if self._navigator.go_to_page(page_number, selected_subpage, selected_occurrence):
                 self._direct_page_buffer.clear()
                 self._render_current_subpage()
                 self._restore_navigation_focus()
@@ -5159,7 +5570,7 @@ if QtCore is not None:
             if self._current_screenshot_pixmap().save(filename, 'PNG'):
                 self.statusBar().showMessage(f'Screenshot saved to {filename}', 5000)
             else:  # pragma: no cover - GUI error path
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', f'Could not save screenshot to {filename}.')
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, f'Could not save screenshot to {filename}.')
 
         def copy_screenshot(self):
             if self._navigator is None:
@@ -5206,7 +5617,7 @@ if QtCore is not None:
                 requested_page_number = self._navigator.parse_page_number(self._page_input.text())
                 success = self._navigator.go_to_page(requested_page_number)
             except ValueError as exc:
-                QtWidgets.QMessageBox.warning(self, 'Teletext Viewer', str(exc))
+                QtWidgets.QMessageBox.warning(self, VIEWER_APP_NAME, str(exc))
                 self._reset_direct_page_buffer()
                 self._restore_navigation_focus()
                 return False
@@ -5258,6 +5669,7 @@ if QtCore is not None:
                 link = links[index]
                 success = bool(link.enabled and link.page_number is not None and self._navigator.go_to_page(link.page_number))
             if success:
+                self._highlight_fastext_button(index)
                 self._direct_page_buffer.clear()
                 self._render_current_subpage()
 
@@ -5292,6 +5704,15 @@ if QtCore is not None:
                     return True
                 if delta < 0:
                     self.prev_page()
+                    event.accept()
+                    return True
+            if (
+                watched in (decoder_area, decoder_widget)
+                and event.type() == QtCore.QEvent.MouseButtonPress
+                and navigator is not None
+                and event.button() == QtCore.Qt.LeftButton
+            ):
+                if self._copy_visible_text_from_decoder(watched, event.pos()):
                     event.accept()
                     return True
             if (
@@ -5356,7 +5777,7 @@ if QtCore is not None:
 
 def main(argv=None):
     if IMPORT_ERROR is not None:
-        print(f'PyQt5 is not installed. Qt teletext viewer not available. ({IMPORT_ERROR})')
+        print(f'PyQt5 is not installed. Qt TeleText viewer not available. ({IMPORT_ERROR})')
         return 1
 
     argv = list(sys.argv if argv is None else argv)

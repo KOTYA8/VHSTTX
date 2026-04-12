@@ -1,5 +1,5 @@
-__version__ = "2.6"
-__display_version__ = "V2.6"
+__version__ = "2.7"
+__display_version__ = "V2.7"
 __github_url__ = "https://github.com/KOTYA8/VHSTTX"
 __github_releases_url__ = "https://github.com/KOTYA8/VHSTTX/releases"
 __github_latest_release_api__ = "https://api.github.com/repos/KOTYA8/VHSTTX/releases/latest"

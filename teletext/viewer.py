@@ -16,6 +16,7 @@ from .file import FileChunker
 from .packet import Packet
 from .parser import Parser
 from .service import Service
+from .subpage import Subpage
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class FastextLinkInfo:
 class OverviewEntry:
     page_number: int
     subpage_number: int
+    occurrence_number: int
     page_label: str
     subpage_label: str
 
@@ -60,19 +62,106 @@ class ServiceMetadata:
     subpage_count: int
     magazine_counts: tuple[tuple[int, int], ...]
     codepages: tuple[int, ...]
+    national_options: tuple[int, ...]
+    page_flag_counts: tuple[tuple[str, int], ...]
     broadcast_present: bool
+    packet_presence: tuple[tuple[str, bool], ...]
+    teletext_level: str
+    teletext_level_evidence: tuple[str, ...]
     initial_page: str | None
     broadcast_network: str | None
     broadcast_country: str | None
     broadcast_date: str | None
     broadcast_time: str | None
     broadcast_label: str | None
+    likely_service_brand: str | None
     likely_broadcaster: str | None
     likely_language: str | None
     likely_country: str | None
     confidence: str | None
+    detected_dates: tuple[str, ...]
+    detected_times: tuple[str, ...]
     evidence: tuple[str, ...]
     sample_titles: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class T42PacketEntry:
+    packet_index: int
+    raw: bytes
+    magazine: int | None
+    row: int | None
+    page_number: int | None
+    subpage_number: int | None
+
+
+def _compose_page_number(magazine, page):
+    return (int(magazine) << 8) | int(page)
+
+
+def append_t42_packet_entry(entries, current_page, packet_index, data):
+    raw = bytes(data)
+    if len(raw) != 42:
+        return
+    packet = Packet(raw, packet_index)
+    magazine = int(packet.mrag.magazine)
+    row = int(packet.mrag.row)
+    page_number = None
+    subpage_number = None
+    if packet.type == 'header':
+        page_number = _compose_page_number(magazine, int(packet.header.page))
+        subpage_number = int(packet.header.subpage)
+        current_page[magazine] = (page_number, subpage_number)
+    else:
+        page_number, subpage_number = current_page.get(magazine, (None, None))
+    entries.append(T42PacketEntry(
+        packet_index=int(packet_index),
+        raw=raw,
+        magazine=magazine,
+        row=row,
+        page_number=page_number,
+        subpage_number=subpage_number,
+    ))
+
+
+def build_t42_packet_entries(raw_packets):
+    current_page = {}
+    entries = []
+    for packet_index, data in enumerate(raw_packets):
+        append_t42_packet_entry(entries, current_page, packet_index, data)
+    return tuple(entries)
+
+
+def collect_t42_subpage_occurrence_entries(entries, page_number, subpage_number, occurrence_number=1):
+    page_number = int(page_number)
+    subpage_number = int(subpage_number)
+    occurrence_number = max(int(occurrence_number or 1), 1)
+    matching_headers = [
+        entry for entry in entries
+        if (
+            entry.page_number == page_number
+            and entry.subpage_number == subpage_number
+            and entry.row is not None
+            and int(entry.row) == 0
+        )
+    ]
+    if not matching_headers:
+        return ()
+    if occurrence_number > len(matching_headers):
+        occurrence_number = len(matching_headers)
+    start_packet = int(matching_headers[occurrence_number - 1].packet_index)
+    end_packet = None
+    if occurrence_number < len(matching_headers):
+        end_packet = int(matching_headers[occurrence_number].packet_index)
+    return tuple(
+        entry for entry in entries
+        if (
+            entry.page_number == page_number
+            and entry.subpage_number == subpage_number
+            and int(entry.packet_index) >= start_packet
+            and (end_packet is None or int(entry.packet_index) < end_packet)
+        )
+    )
 
 
 class _PlainTextRowParser(Parser):
@@ -168,6 +257,20 @@ _HEADER_TRANSLATION = str.maketrans({
 })
 
 _BROADCASTER_PROFILES = (
+    {
+        'name': 'C4',
+        'aliases': ('C4', 'CHANNEL4', 'CH4', 'CHANNELFOUR'),
+        'country': 'United Kingdom',
+        'language': 'English',
+        'keywords': ('TELETEXT', 'ENGLAND', 'CONTENTS', 'RACING', 'FINANCE'),
+    },
+    {
+        'name': 'ITV1',
+        'aliases': ('ITV1', 'ITV', 'ITVPLUS', 'ITVPLUS1'),
+        'country': 'United Kingdom',
+        'language': 'English',
+        'keywords': ('TELETEXT', 'SUBTITLE', 'WEATHER', 'LOTTERY', 'MOVIES'),
+    },
     {
         'name': 'BBC2',
         'aliases': ('BBC', 'BBC1', 'BBC2', 'BBCNEWS', 'CEEFAX'),
@@ -270,6 +373,43 @@ _LANGUAGE_TO_COUNTRY = {
     'Dutch': 'Netherlands',
     'Swedish': 'Sweden',
 }
+
+_ENGLISH_MONTH_MARKERS = ('JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC')
+
+_SERVICE_BRAND_PROFILES = (
+    ('CEEFAX', ('CEEFAX',)),
+    ('SKYTEXT', ('SKYTEXT',)),
+    ('TELEVIDEO', ('TELEVIDEO',)),
+    ('TELETEKST', ('TELETEKST',)),
+    ('TEXTTV', ('TEXTTV', 'TEXT TV', 'TEXT-TV')),
+    ('TELETEXT', ('TELETEXT',)),
+)
+
+_PAGE_FLAG_BITS = (
+    ('Erase Page', 0x001),
+    ('Newsflash', 0x002),
+    ('Subtitle', 0x004),
+    ('Suppress Header', 0x008),
+    ('Update Page', 0x010),
+    ('Interrupted Sequence', 0x020),
+    ('Inhibit Display', 0x040),
+    ('Magazine Serial', 0x080),
+)
+
+_PACKET_PRESENCE_LABELS = ('8/30', '27', '28', '29')
+
+_DATE_PATTERNS = (
+    re.compile(r'\b(?:MON|TUE|WED|THU|FRI|SAT|SUN)\s+\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(?:\s+\d{2,4})?\b'),
+    re.compile(r'\b\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(?:\s+\d{2,4})?\b'),
+    re.compile(r'\b(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2,4}\b'),
+    re.compile(r'\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b'),
+)
+
+_TIME_PATTERNS = (
+    re.compile(r'\b\d{1,2}:\d{2}(?::\d{2})?\b'),
+    re.compile(r'\b\d{1,2}[.:]\d{2}/\d{2}\b'),
+    re.compile(r'\b\d{1,2}[.:]\d{2}[.:]\d{2}\b'),
+)
 
 
 def _compose_page_number(magazine, page):
@@ -475,13 +615,65 @@ def _best_keyword_matches(tokens, keywords, threshold=0.74):
             score = _similarity(token, keyword)
             if token == keyword:
                 score = 1.0
-            elif keyword in token or token in keyword:
+            elif min(len(token), len(keyword)) >= 5 and (keyword in token or token in keyword):
                 score = max(score, 0.85)
             best_score = max(best_score, score)
         if best_score >= threshold:
             matches.append((keyword, best_score))
     matches.sort(key=lambda item: (-item[1], item[0]))
     return matches
+
+
+def _exact_keyword_counts(tokens, keywords):
+    counter = Counter(tokens)
+    return {
+        keyword: int(counter.get(keyword, 0))
+        for keyword in keywords
+        if counter.get(keyword, 0)
+    }
+
+
+def _english_context_bonus(titles):
+    topics = tuple(_clean_ascii_text(title) for title in titles.values() if title)
+    if not topics:
+        return 0.0, ()
+
+    evidence = []
+    bonus = 0.0
+
+    teletext_hits = sum('TELETEXT' in topic for topic in topics)
+    if teletext_hits >= 3:
+        bonus += 1.5
+        evidence.append(f'repeated service brand: TELETEXT ({teletext_hits} headers)')
+    elif teletext_hits >= 2:
+        bonus += 1.0
+        evidence.append(f'service brand: TELETEXT ({teletext_hits} headers)')
+
+    month_hits = sum(
+        any(re.search(rf'\b{marker}(?:\d{{2}})?\b', topic) for marker in _ENGLISH_MONTH_MARKERS)
+        for topic in topics
+    )
+    if month_hits >= 2:
+        bonus += 0.9
+        evidence.append(f'english month headers ({month_hits})')
+
+    return bonus, tuple(evidence)
+
+
+def _source_alias_score(token, alias):
+    token = str(token or '').strip().upper()
+    alias = str(alias or '').strip().upper()
+    if not token or not alias:
+        return 0.0
+    if token == alias:
+        return 3.5
+    if token.startswith(alias) and token[len(alias):].isdigit():
+        return 3.4
+    if alias.startswith(token) and len(token) >= 3:
+        return 2.6
+    if min(len(token), len(alias)) >= 4 and (alias in token or token in alias):
+        return 2.3
+    return 0.0
 
 
 def _header_score(text):
@@ -516,9 +708,124 @@ def _collect_titles(service):
     return titles
 
 
+def _control_flag_counts(service):
+    counts = Counter()
+    for _, _, _, subpage in _iter_service_subpages(service):
+        control = int(subpage.header.control)
+        for label, mask in _PAGE_FLAG_BITS:
+            if control & mask:
+                counts[label] += 1
+    return tuple((label, counts[label]) for label, _ in _PAGE_FLAG_BITS if counts[label])
+
+
+def _infer_service_brand(titles, extra_texts=()):
+    corpus = []
+    corpus.extend(titles.values())
+    corpus.extend(text for text in extra_texts if text)
+    if not corpus:
+        return None
+
+    joined_text = ' '.join(_normalise_for_matching(text) for text in corpus if text)
+    best_brand = None
+    best_score = 0
+    for brand, aliases in _SERVICE_BRAND_PROFILES:
+        score = 0
+        for alias in aliases:
+            normalised_alias = _normalise_for_matching(alias).strip()
+            if not normalised_alias:
+                continue
+            pattern = rf'(?<![A-Z0-9]){re.escape(normalised_alias)}(?![A-Z0-9])'
+            score += len(re.findall(pattern, joined_text))
+        if score > best_score:
+            best_brand = brand
+            best_score = score
+    return best_brand if best_score > 0 else None
+
+
+def _append_unique_matches(items, patterns, results, limit):
+    for item in items:
+        if len(results) >= limit:
+            break
+        if not item:
+            continue
+        for pattern in patterns:
+            for match in pattern.finditer(item.upper()):
+                value = re.sub(r'\s+', ' ', match.group(0).strip())
+                if value and value not in results:
+                    results.append(value)
+                    if len(results) >= limit:
+                        break
+            if len(results) >= limit:
+                break
+
+
+def _collect_temporal_markers(service, titles):
+    date_matches = []
+    time_matches = []
+    title_texts = tuple(titles.values())
+    _append_unique_matches(title_texts, _DATE_PATTERNS, date_matches, 40)
+    _append_unique_matches(title_texts, _TIME_PATTERNS, time_matches, 40)
+
+    for _, page_number, _, subpage in _iter_service_subpages(service):
+        text = render_subpage_text(
+            page_number,
+            subpage,
+            doubleheight=False,
+            doublewidth=False,
+            flashenabled=False,
+            reveal=True,
+        )
+        _append_unique_matches((text,), _DATE_PATTERNS, date_matches, 40)
+        _append_unique_matches((text,), _TIME_PATTERNS, time_matches, 40)
+        if len(date_matches) >= 40 and len(time_matches) >= 40:
+            break
+
+    return tuple(date_matches), tuple(time_matches)
+
+
+def _collect_row_designations(service, row):
+    designations = set()
+    if row < 26:
+        return ()
+    for _, _, _, subpage in _iter_service_subpages(service):
+        for dc in range(16):
+            if subpage.has_packet(row, dc):
+                designations.add(dc)
+    return tuple(sorted(designations))
+
+
+def _detect_teletext_level(service, codepages, national_options, file_info):
+    x26_designations = _collect_row_designations(service, 26)
+    x28_designations = _collect_row_designations(service, 28)
+    packet_designations = file_info.get('packet_designations', {})
+    m29_designations = tuple(sorted(packet_designations.get('29', ())))
+
+    evidence = []
+    if any(int(codepage) > 0 for codepage in codepages) or any(int(option) > 0 for option in national_options):
+        evidence.append('non-default national option/codepage present')
+    if x26_designations:
+        evidence.append('X/26 present' + (f' (DC={",".join(str(dc) for dc in x26_designations)})' if x26_designations else ''))
+    if x28_designations:
+        evidence.append('X/28 present' + (f' (DC={",".join(str(dc) for dc in x28_designations)})' if x28_designations else ''))
+    if m29_designations:
+        evidence.append('M/29 present' + (f' (DC={",".join(str(dc) for dc in m29_designations)})' if m29_designations else ''))
+    elif dict(file_info.get('packet_presence', ())).get('29'):
+        evidence.append('M/29 present')
+
+    if set(x28_designations) & {1, 4} or set(m29_designations) & {1, 4}:
+        return '3.5', tuple(evidence or ('advanced Level 3.5 packets present',))
+    if x28_designations or m29_designations or dict(file_info.get('packet_presence', ())).get('29'):
+        return '2.5', tuple(evidence or ('advanced Level 2.5 packets present',))
+    if x26_designations or any(int(codepage) > 0 for codepage in codepages) or any(int(option) > 0 for option in national_options):
+        return '1.5', tuple(evidence or ('extended Level 1.5 features present',))
+    return '1', tuple(evidence or ('basic Level 1 packets only',))
+
+
 def _scan_capture_file(filename):
     info = {
         'broadcast_present': False,
+        'packet_presence': {label: False for label in _PACKET_PRESENCE_LABELS},
+        'packet_designations': {'28': set(), '29': set()},
         'initial_page': None,
         'broadcast_network': None,
         'broadcast_country': None,
@@ -552,7 +859,24 @@ def _scan_capture_file(filename):
                     packet = Packet(np.frombuffer(chunk, dtype=np.uint8).copy())
                 except Exception:
                     continue
-                if packet.type != 'broadcast':
+                packet_type = packet.type
+                if packet_type == 'broadcast':
+                    info['packet_presence']['8/30'] = True
+                elif packet_type == 'fastext':
+                    info['packet_presence']['27'] = True
+                elif packet_type == 'magazine enhancement':
+                    info['packet_presence']['29'] = True
+                    try:
+                        info['packet_designations']['29'].add(int(packet.dc.dc))
+                    except Exception:
+                        pass
+                elif packet_type == 'page enhancement' and int(packet.mrag.row) == 28:
+                    info['packet_presence']['28'] = True
+                    try:
+                        info['packet_designations']['28'].add(int(packet.dc.dc))
+                    except Exception:
+                        pass
+                if packet_type != 'broadcast':
                     continue
                 try:
                     broadcast = packet.broadcast
@@ -631,20 +955,32 @@ def _infer_from_titles(titles, filename=None, extra_texts=()):
         title_tokens.extend(_extract_tokens(extra_text))
     title_tokens = tuple(title_tokens)
     source_tokens = tuple(dict.fromkeys(filename_tokens + service_label_tokens))
+    english_context_bonus, english_context_evidence = _english_context_bonus(titles)
+    exact_title_keyword_counts = {
+        language: _exact_keyword_counts(title_tokens, keywords)
+        for language, keywords in _LANGUAGE_KEYWORDS.items()
+    }
 
     for profile in _BROADCASTER_PROFILES:
         score = 0.0
         alias_hit = None
         alias_source = None
         for token in source_tokens:
-            if token in profile['aliases']:
-                score += 3.5
-                alias_hit = token
+            alias_score = 0.0
+            matched_alias = None
+            for alias in profile['aliases']:
+                current_score = _source_alias_score(token, alias)
+                if current_score > alias_score:
+                    alias_score = current_score
+                    matched_alias = alias
+            if alias_score >= 3.4:
+                score += alias_score
+                alias_hit = matched_alias or token
                 alias_source = 'service label' if token in service_label_tokens and token not in filename_tokens else 'filename stem'
                 break
-            if any(alias in token or token in alias for alias in profile['aliases']):
-                score += 2.5
-                alias_hit = token
+            if alias_score >= 2.3:
+                score += alias_score
+                alias_hit = matched_alias or token
                 alias_source = 'service label' if token in service_label_tokens and token not in filename_tokens else 'filename stem'
                 break
 
@@ -669,6 +1005,11 @@ def _infer_from_titles(titles, filename=None, extra_texts=()):
     for language, keywords in _LANGUAGE_KEYWORDS.items():
         matches = _best_keyword_matches(title_tokens, keywords, threshold=0.84)
         score = sum(match_score for _, match_score in matches[:3])
+        exact_counts = exact_title_keyword_counts[language]
+        if exact_counts:
+            score += min(1.6, sum(min(count, 3) for count in exact_counts.values()) * 0.35)
+        if language == 'English':
+            score += english_context_bonus
         if score > best_language_score:
             best_language = language
             best_language_score = score
@@ -703,6 +1044,10 @@ def _infer_from_titles(titles, filename=None, extra_texts=()):
 
     if best_language is not None and language_matches and not any(item.startswith('header hints:') for item in evidence):
         evidence.append('header hints: ' + ', '.join(keyword for keyword, _ in language_matches[:3]))
+    if best_language == 'English':
+        for item in english_context_evidence:
+            if item not in evidence:
+                evidence.append(item)
 
     if confidence is None:
         if best_language_score >= 2.6:
@@ -724,13 +1069,16 @@ def describe_service_metadata(service, filename=None):
     subpage_count = 0
     magazine_counts = Counter()
     codepages = set()
+    national_options = set()
 
     for magazine_number, page_number, _, subpage in _iter_service_subpages(service):
         if page_number not in pages:
             pages.append(page_number)
             magazine_counts[magazine_number] += 1
         subpage_count += 1
+        control = int(subpage.header.control)
         codepages.add(int(subpage.header.codepage))
+        national_options.add((control >> 8) & 0x7)
 
     titles = _collect_titles(service)
     sample_page_numbers = [page_number for page_number in _PREFERRED_SAMPLE_PAGES if page_number in titles]
@@ -744,6 +1092,9 @@ def describe_service_metadata(service, filename=None):
     file_info = _scan_capture_file(filename)
     extra_texts = tuple(text for text in (file_info['broadcast_label'],) if text)
     inferred = _infer_from_titles(titles, filename=filename, extra_texts=extra_texts)
+    likely_service_brand = _infer_service_brand(titles, extra_texts=extra_texts)
+    detected_dates, detected_times = _collect_temporal_markers(service, titles)
+    teletext_level, teletext_level_evidence = _detect_teletext_level(service, tuple(sorted(codepages)), tuple(sorted(national_options)), file_info)
     return ServiceMetadata(
         file_path=filename,
         file_name=file_info['file_name'],
@@ -753,17 +1104,25 @@ def describe_service_metadata(service, filename=None):
         subpage_count=subpage_count,
         magazine_counts=tuple(sorted(magazine_counts.items())),
         codepages=tuple(sorted(codepages)),
+        national_options=tuple(sorted(national_options)),
+        page_flag_counts=_control_flag_counts(service),
         broadcast_present=file_info['broadcast_present'],
+        packet_presence=tuple((label, bool(file_info['packet_presence'].get(label))) for label in _PACKET_PRESENCE_LABELS),
+        teletext_level=teletext_level,
+        teletext_level_evidence=teletext_level_evidence,
         initial_page=file_info['initial_page'],
         broadcast_network=file_info['broadcast_network'],
         broadcast_country=file_info['broadcast_country'],
         broadcast_date=file_info['broadcast_date'],
         broadcast_time=file_info['broadcast_time'],
         broadcast_label=file_info['broadcast_label'],
+        likely_service_brand=likely_service_brand,
         likely_broadcaster=inferred['likely_broadcaster'],
         likely_language=inferred['likely_language'],
         likely_country=inferred['likely_country'],
         confidence='high' if file_info['broadcast_present'] else inferred['confidence'],
+        detected_dates=detected_dates,
+        detected_times=detected_times,
         evidence=inferred['evidence'],
         sample_titles=sample_titles,
     )
@@ -1151,14 +1510,19 @@ class DirectPageBuffer:
 
 
 class ServiceNavigator:
-    def __init__(self, service):
+    def __init__(self, service, raw_entries=None):
         self._service = service
+        self._raw_entries = tuple(raw_entries or ())
+        self._raw_variant_cache = {}
         self._pages = self._collect_pages(service)
         self._hex_pages_enabled = True
+        self._hidden_subpages_enabled = False
+        self._hidden_subpages_mode = 'legacy'
         if not self._pages:
             raise ValueError('Teletext service does not contain any pages.')
         self._current_page_number = self._pages[0]
         self._current_subpage_number = self._subpage_numbers(self._current_page_number)[0]
+        self._current_subpage_occurrence = 1
 
     @staticmethod
     def compose_page_number(magazine, page):
@@ -1203,16 +1567,26 @@ class ServiceNavigator:
         return self._current_subpage_number
 
     @property
+    def current_subpage_occurrence(self):
+        return self._current_subpage_occurrence
+
+    @property
     def current_subpage(self):
-        return self.subpage(self._current_page_number, self._current_subpage_number)
+        return self.subpage(
+            self._current_page_number,
+            self._current_subpage_number,
+            self._current_subpage_occurrence,
+        )
 
     @property
     def current_subpage_index(self):
-        return self._subpage_numbers(self._current_page_number).index(self._current_subpage_number)
+        return self._subpage_variants(self._current_page_number).index(
+            (self._current_subpage_number, self._current_subpage_occurrence),
+        )
 
     @property
     def current_subpage_count(self):
-        return len(self._subpage_numbers(self._current_page_number))
+        return len(self._subpage_variants(self._current_page_number))
 
     @property
     def current_subpage_position(self):
@@ -1229,11 +1603,38 @@ class ServiceNavigator:
     def go_to_page_text(self, text):
         return self.go_to_page(self.parse_page_number(text))
 
-    def subpage(self, page_number, subpage_number=None):
+    def subpage(self, page_number, subpage_number=None, occurrence_number=None):
+        occurrence_number = self._normalise_occurrence(page_number, subpage_number, occurrence_number)
+        if self._raw_hidden_subpages_enabled() and occurrence_number > 1:
+            variants = self._subpage_variants(page_number, include_hidden_subpages=True)
+            if subpage_number is None:
+                if variants:
+                    subpage_number = int(variants[0][0])
+                else:
+                    subpage_number = self._subpage_numbers(page_number)[0]
+            raw_occurrence_entries = collect_t42_subpage_occurrence_entries(
+                self._raw_entries,
+                page_number,
+                subpage_number,
+                occurrence_number,
+            )
+            if raw_occurrence_entries:
+                packets = (
+                    Packet(entry.raw, number=int(entry.packet_index))
+                    for entry in raw_occurrence_entries
+                )
+                return Subpage.from_packets(packets)
         subpages = self._page(page_number).subpages
         if subpage_number is None:
             subpage_number = sorted(subpages)[0]
-        return subpages[subpage_number]
+        subpage = subpages[subpage_number]
+        if occurrence_number <= 1:
+            return subpage
+        duplicates = tuple(subpage.duplicates)
+        duplicate_index = occurrence_number - 2
+        if 0 <= duplicate_index < len(duplicates):
+            return duplicates[duplicate_index]
+        return subpage
 
     @staticmethod
     def is_decimal_page(page_number):
@@ -1244,14 +1645,42 @@ class ServiceNavigator:
     def hex_pages_enabled(self):
         return self._hex_pages_enabled
 
+    @property
+    def hidden_subpages_enabled(self):
+        return self._hidden_subpages_enabled
+
+    @property
+    def hidden_subpages_mode(self):
+        return self._hidden_subpages_mode
+
     def set_hex_pages_enabled(self, enabled):
         self._hex_pages_enabled = bool(enabled)
         navigable_pages = self._navigable_pages()
         if self._current_page_number not in navigable_pages:
             self._current_page_number = self._closest_navigable_page()
             self._current_subpage_number = self._subpage_numbers(self._current_page_number)[0]
+            self._current_subpage_occurrence = 1
 
-    def go_to_page(self, page_number, subpage_number=None):
+    def set_hidden_subpages_enabled(self, enabled):
+        self._hidden_subpages_enabled = bool(enabled)
+        self._current_subpage_occurrence = self._normalise_occurrence(
+            self._current_page_number,
+            self._current_subpage_number,
+            self._current_subpage_occurrence,
+        )
+
+    def set_hidden_subpages_mode(self, mode):
+        mode = str(mode or 'legacy').strip().lower()
+        if mode not in {'legacy', 'raw'}:
+            mode = 'legacy'
+        self._hidden_subpages_mode = mode
+        self._current_subpage_occurrence = self._normalise_occurrence(
+            self._current_page_number,
+            self._current_subpage_number,
+            self._current_subpage_occurrence,
+        )
+
+    def go_to_page(self, page_number, subpage_number=None, occurrence_number=None):
         if page_number not in self._navigable_pages():
             return False
 
@@ -1261,6 +1690,11 @@ class ServiceNavigator:
             self._current_subpage_number = subpage_number
         else:
             self._current_subpage_number = subpages[0]
+        self._current_subpage_occurrence = self._normalise_occurrence(
+            page_number,
+            self._current_subpage_number,
+            occurrence_number,
+        )
         return True
 
     def nearest_pages(self, page_number):
@@ -1287,15 +1721,15 @@ class ServiceNavigator:
         return self.go_to_page(pages[(index - 1) % len(pages)])
 
     def go_next_subpage(self):
-        subpages = self._subpage_numbers(self._current_page_number)
-        index = subpages.index(self._current_subpage_number)
-        self._current_subpage_number = subpages[(index + 1) % len(subpages)]
+        variants = self._subpage_variants(self._current_page_number)
+        index = variants.index((self._current_subpage_number, self._current_subpage_occurrence))
+        self._current_subpage_number, self._current_subpage_occurrence = variants[(index + 1) % len(variants)]
         return True
 
     def go_prev_subpage(self):
-        subpages = self._subpage_numbers(self._current_page_number)
-        index = subpages.index(self._current_subpage_number)
-        self._current_subpage_number = subpages[(index - 1) % len(subpages)]
+        variants = self._subpage_variants(self._current_page_number)
+        index = variants.index((self._current_subpage_number, self._current_subpage_occurrence))
+        self._current_subpage_number, self._current_subpage_occurrence = variants[(index - 1) % len(variants)]
         return True
 
     def can_auto_advance(self, subpages_enabled=True, pages_enabled=False):
@@ -1305,15 +1739,15 @@ class ServiceNavigator:
 
     def auto_advance(self, subpages_enabled=True, pages_enabled=False):
         if subpages_enabled and self.current_subpage_count > 1:
-            subpages = self._subpage_numbers(self._current_page_number)
-            index = subpages.index(self._current_subpage_number)
-            if index + 1 < len(subpages):
-                self._current_subpage_number = subpages[index + 1]
+            variants = self._subpage_variants(self._current_page_number)
+            index = variants.index((self._current_subpage_number, self._current_subpage_occurrence))
+            if index + 1 < len(variants):
+                self._current_subpage_number, self._current_subpage_occurrence = variants[index + 1]
                 return 'subpage'
             if pages_enabled and self.page_count > 1:
                 self.go_next_page()
                 return 'page'
-            self._current_subpage_number = subpages[0]
+            self._current_subpage_number, self._current_subpage_occurrence = variants[0]
             return 'subpage'
 
         if pages_enabled and self.page_count > 1:
@@ -1322,7 +1756,7 @@ class ServiceNavigator:
 
         return None
 
-    def overview_entries(self, include_subpages=True, include_hex_pages=None):
+    def overview_entries(self, include_subpages=True, include_hex_pages=None, include_hidden_subpages=False):
         entries = []
         if include_hex_pages is None:
             page_numbers = self._navigable_pages()
@@ -1333,16 +1767,20 @@ class ServiceNavigator:
 
         for page_number in page_numbers:
             page_label = self._page_label(page_number)
-            subpages = self._subpage_numbers(page_number)
-            total = len(subpages)
+            variants = self._subpage_variants(page_number, include_hidden_subpages=include_hidden_subpages)
+            total = len(variants)
             if not include_subpages:
-                subpages = subpages[:1]
-            for index, subpage_number in enumerate(subpages, start=1):
+                variants = variants[:1]
+            for index, (subpage_number, occurrence_number) in enumerate(variants, start=1):
+                subpage_label = f'{index:02d}/{total:02d} ({subpage_number:04X})'
+                if occurrence_number > 1:
+                    subpage_label += f' Hidden ({occurrence_number})'
                 entries.append(OverviewEntry(
                     page_number=page_number,
                     subpage_number=subpage_number,
+                    occurrence_number=occurrence_number,
                     page_label=page_label,
-                    subpage_label=f'{index:02d}/{total:02d} ({subpage_number:04X})',
+                    subpage_label=subpage_label,
                 ))
         return tuple(entries)
 
@@ -1383,6 +1821,71 @@ class ServiceNavigator:
 
     def _subpage_numbers(self, page_number):
         return tuple(sorted(self._page(page_number).subpages))
+
+    def _subpage_variants(self, page_number, include_hidden_subpages=None):
+        if include_hidden_subpages is None:
+            include_hidden_subpages = self._hidden_subpages_enabled
+        if self._raw_hidden_subpages_enabled():
+            raw_variants = self._raw_variants(page_number)
+            if raw_variants:
+                if include_hidden_subpages:
+                    return raw_variants
+                seen = set()
+                visible_variants = []
+                for subpage_number, _occurrence_number in raw_variants:
+                    if subpage_number in seen:
+                        continue
+                    seen.add(subpage_number)
+                    visible_variants.append((int(subpage_number), 1))
+                return tuple(visible_variants)
+        variants = []
+        for subpage_number in self._subpage_numbers(page_number):
+            variants.append((int(subpage_number), 1))
+            if include_hidden_subpages:
+                duplicates = tuple(self._page(page_number).subpages[subpage_number].duplicates)
+                for occurrence_number, _duplicate in enumerate(duplicates, start=2):
+                    variants.append((int(subpage_number), int(occurrence_number)))
+        return tuple(variants)
+
+    def _normalise_occurrence(self, page_number, subpage_number, occurrence_number=None):
+        if occurrence_number is None or not self._hidden_subpages_enabled:
+            return 1
+        occurrence_number = max(int(occurrence_number), 1)
+        if self._raw_hidden_subpages_enabled():
+            raw_count = sum(
+                1
+                for raw_subpage_number, _raw_occurrence_number in self._raw_variants(page_number)
+                if int(raw_subpage_number) == int(subpage_number)
+            )
+            if raw_count > 0:
+                return min(occurrence_number, raw_count)
+        duplicates = tuple(self._page(page_number).subpages[subpage_number].duplicates)
+        return min(occurrence_number, 1 + len(duplicates))
+
+    def _raw_variants(self, page_number):
+        page_number = int(page_number)
+        cached = self._raw_variant_cache.get(page_number)
+        if cached is not None:
+            return cached
+        counts = Counter()
+        variants = []
+        for entry in self._raw_entries:
+            if (
+                entry.page_number != page_number
+                or entry.subpage_number is None
+                or entry.row is None
+                or int(entry.row) != 0
+            ):
+                continue
+            subpage_number = int(entry.subpage_number)
+            counts[subpage_number] += 1
+            variants.append((subpage_number, int(counts[subpage_number])))
+        cached = tuple(variants)
+        self._raw_variant_cache[page_number] = cached
+        return cached
+
+    def _raw_hidden_subpages_enabled(self):
+        return self._hidden_subpages_mode == 'raw' and bool(self._raw_entries)
 
     def _navigable_pages(self):
         pages = [page_number for page_number in self._pages if self._page_allowed(page_number)]

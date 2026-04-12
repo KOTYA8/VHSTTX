@@ -18,6 +18,8 @@ Rectangle {
     property bool flashsrc: true
     property bool reveal: false
     property bool showallsymbols: false
+    property bool showcontrolcodes: false
+    property bool showgrid: false
     property bool fullscreenmode: false
     property bool fullscreenstretch: false
     property int viewportwidth: naturalTeletextWidth + effectiveBorderSize * 2
@@ -101,6 +103,7 @@ Rectangle {
                                     property bool solid: true
                                     property bool boxed: false
                                     property bool conceal: false
+                                    property bool controlcode: false
                                     property bool rendered: true
                                     height: 10 * zoom
                                     width: 8 * zoom * horizontalScale
@@ -112,20 +115,39 @@ Rectangle {
                                         visible: rowrendered && rendered
                                         color: ttpalette[bg]
 
+                                        Rectangle {
+                                            visible: showcontrolcodes && controlcode && glyphText.visible
+                                            anchors.centerIn: parent
+                                            width: Math.min(parent.width, glyphText.contentWidth + (3 * zoom))
+                                            height: Math.min(parent.height, glyphText.contentHeight + (2 * zoom))
+                                            radius: zoom * 0.75
+                                            color: "#aa000000"
+                                        }
+
                                         Text {
+                                            id: glyphShadow
                                             renderType: Text.NativeRendering
                                             anchors.top: parent.top
                                             anchors.horizontalCenter: parent.horizontalCenter
-                                            color: showallsymbols
-                                                ? ((bg === 0 || bg === 4) ? "#ffffff" : "#000000")
-                                                : ttpalette[fg]
-                                            style: (highlighttext || showallsymbols) ? Text.Outline : Text.Normal
-                                            styleColor: showallsymbols
-                                                ? ((bg === 0 || bg === 4) ? "#000000" : "#ffffff")
-                                                : "#000000"
+                                            anchors.topMargin: (showcontrolcodes && controlcode) ? (0.55 * zoom) : 0
+                                            color: "#000000"
+                                            opacity: (showcontrolcodes && controlcode && glyphText.visible) ? 0.95 : 0.0
                                             text: c
                                             font: ttfonts[(mosaic && solid && text[0] > "\ue000") ? 1 : 0][dw ? 1 : 0][dh ? 1 : 0]
-                                            visible: showallsymbols || (((!flash) || flashsrc) && (conceal ? reveal : true))
+                                            visible: opacity > 0
+                                        }
+
+                                        Text {
+                                            id: glyphText
+                                            renderType: Text.NativeRendering
+                                            anchors.top: parent.top
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            color: showallsymbols ? "#ffffff" : ttpalette[fg]
+                                            style: (highlighttext || showallsymbols || (showcontrolcodes && controlcode)) ? Text.Outline : Text.Normal
+                                            styleColor: showallsymbols ? "#000000" : ((showcontrolcodes && controlcode) ? "#ffffff" : "#000000")
+                                            text: c
+                                            font: ttfonts[(mosaic && solid && text[0] > "\ue000") ? 1 : 0][dw ? 1 : 0][dh ? 1 : 0]
+                                            visible: showallsymbols || (controlcode && showcontrolcodes) || (((!flash) || flashsrc) && (conceal ? reveal : true))
                                         }
                                     }
                                 }
@@ -146,6 +168,35 @@ Rectangle {
                                     gl_FragColor = (0 < row && (row < 2 || row < (zoom-1))) ? tex : tex*0.6;
                                 }
                             "
+                    }
+                }
+
+                Item {
+                    id: gridOverlay
+                    visible: showgrid
+                    anchors.fill: teletext
+                    z: 100
+
+                    Repeater {
+                        model: 41
+                        Rectangle {
+                            width: 1
+                            height: parent.height
+                            x: index * 8 * zoom * horizontalScale
+                            y: 0
+                            color: "#55ffffff"
+                        }
+                    }
+
+                    Repeater {
+                        model: 26
+                        Rectangle {
+                            width: parent.width
+                            height: 1
+                            x: 0
+                            y: index * 10 * zoom
+                            color: "#44ffffff"
+                        }
                     }
                 }
             }

@@ -1,6 +1,6 @@
 import multiprocessing as mp
 
-from teletext.gui.launcher import main
+from teletext.gui.editor import main
 
 
 if __name__ == "__main__":

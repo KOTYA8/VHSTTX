@@ -2421,6 +2421,29 @@ def _default_stabilize_target_right_edge(config):
     return _default_stabilize_target_center(config) + ((expected_width * float(config.bit_width / 8.0)) / 2.0)
 
 
+def _normalise_stabilize_manual_shift_map(manual_shift_map, maximum_line=32):
+    if not manual_shift_map:
+        return {}
+    if isinstance(manual_shift_map, dict):
+        items = manual_shift_map.items()
+    else:
+        items = manual_shift_map
+    maximum_line = max(int(maximum_line), 1)
+    normalised = {}
+    for raw_line, raw_shift in items:
+        try:
+            logical_line = int(raw_line)
+            shift = int(round(float(raw_shift)))
+        except (TypeError, ValueError):
+            continue
+        if logical_line < 1 or logical_line > maximum_line:
+            continue
+        if shift == 0:
+            continue
+        normalised[logical_line] = shift
+    return normalised
+
+
 def _line_kgi_window(line):
     samples = np.asarray(line.resampled, dtype=np.float32)
     if samples.size == 0:
@@ -2529,6 +2552,84 @@ def _line_kgi_end(line):
     return float(window[1])
 
 
+def _line_kgi_right_wall_tbc(line, sensitivity=50):
+    samples = np.asarray(line.resampled, dtype=np.float32)
+    if samples.size == 0:
+        return None
+
+    expected_width = max(int(line.config.line_trim) - int(line.config.start_slice.start), 1)
+    default_start = int(line.config.start_slice.start)
+    guessed_start = int(line.start) if line.start is not None else default_start
+    expected_right = guessed_start + expected_width
+    start = max(guessed_start - 16, 0)
+    stop = min(samples.size, max(expected_right + 64, start + 64))
+    if stop <= start:
+        return _line_kgi_default_right(line)
+
+    segment = samples[start:stop]
+    baseline_end = max(min(int(line.config.start_slice.start), samples.size), 1)
+    baseline_slice = samples[:baseline_end]
+    baseline = float(np.median(baseline_slice)) if baseline_slice.size else float(np.median(segment))
+    envelope = np.abs(segment - baseline)
+    if envelope.size >= 5:
+        kernel = np.asarray((1.0, 2.0, 3.0, 2.0, 1.0), dtype=np.float32)
+        kernel /= float(np.sum(kernel))
+        envelope = np.convolve(envelope, kernel, mode='same')
+
+    peak = float(np.max(envelope))
+    fallback_right = _line_kgi_default_right(line)
+    if peak <= 1e-6:
+        return fallback_right
+
+    sensitivity = float(np.clip(float(sensitivity), 0.0, 100.0))
+    sensitivity_strength = sensitivity / 100.0
+
+    relative_expected_right = int(np.clip(expected_right - start, 0, envelope.size - 1))
+    search_left = max(relative_expected_right - int(round(80 + (48.0 * sensitivity_strength))), 0)
+    search_right = min(relative_expected_right + int(round(32 + (40.0 * sensitivity_strength))), envelope.size - 1)
+    if search_right <= search_left:
+        return fallback_right
+
+    tail = envelope[search_left:search_right + 1]
+    strong_threshold = max(peak * (0.22 - (0.12 * sensitivity_strength)), 1.6)
+    low_threshold = max(peak * (0.10 - (0.05 * sensitivity_strength)), 0.8)
+    strong_active = tail >= strong_threshold
+    low_active = tail >= low_threshold
+
+    right_index = None
+    for index in range(tail.size - 1, -1, -1):
+        low_window_start = max(index - int(round(4 + (4.0 * sensitivity_strength))), 0)
+        strong_window_start = max(index - int(round(7 + (5.0 * sensitivity_strength))), 0)
+        min_low = 2 if sensitivity_strength >= 0.45 else 3
+        min_strong = 1 if sensitivity_strength >= 0.65 else 2
+        if np.count_nonzero(low_active[low_window_start:index + 1]) >= min_low and np.count_nonzero(strong_active[strong_window_start:index + 1]) >= min_strong:
+            right_index = index
+            break
+    if right_index is None:
+        active_indices = np.flatnonzero(strong_active)
+        if active_indices.size == 0:
+            return fallback_right
+        right_index = int(active_indices[-1])
+
+    gap_run = 0
+    index = int(right_index) + 1
+    while index < tail.size:
+        if low_active[index]:
+            right_index = index
+            gap_run = 0
+        else:
+            gap_run += 1
+            if gap_run >= max(2, int(round(4 - (2.0 * sensitivity_strength)))):
+                break
+        index += 1
+
+    detected_right = float(start + search_left + int(right_index))
+    max_deviation = max(expected_width * (0.12 + (0.10 * (1.0 - sensitivity_strength))), 18.0)
+    if abs(detected_right - float(expected_right)) > max_deviation:
+        return fallback_right
+    return detected_right
+
+
 def _line_kgi_default_left(line):
     samples = np.asarray(line.resampled, dtype=np.float32)
     if samples.size == 0:
@@ -2544,6 +2645,16 @@ def _line_kgi_default_right(line):
     expected_width = max(int(line.config.line_trim) - int(line.config.start_slice.start), 1)
     guessed_start = int(line.start) if line.start is not None else int(line.config.start_slice.start)
     return float(min(samples.size - 1, guessed_start + expected_width))
+
+
+def _line_kgi_effective_right_wall(line, sensitivity=50):
+    right = _line_kgi_right_wall_tbc(line, sensitivity=sensitivity)
+    if right is not None:
+        return float(right)
+    bounds = _line_kgi_bounds(line)
+    if bounds is not None:
+        return float(bounds[1])
+    return _line_kgi_default_right(line)
 
 
 def _line_kgi_bounds(line):
@@ -2772,6 +2883,7 @@ def _build_reference_stabilize_analysis(reference_line, tolerance, per_line_boun
         entry['shifted_right'] = float(entry['right']) + float(interpolated_shift)
 
     return {
+        'lock_mode': 'reference',
         'reference_mode': reference_mode,
         'reference_line': reference_line,
         'reference_lines': reference_lines,
@@ -2783,7 +2895,101 @@ def _build_reference_stabilize_analysis(reference_line, tolerance, per_line_boun
     }
 
 
-def _analyse_stabilize_vbi_reference(
+def _build_tbc_stabilize_analysis(reference_line, per_line_bounds, *, fallback_bounds=None, reference_mode='line'):
+    cleaned_bounds = {}
+    for logical_line, bounds in dict(per_line_bounds or {}).items():
+        if bounds is None:
+            continue
+        if isinstance(bounds, dict):
+            left = bounds.get('left')
+            right = bounds.get('right')
+        else:
+            left, right = bounds
+        if left is None or right is None:
+            continue
+        left = float(left)
+        right = float(right)
+        if right < left:
+            left, right = right, left
+        cleaned_bounds[int(logical_line)] = {
+            'left': left,
+            'right': right,
+            'width': max(right - left, 0.0),
+        }
+
+    reference = _resolve_reference_stabilize_bounds(
+        reference_mode,
+        reference_line,
+        cleaned_bounds,
+        fallback_bounds=fallback_bounds,
+    )
+    reference_mode = str(reference.get('mode', 'line'))
+    reference_line = max(int(reference.get('display_line', reference_line)), 1)
+    reference_left = float(reference['left'])
+    reference_right = float(reference['right'])
+    reference_width = max(float(reference['width']), 0.0)
+    reference_lines = [int(line) for line in reference.get('source_lines', [])]
+
+    per_line = {}
+    for logical_line, bounds in sorted(cleaned_bounds.items()):
+        left = float(bounds['left'])
+        right = float(bounds['right'])
+        width = max(float(bounds['width']), 0.0)
+        raw_shift = int(round(reference_right - right))
+        shifted_left = left + float(raw_shift)
+        shifted_right = right + float(raw_shift)
+        per_line[int(logical_line)] = {
+            'left': left,
+            'right': right,
+            'width': width,
+            'raw_shift': raw_shift,
+            'shift': raw_shift,
+            'shifted_left': shifted_left,
+            'shifted_right': shifted_right,
+            'gap_left': 0.0,
+            'overflow_left': 0.0,
+            'status': 'ok',
+        }
+
+    return {
+        'lock_mode': 'tbc',
+        'reference_mode': reference_mode,
+        'reference_line': reference_line,
+        'reference_lines': reference_lines,
+        'tolerance': 0.0,
+        'reference_left': reference_left,
+        'reference_right': reference_right,
+        'reference_width': reference_width,
+        'per_line': per_line,
+    }
+
+
+def _apply_manual_shift_to_stabilize_analysis(analysis, manual_shift_map, *, maximum_line=32):
+    if not analysis:
+        return analysis
+    manual_shift_map = _normalise_stabilize_manual_shift_map(manual_shift_map, maximum_line=maximum_line)
+    if not manual_shift_map:
+        return analysis
+    analysis = dict(analysis)
+    analysis['manual_shift_map'] = dict(manual_shift_map)
+    per_line = {}
+    for logical_line, entry in dict(analysis.get('per_line', {})).items():
+        logical_line = int(logical_line)
+        next_entry = dict(entry)
+        manual_shift = int(manual_shift_map.get(logical_line, 0))
+        next_entry['manual_shift'] = manual_shift
+        if manual_shift:
+            next_entry['shift'] = int(next_entry.get('shift', 0)) + manual_shift
+            if 'shifted_left' in next_entry:
+                next_entry['shifted_left'] = float(next_entry.get('shifted_left', 0.0)) + float(manual_shift)
+            if 'shifted_right' in next_entry:
+                next_entry['shifted_right'] = float(next_entry.get('shifted_right', 0.0)) + float(manual_shift)
+        per_line[logical_line] = next_entry
+    analysis['per_line'] = per_line
+    return analysis
+
+
+def _collect_stabilize_per_line_bounds(
     input_path,
     config,
     tape_format,
@@ -2799,6 +3005,8 @@ def _analyse_stabilize_vbi_reference(
     reference_line=1,
     tolerance=3,
     progress_callback=None,
+    lock_mode='reference',
+    right_wall_sensitivity=50,
 ):
     frame_size = frame_size_for_config(config)
     expected_width = float(max(int(config.line_trim) - int(config.start_slice.start), 1))
@@ -2858,10 +3066,16 @@ def _analyse_stabilize_vbi_reference(
             for logical_line, line in line_map.items():
                 if int(logical_line) not in frame_selected_lines:
                     continue
-                bounds = _line_kgi_bounds(line)
-                if bounds is None:
-                    continue
-                resampled_left, resampled_right = bounds
+                if str(lock_mode or 'reference') == 'tbc':
+                    resampled_right = _line_kgi_effective_right_wall(line, sensitivity=right_wall_sensitivity)
+                    if resampled_right is None:
+                        continue
+                    resampled_left = float(resampled_right) - float(expected_width)
+                else:
+                    bounds = _line_kgi_bounds(line)
+                    if bounds is None:
+                        continue
+                    resampled_left, resampled_right = bounds
                 analysed_bounds[int(logical_line)]['left'].append(float(resampled_left) * raw_sample_scale)
                 analysed_bounds[int(logical_line)]['right'].append(float(resampled_right) * raw_sample_scale)
 
@@ -2887,13 +3101,453 @@ def _analyse_stabilize_vbi_reference(
 
     fallback_right = _default_stabilize_target_right_edge(config)
     fallback_left = fallback_right - (expected_width * raw_sample_scale)
-    return _build_reference_stabilize_analysis(
+    return per_line_bounds, (fallback_left, fallback_right)
+
+
+def _collect_stabilize_single_frame_bounds(
+    input_path,
+    config,
+    tape_format,
+    controls,
+    selected_lines,
+    decoder_tuning,
+    frame_index,
+    *,
+    tuning_ranges=(),
+    n_lines=None,
+    lock_mode='reference',
+    right_wall_sensitivity=50,
+):
+    frame_size = frame_size_for_config(config)
+    total_frames = count_complete_frames(input_path, config)
+    frame_index = max(min(int(frame_index), max(total_frames - 1, 0)), 0)
+    expected_width = float(max(int(config.line_trim) - int(config.start_slice.start), 1))
+    raw_sample_scale = float(config.bit_width / 8.0)
+    tuning_ranges = normalise_tuning_ranges(
+        tuning_ranges,
+        total_frames=total_frames,
+        line_count=max(useful_frame_lines(config), 32),
+    )
+    temporal_state = {}
+    mappings = _repair_line_mappings(config, n_lines=n_lines)
+    selected_lines = frozenset(int(line) for line in selected_lines)
+
+    with open(input_path, 'rb') as source:
+        source.seek(frame_index * frame_size)
+        frame = source.read(frame_size)
+    if len(frame) < frame_size:
+        fallback_right = _default_stabilize_target_right_edge(config)
+        fallback_left = fallback_right - (expected_width * raw_sample_scale)
+        return {}, (fallback_left, fallback_right)
+
+    effective_controls, effective_selected_lines, effective_decoder_tuning, active_key, _active_index = resolve_tuning_range(
+        frame_index,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        tuning_ranges,
+        line_count=max(useful_frame_lines(config), 32),
+    )
+    frame_selected_lines = frozenset(int(line) for line in (effective_selected_lines or ()))
+    if not frame_selected_lines:
+        fallback_right = _default_stabilize_target_right_edge(config)
+        fallback_left = fallback_right - (expected_width * raw_sample_scale)
+        return {}, (fallback_left, fallback_right)
+
+    _configure_repair_lines(config, tape_format, effective_controls, effective_decoder_tuning)
+    processed = _processed_frame_for_output(
+        frame,
+        config,
+        effective_controls,
+        line_selection=frame_selected_lines,
+        temporal_state=temporal_state,
+        decoder_tuning=effective_decoder_tuning,
+    )
+    lines = _extract_frame_lines_for_repair(
+        processed,
+        config,
+        frame_index,
+        n_lines=n_lines,
+    )
+    line_map = {
+        int(logical_line): line
+        for (logical_line, _raw_line), line in zip(mappings, lines)
+    }
+
+    per_line_bounds = {}
+    for logical_line, line in line_map.items():
+        if int(logical_line) not in frame_selected_lines:
+            continue
+        if str(lock_mode or 'reference') in ('tbc', 'tbc_frame', 'tbc_linear'):
+            resampled_right = _line_kgi_effective_right_wall(line, sensitivity=right_wall_sensitivity)
+            if resampled_right is None:
+                continue
+            resampled_left = float(resampled_right) - float(expected_width)
+        else:
+            bounds = _line_kgi_bounds(line)
+            if bounds is None:
+                continue
+            resampled_left, resampled_right = bounds
+        per_line_bounds[int(logical_line)] = {
+            'left': float(resampled_left) * raw_sample_scale,
+            'right': float(resampled_right) * raw_sample_scale,
+        }
+
+    fallback_right = _default_stabilize_target_right_edge(config)
+    fallback_left = fallback_right - (expected_width * raw_sample_scale)
+    return per_line_bounds, (fallback_left, fallback_right)
+
+
+def _interpolate_target_right_map(selected_lines, known_rights):
+    selected_lines = sorted(set(int(line) for line in (selected_lines or ())))
+    known = sorted(
+        (int(line), float(right))
+        for line, right in dict(known_rights or {}).items()
+        if right is not None
+    )
+    if not selected_lines or not known:
+        return {}
+    if len(known) == 1:
+        return {int(line): float(known[0][1]) for line in selected_lines}
+
+    result = {}
+    known_lookup = {int(line): float(right) for line, right in known}
+    for line in selected_lines:
+        if int(line) in known_lookup:
+            result[int(line)] = float(known_lookup[int(line)])
+            continue
+        if int(line) <= int(known[0][0]):
+            x0, y0 = known[0]
+            x1, y1 = known[1]
+        elif int(line) >= int(known[-1][0]):
+            x0, y0 = known[-2]
+            x1, y1 = known[-1]
+        else:
+            x0 = y0 = x1 = y1 = None
+            for left_point, right_point in zip(known, known[1:]):
+                if int(left_point[0]) <= int(line) <= int(right_point[0]):
+                    x0, y0 = left_point
+                    x1, y1 = right_point
+                    break
+            if x0 is None:
+                x0, y0 = known[0]
+                x1, y1 = known[-1]
+        if int(x1) == int(x0):
+            result[int(line)] = float(y0)
+        else:
+            ratio = float(int(line) - int(x0)) / float(int(x1) - int(x0))
+            result[int(line)] = float(y0) + ((float(y1) - float(y0)) * ratio)
+    return result
+
+
+def _build_reference_frame_tbc_template(reference_frame, selected_lines, per_line_bounds, *, fallback_bounds=None, linear=False):
+    cleaned_bounds = {}
+    for logical_line, bounds in dict(per_line_bounds or {}).items():
+        if bounds is None:
+            continue
+        if isinstance(bounds, dict):
+            left = bounds.get('left')
+            right = bounds.get('right')
+        else:
+            left, right = bounds
+        if left is None or right is None:
+            continue
+        left = float(left)
+        right = float(right)
+        if right < left:
+            left, right = right, left
+        cleaned_bounds[int(logical_line)] = {
+            'left': left,
+            'right': right,
+            'width': max(right - left, 0.0),
+        }
+
+    selected_lines = sorted(set(int(line) for line in (selected_lines or ()) or cleaned_bounds.keys()))
+    widths = [float(bounds['width']) for bounds in cleaned_bounds.values() if bounds is not None]
+    if widths:
+        reference_width = float(np.median(np.asarray(widths, dtype=np.float32)))
+    elif fallback_bounds is not None:
+        reference_width = max(float(fallback_bounds[1]) - float(fallback_bounds[0]), 0.0)
+    else:
+        reference_width = 0.0
+
+    known_rights = {
+        int(logical_line): float(bounds['right'])
+        for logical_line, bounds in cleaned_bounds.items()
+    }
+    linear_slope = 0.0
+    linear_intercept = 0.0
+    if linear:
+        if len(known_rights) >= 2:
+            fit_lines = np.asarray(sorted(known_rights.keys()), dtype=np.float32)
+            fit_rights = np.asarray([known_rights[int(line)] for line in fit_lines], dtype=np.float32)
+            linear_slope, linear_intercept = np.polyfit(fit_lines, fit_rights, 1)
+        elif len(known_rights) == 1:
+            only_line = next(iter(known_rights))
+            linear_slope = 0.0
+            linear_intercept = float(known_rights[only_line])
+        elif fallback_bounds is not None:
+            linear_slope = 0.0
+            linear_intercept = float(fallback_bounds[1])
+        target_right_map = {
+            int(line): float(linear_slope * float(int(line)) + linear_intercept)
+            for line in selected_lines
+        }
+    else:
+        if not known_rights and fallback_bounds is not None:
+            known_rights = {int(line): float(fallback_bounds[1]) for line in selected_lines}
+        target_right_map = _interpolate_target_right_map(selected_lines, known_rights)
+
+    target_values = list(target_right_map.values())
+    if target_values:
+        reference_right = float(np.median(np.asarray(target_values, dtype=np.float32)))
+    elif fallback_bounds is not None:
+        reference_right = float(fallback_bounds[1])
+    else:
+        reference_right = 0.0
+    reference_left = reference_right - reference_width
+
+    return {
+        'reference_frame': int(reference_frame),
+        'reference_lines': sorted(int(line) for line in cleaned_bounds.keys()),
+        'reference_left': float(reference_left),
+        'reference_right': float(reference_right),
+        'reference_width': float(max(reference_width, 0.0)),
+        'target_right_map': {
+            int(logical_line): float(target_right)
+            for logical_line, target_right in target_right_map.items()
+        },
+        'linear_slope': float(linear_slope),
+        'linear_intercept': float(linear_intercept),
+    }
+
+
+def _build_dynamic_tbc_analysis(lock_mode, reference_frame, template, current_bounds):
+    target_right_map = {
+        int(logical_line): float(target_right)
+        for logical_line, target_right in dict(template.get('target_right_map', {})).items()
+    }
+    reference_width = float(template.get('reference_width', 0.0))
+    per_line = {}
+    for logical_line in sorted(target_right_map):
+        current_entry = dict(current_bounds.get(int(logical_line), {}))
+        target_right = float(target_right_map[int(logical_line)])
+        current_right = current_entry.get('right')
+        current_left = current_entry.get('left')
+        if current_right is None:
+            current_right = target_right
+        current_right = float(current_right)
+        width = max(float(current_entry.get('width', reference_width)), 0.0)
+        if current_left is None:
+            current_left = current_right - width
+        current_left = float(current_left)
+        raw_shift = int(round(target_right - current_right))
+        per_line[int(logical_line)] = {
+            'left': current_left,
+            'right': current_right,
+            'width': width,
+            'raw_shift': raw_shift,
+            'shift': raw_shift,
+            'shifted_left': current_left + float(raw_shift),
+            'shifted_right': current_right + float(raw_shift),
+            'target_right': target_right,
+            'gap_left': 0.0,
+            'overflow_left': 0.0,
+            'status': 'ok' if int(logical_line) in current_bounds else 'missing',
+        }
+
+    return {
+        'lock_mode': str(lock_mode),
+        'reference_mode': 'frame',
+        'reference_line': 1,
+        'reference_frame': int(reference_frame),
+        'reference_lines': [int(line) for line in template.get('reference_lines', ())],
+        'tolerance': 0.0,
+        'reference_left': float(template.get('reference_left', 0.0)),
+        'reference_right': float(template.get('reference_right', 0.0)),
+        'reference_width': float(template.get('reference_width', 0.0)),
+        'target_right_map': target_right_map,
+        'linear_slope': float(template.get('linear_slope', 0.0)),
+        'linear_intercept': float(template.get('linear_intercept', 0.0)),
+        'per_line': per_line,
+    }
+
+
+def _analyse_stabilize_vbi_reference(
+    input_path,
+    config,
+    tape_format,
+    controls,
+    selected_lines,
+    decoder_tuning,
+    start_frame,
+    end_frame,
+    *,
+    tuning_ranges=(),
+    n_lines=None,
+    reference_mode='line',
+    reference_line=1,
+    tolerance=3,
+    progress_callback=None,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
+):
+    per_line_bounds, fallback_bounds = _collect_stabilize_per_line_bounds(
+        input_path,
+        config,
+        tape_format,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        start_frame,
+        end_frame,
+        tuning_ranges=tuning_ranges,
+        n_lines=n_lines,
+        reference_mode=reference_mode,
+        reference_line=reference_line,
+        tolerance=tolerance,
+        progress_callback=progress_callback,
+        lock_mode='reference',
+        right_wall_sensitivity=right_wall_sensitivity,
+    )
+    analysis = _build_reference_stabilize_analysis(
         reference_line,
         tolerance,
         per_line_bounds,
-        fallback_bounds=(fallback_left, fallback_right),
+        fallback_bounds=fallback_bounds,
         reference_mode=reference_mode,
     )
+    analysis = _apply_manual_shift_to_stabilize_analysis(
+        analysis,
+        manual_shift_map,
+        maximum_line=max(max((int(line) for line in selected_lines), default=1), 32),
+    )
+    analysis['right_wall_sensitivity'] = int(round(float(right_wall_sensitivity)))
+    return analysis
+
+
+def _analyse_stabilize_vbi_tbc(
+    input_path,
+    config,
+    tape_format,
+    controls,
+    selected_lines,
+    decoder_tuning,
+    start_frame,
+    end_frame,
+    *,
+    tuning_ranges=(),
+    n_lines=None,
+    reference_mode='line',
+    reference_line=1,
+    tolerance=3,
+    progress_callback=None,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
+):
+    per_line_bounds, fallback_bounds = _collect_stabilize_per_line_bounds(
+        input_path,
+        config,
+        tape_format,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        start_frame,
+        end_frame,
+        tuning_ranges=tuning_ranges,
+        n_lines=n_lines,
+        reference_mode=reference_mode,
+        reference_line=reference_line,
+        tolerance=tolerance,
+        progress_callback=progress_callback,
+        lock_mode='tbc',
+        right_wall_sensitivity=right_wall_sensitivity,
+    )
+    analysis = _build_tbc_stabilize_analysis(
+        reference_line,
+        per_line_bounds,
+        fallback_bounds=fallback_bounds,
+        reference_mode=reference_mode,
+    )
+    analysis = _apply_manual_shift_to_stabilize_analysis(
+        analysis,
+        manual_shift_map,
+        maximum_line=max(max((int(line) for line in selected_lines), default=1), 32),
+    )
+    analysis['right_wall_sensitivity'] = int(round(float(right_wall_sensitivity)))
+    return analysis
+
+
+def _analyse_stabilize_vbi_reference_frame_tbc(
+    input_path,
+    config,
+    tape_format,
+    controls,
+    selected_lines,
+    decoder_tuning,
+    current_frame,
+    *,
+    reference_frame=0,
+    tuning_ranges=(),
+    n_lines=None,
+    progress_callback=None,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
+    linear=False,
+):
+    selected_lines = frozenset(int(line) for line in selected_lines)
+    if callable(progress_callback):
+        progress_callback(0, 2)
+    reference_bounds, fallback_bounds = _collect_stabilize_single_frame_bounds(
+        input_path,
+        config,
+        tape_format,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        reference_frame,
+        tuning_ranges=tuning_ranges,
+        n_lines=n_lines,
+        lock_mode='tbc_linear' if linear else 'tbc_frame',
+        right_wall_sensitivity=right_wall_sensitivity,
+    )
+    if callable(progress_callback):
+        progress_callback(1, 2)
+    template = _build_reference_frame_tbc_template(
+        reference_frame,
+        selected_lines,
+        reference_bounds,
+        fallback_bounds=fallback_bounds,
+        linear=linear,
+    )
+    current_bounds, _current_fallback_bounds = _collect_stabilize_single_frame_bounds(
+        input_path,
+        config,
+        tape_format,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        current_frame,
+        tuning_ranges=tuning_ranges,
+        n_lines=n_lines,
+        lock_mode='tbc_linear' if linear else 'tbc_frame',
+        right_wall_sensitivity=right_wall_sensitivity,
+    )
+    if callable(progress_callback):
+        progress_callback(2, 2)
+    analysis = _build_dynamic_tbc_analysis(
+        'tbc_linear' if linear else 'tbc_frame',
+        reference_frame,
+        template,
+        current_bounds,
+    )
+    analysis = _apply_manual_shift_to_stabilize_analysis(
+        analysis,
+        manual_shift_map,
+        maximum_line=max(max((int(line) for line in selected_lines), default=1), 32),
+    )
+    analysis['right_wall_sensitivity'] = int(round(float(right_wall_sensitivity)))
+    return analysis
 
 
 def analyse_stabilize_repair_vbi(
@@ -2911,7 +3565,10 @@ def analyse_stabilize_repair_vbi(
     target_right_edge=None,
     reference_mode='line',
     reference_line=1,
+    reference_frame=0,
     tolerance=3,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
     progress_callback=None,
     tuning_ranges=(),
 ):
@@ -2928,25 +3585,80 @@ def analyse_stabilize_repair_vbi(
         end_frame = total_frames
     else:
         end_frame = min(start_frame + max(int(frame_count), 1), total_frames)
-    lock_mode = str(lock_mode or 'reference')
-    if lock_mode != 'reference':
-        return None
-    return _analyse_stabilize_vbi_reference(
-        input_path,
-        config,
-        tape_format,
-        controls,
-        selected_lines,
-        decoder_tuning,
-        start_frame,
-        end_frame,
-        tuning_ranges=tuning_ranges,
-        n_lines=n_lines,
-        reference_mode=reference_mode,
-        reference_line=reference_line,
-        tolerance=tolerance,
-        progress_callback=progress_callback,
-    )
+    lock_mode = str(lock_mode or 'reference').strip().lower()
+    if lock_mode == 'reference':
+        return _analyse_stabilize_vbi_reference(
+            input_path,
+            config,
+            tape_format,
+            controls,
+            selected_lines,
+            decoder_tuning,
+            start_frame,
+            end_frame,
+            tuning_ranges=tuning_ranges,
+            n_lines=n_lines,
+            reference_mode=reference_mode,
+            reference_line=reference_line,
+            tolerance=tolerance,
+            right_wall_sensitivity=right_wall_sensitivity,
+            manual_shift_map=manual_shift_map,
+            progress_callback=progress_callback,
+        )
+    if lock_mode == 'tbc':
+        return _analyse_stabilize_vbi_tbc(
+            input_path,
+            config,
+            tape_format,
+            controls,
+            selected_lines,
+            decoder_tuning,
+            start_frame,
+            end_frame,
+            tuning_ranges=tuning_ranges,
+            n_lines=n_lines,
+            reference_mode=reference_mode,
+            reference_line=reference_line,
+            tolerance=tolerance,
+            right_wall_sensitivity=right_wall_sensitivity,
+            manual_shift_map=manual_shift_map,
+            progress_callback=progress_callback,
+        )
+    if lock_mode == 'tbc_frame':
+        return _analyse_stabilize_vbi_reference_frame_tbc(
+            input_path,
+            config,
+            tape_format,
+            controls,
+            selected_lines,
+            decoder_tuning,
+            start_frame,
+            reference_frame=reference_frame,
+            tuning_ranges=tuning_ranges,
+            n_lines=n_lines,
+            progress_callback=progress_callback,
+            right_wall_sensitivity=right_wall_sensitivity,
+            manual_shift_map=manual_shift_map,
+            linear=False,
+        )
+    if lock_mode == 'tbc_linear':
+        return _analyse_stabilize_vbi_reference_frame_tbc(
+            input_path,
+            config,
+            tape_format,
+            controls,
+            selected_lines,
+            decoder_tuning,
+            start_frame,
+            reference_frame=reference_frame,
+            tuning_ranges=tuning_ranges,
+            n_lines=n_lines,
+            progress_callback=progress_callback,
+            right_wall_sensitivity=right_wall_sensitivity,
+            manual_shift_map=manual_shift_map,
+            linear=True,
+        )
+    return None
 
 
 def stabilize_repair_vbi(
@@ -2966,7 +3678,10 @@ def stabilize_repair_vbi(
     target_right_edge=None,
     reference_mode='line',
     reference_line=1,
+    reference_frame=0,
     tolerance=3,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
     progress_callback=None,
     tuning_ranges=(),
 ):
@@ -2993,6 +3708,10 @@ def stabilize_repair_vbi(
     expected_width = float(max(int(config.line_trim) - int(config.start_slice.start), 1))
     reference_line = max(int(reference_line), 1)
     lock_mode = str(lock_mode or 'target')
+    manual_shift_map = _normalise_stabilize_manual_shift_map(
+        manual_shift_map,
+        maximum_line=max(max((int(line) for line in selected_lines), default=1), 32),
+    )
     analyse_total = max(int(end_frame - start_frame), 1)
     analysis = None
     analysed_per_line_shift = {}
@@ -3002,29 +3721,100 @@ def stabilize_repair_vbi(
         line_count=max(useful_frame_lines(config), 32),
     )
 
-    if lock_mode == 'reference':
+    dynamic_tbc_template = None
+    if lock_mode in ('reference', 'tbc', 'tbc_frame', 'tbc_linear'):
         if callable(progress_callback):
             progress_callback(0, max(analyse_total, 1) * 2)
         def report_analyse(current, total):
             if callable(progress_callback):
                 progress_callback(int(current), max(int(total), 1) * 2)
 
-        analysis = _analyse_stabilize_vbi_reference(
-            input_path,
-            config,
-            tape_format,
-            controls,
-            selected_lines,
-            decoder_tuning,
-            start_frame,
-            end_frame,
-            tuning_ranges=tuning_ranges,
-            n_lines=n_lines,
-            reference_mode=reference_mode,
-            reference_line=reference_line,
-            tolerance=tolerance,
-            progress_callback=report_analyse,
-        )
+        if lock_mode == 'tbc':
+            analysis = _analyse_stabilize_vbi_tbc(
+                input_path,
+                config,
+                tape_format,
+                controls,
+                selected_lines,
+                decoder_tuning,
+                start_frame,
+                end_frame,
+                tuning_ranges=tuning_ranges,
+                n_lines=n_lines,
+                reference_mode=reference_mode,
+                reference_line=reference_line,
+                tolerance=tolerance,
+                right_wall_sensitivity=right_wall_sensitivity,
+                manual_shift_map=manual_shift_map,
+                progress_callback=report_analyse,
+            )
+        elif lock_mode in ('tbc_frame', 'tbc_linear'):
+            reference_bounds, fallback_bounds = _collect_stabilize_single_frame_bounds(
+                input_path,
+                config,
+                tape_format,
+                controls,
+                selected_lines,
+                decoder_tuning,
+                reference_frame,
+                tuning_ranges=tuning_ranges,
+                n_lines=n_lines,
+                lock_mode=lock_mode,
+                right_wall_sensitivity=right_wall_sensitivity,
+            )
+            report_analyse(1, 2)
+            dynamic_tbc_template = _build_reference_frame_tbc_template(
+                reference_frame,
+                selected_lines,
+                reference_bounds,
+                fallback_bounds=fallback_bounds,
+                linear=(lock_mode == 'tbc_linear'),
+            )
+            initial_bounds, _initial_fallback_bounds = _collect_stabilize_single_frame_bounds(
+                input_path,
+                config,
+                tape_format,
+                controls,
+                selected_lines,
+                decoder_tuning,
+                start_frame,
+                tuning_ranges=tuning_ranges,
+                n_lines=n_lines,
+                lock_mode=lock_mode,
+                right_wall_sensitivity=right_wall_sensitivity,
+            )
+            report_analyse(2, 2)
+            analysis = _build_dynamic_tbc_analysis(
+                lock_mode,
+                reference_frame,
+                dynamic_tbc_template,
+                initial_bounds,
+            )
+            analysis = _apply_manual_shift_to_stabilize_analysis(
+                analysis,
+                manual_shift_map,
+                maximum_line=max(max((int(line) for line in selected_lines), default=1), 32),
+            )
+            analysis['right_wall_sensitivity'] = int(round(float(right_wall_sensitivity)))
+        else:
+            analysis = _analyse_stabilize_vbi_reference(
+                input_path,
+                config,
+                tape_format,
+                controls,
+                selected_lines,
+                decoder_tuning,
+                start_frame,
+                end_frame,
+                tuning_ranges=tuning_ranges,
+                n_lines=n_lines,
+                reference_mode=reference_mode,
+                reference_line=reference_line,
+                tolerance=tolerance,
+                right_wall_sensitivity=right_wall_sensitivity,
+                manual_shift_map=manual_shift_map,
+                progress_callback=report_analyse,
+            )
         analysed_per_line_shift = {
             int(logical_line): int(values.get('shift', 0))
             for logical_line, values in dict(analysis.get('per_line', {})).items()
@@ -3068,22 +3858,33 @@ def stabilize_repair_vbi(
                 frame_index,
                 n_lines=n_lines,
             )
-            if lock_mode != 'reference':
+            if lock_mode not in ('reference', 'tbc', 'tbc_frame', 'tbc_linear'):
                 frame_target_raw_centre = target_raw_centre
                 frame_target_raw_right = target_raw_right
-            if callable(progress_callback) and lock_mode != 'reference' and frame_index == start_frame:
+            if callable(progress_callback) and lock_mode not in ('reference', 'tbc', 'tbc_frame', 'tbc_linear') and frame_index == start_frame:
                 progress_callback(0, max(end_frame - start_frame, 1))
             for (logical_line, raw_line), line in zip(mappings, lines):
                 if logical_line not in frame_selected_lines:
                     continue
-                current_resampled_right = _line_kgi_end(line)
-                if current_resampled_right is None:
-                    current_resampled_right = _line_kgi_default_right(line)
-                if current_resampled_right is None:
-                    continue
-                if lock_mode == 'reference':
-                    shift = int(analysed_per_line_shift.get(int(logical_line), 0))
+                if lock_mode in ('tbc_frame', 'tbc_linear'):
+                    current_resampled_right = _line_kgi_effective_right_wall(line, sensitivity=right_wall_sensitivity)
+                    if current_resampled_right is None:
+                        continue
+                    current_raw_right = float(current_resampled_right) * raw_sample_scale
+                    target_right_map = dict(dynamic_tbc_template.get('target_right_map', {})) if dynamic_tbc_template else {}
+                    default_target_right = float(dynamic_tbc_template.get('reference_right', current_raw_right)) if dynamic_tbc_template else current_raw_right
+                    target_right = float(target_right_map.get(int(logical_line), default_target_right))
+                    shift = int(round(target_right - current_raw_right))
+                    shift += int(manual_shift_map.get(int(logical_line), 0))
                 else:
+                    current_resampled_right = _line_kgi_end(line)
+                    if current_resampled_right is None:
+                        current_resampled_right = _line_kgi_default_right(line)
+                    if current_resampled_right is None:
+                        continue
+                if lock_mode in ('reference', 'tbc'):
+                    shift = int(analysed_per_line_shift.get(int(logical_line), 0))
+                elif lock_mode not in ('tbc_frame', 'tbc_linear'):
                     current_resampled_centre = _line_kgi_center(line)
                     if current_resampled_centre is None:
                         current_resampled_centre = float(line.start) + (expected_width / 2.0)
@@ -3102,7 +3903,7 @@ def stabilize_repair_vbi(
             output.write(bytes(processed))
             if callable(progress_callback):
                 current = (frame_index - start_frame) + 1
-                if lock_mode == 'reference':
+                if lock_mode in ('reference', 'tbc', 'tbc_frame', 'tbc_linear'):
                     progress_callback(analyse_total + current, analyse_total * 2)
                 else:
                     progress_callback(current, max(end_frame - start_frame, 1))
@@ -3139,6 +3940,408 @@ def _extract_frame_lines_for_repair(frame, config, frame_index, n_lines=None):
             break
         lines.append(Line(frame[start:end], _frame_line_number(frame_index, logical_index, frame_line_count)))
     return lines
+
+
+def _read_processed_repair_frame(
+    input_path,
+    config,
+    tape_format,
+    controls,
+    selected_lines,
+    decoder_tuning,
+    frame_index,
+    *,
+    tuning_ranges=(),
+    n_lines=None,
+):
+    total_frames = count_complete_frames(input_path, config)
+    frame_index = max(min(int(frame_index), max(int(total_frames) - 1, 0)), 0)
+    frame_size = frame_size_for_config(config)
+    with open(input_path, 'rb') as handle:
+        handle.seek(frame_index * frame_size)
+        frame = handle.read(frame_size)
+    if len(frame) < frame_size:
+        raise ValueError('Frame is outside the available VBI data.')
+
+    effective_controls, effective_selected_lines, effective_decoder_tuning, _active_key, _active_index = resolve_tuning_range(
+        frame_index,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        tuning_ranges,
+        line_count=max(useful_frame_lines(config), 32),
+    )
+    effective_selected_lines = frozenset(int(line) for line in (effective_selected_lines or ()))
+    processed = bytearray(_processed_frame_for_output(
+        frame,
+        config,
+        effective_controls,
+        line_selection=effective_selected_lines,
+        temporal_state={},
+        decoder_tuning=effective_decoder_tuning,
+    ))
+    _configure_repair_lines(config, tape_format, effective_controls, effective_decoder_tuning)
+    lines = _extract_frame_lines_for_repair(
+        bytes(processed),
+        config,
+        frame_index,
+        n_lines=n_lines,
+    )
+    mappings = _repair_line_mappings(config, n_lines=n_lines)
+    return {
+        'frame_index': int(frame_index),
+        'processed': processed,
+        'lines': tuple(lines),
+        'mappings': tuple(mappings),
+        'selected_lines': effective_selected_lines,
+    }
+
+
+def _wall_lock_right_edges(lines, selected_lines, *, right_wall_sensitivity=50):
+    edges = {}
+    for logical_line, line in enumerate(tuple(lines), start=1):
+        if int(logical_line) not in set(int(value) for value in selected_lines):
+            continue
+        right = _line_kgi_effective_right_wall(line, sensitivity=right_wall_sensitivity)
+        if right is None:
+            right = _line_kgi_default_right(line)
+        if right is None:
+            continue
+        edges[int(logical_line)] = float(right)
+    return edges
+
+
+def _default_wall_lock_x(right_edges, fallback_line=1):
+    if int(fallback_line) in right_edges:
+        return float(right_edges[int(fallback_line)])
+    if right_edges:
+        return float(max(right_edges.values()))
+    return 0.0
+
+
+def _apply_wall_lock_to_processed_frame(
+    processed,
+    config,
+    mappings,
+    lines,
+    selected_lines,
+    *,
+    wall_x,
+    block_shift=0,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
+    target_offset_map=None,
+):
+    selected_lines = frozenset(int(line) for line in selected_lines)
+    manual_shift_map = _normalise_stabilize_manual_shift_map(manual_shift_map, maximum_line=max((int(line) for line in selected_lines), default=32))
+    target_offset_map = {
+        int(line): float(offset)
+        for line, offset in dict(target_offset_map or {}).items()
+    }
+    target_wall = float(wall_x) + float(block_shift)
+    output = bytearray(processed)
+    preserve_tail = 4 if config.card == 'bt8x8' else 0
+    per_line = {}
+    for (logical_line, raw_line), line in zip(tuple(mappings), tuple(lines)):
+        logical_line = int(logical_line)
+        if logical_line not in selected_lines:
+            continue
+        right = _line_kgi_effective_right_wall(line, sensitivity=right_wall_sensitivity)
+        if right is None:
+            right = _line_kgi_default_right(line)
+        if right is None:
+            continue
+        target_right = float(target_wall) + float(target_offset_map.get(logical_line, 0.0))
+        shift = int(round(target_right - float(right)))
+        manual_shift = int(manual_shift_map.get(logical_line, 0))
+        shift += manual_shift
+        per_line[logical_line] = {
+            'right': float(right),
+            'target_right': float(target_right),
+            'shift': int(shift),
+            'manual_shift': int(manual_shift),
+            'shifted_right': float(right) + float(shift),
+        }
+        if shift == 0:
+            continue
+        start = int(raw_line) * int(config.line_bytes)
+        end = start + int(config.line_bytes)
+        line_tail = preserve_tail if preserve_tail and int(raw_line) == ((int(config.field_lines) * 2) - 1) else 0
+        output[start:end] = _shift_line_bytes(output[start:end], config, shift, preserve_tail=line_tail)
+    return bytes(output), per_line
+
+
+def build_wall_lock_preview_data(
+    input_path,
+    config,
+    tape_format,
+    controls,
+    line_selection=None,
+    decoder_tuning=None,
+    *,
+    reference_frame=0,
+    preview_frame=None,
+    wall_x=None,
+    block_shift=0,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
+    tuning_ranges=(),
+    n_lines=None,
+    preview_enabled=False,
+):
+    controls = normalise_signal_controls_tuple(controls)
+    selected_lines = current_line_selection(config) if line_selection is None else frozenset(int(line) for line in line_selection)
+    decoder_tuning = _stabilization_decoder_tuning(config, tape_format, decoder_tuning)
+    total_frames = count_complete_frames(input_path, config)
+    reference_frame = max(min(int(reference_frame), max(int(total_frames) - 1, 0)), 0)
+    preview_frame = reference_frame if preview_frame is None else max(min(int(preview_frame), max(int(total_frames) - 1, 0)), 0)
+    tuning_ranges = normalise_tuning_ranges(
+        tuning_ranges,
+        total_frames=total_frames,
+        line_count=max(useful_frame_lines(config), 32),
+    )
+
+    reference_data = _read_processed_repair_frame(
+        input_path,
+        config,
+        tape_format,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        reference_frame,
+        tuning_ranges=tuning_ranges,
+        n_lines=n_lines,
+    )
+    reference_edges = _wall_lock_right_edges(
+        reference_data['lines'],
+        reference_data['selected_lines'],
+        right_wall_sensitivity=right_wall_sensitivity,
+    )
+    template_right_map = _interpolate_target_right_map(
+        tuple(sorted(int(line) for line in reference_data['selected_lines'])),
+        reference_edges,
+    )
+    reference_wall = max((float(value) for value in template_right_map.values()), default=0.0)
+    target_offset_map = {
+        int(line): float(right) - float(reference_wall)
+        for line, right in template_right_map.items()
+    }
+    sample_count_hint = max((int(line.resampled.size) for line in reference_data['lines']), default=1)
+    default_wall_x = float(min(3200.0, float(max(sample_count_hint - 1, 0))))
+    wall_x = float(default_wall_x if wall_x is None else wall_x)
+
+    preview_data = _read_processed_repair_frame(
+        input_path,
+        config,
+        tape_format,
+        controls,
+        selected_lines,
+        decoder_tuning,
+        preview_frame,
+        tuning_ranges=tuning_ranges,
+        n_lines=n_lines,
+    )
+    preview_lines = preview_data['lines']
+    preview_right_edges = _wall_lock_right_edges(
+        preview_lines,
+        preview_data['selected_lines'],
+        right_wall_sensitivity=right_wall_sensitivity,
+    )
+    rendered_bytes = bytes(preview_data['processed'])
+    normalised_manual_shift_map = _normalise_stabilize_manual_shift_map(
+        manual_shift_map,
+        maximum_line=max((int(line) for line in preview_data['selected_lines']), default=32),
+    )
+    target_wall = float(wall_x) + float(block_shift)
+    per_line = {
+        int(logical_line): {
+            'right': float(right),
+            'target_right': float(target_wall) + float(target_offset_map.get(int(logical_line), 0.0)),
+            'shift': int(round((float(target_wall) + float(target_offset_map.get(int(logical_line), 0.0))) - float(right))) + int(normalised_manual_shift_map.get(int(logical_line), 0)),
+            'manual_shift': int(normalised_manual_shift_map.get(int(logical_line), 0)),
+            'shifted_right': float(right) + float(int(round((float(target_wall) + float(target_offset_map.get(int(logical_line), 0.0))) - float(right))) + int(normalised_manual_shift_map.get(int(logical_line), 0))),
+        }
+        for logical_line, right in preview_right_edges.items()
+    }
+    if bool(preview_enabled):
+        rendered_bytes, per_line = _apply_wall_lock_to_processed_frame(
+            preview_data['processed'],
+            config,
+            preview_data['mappings'],
+            preview_lines,
+            preview_data['selected_lines'],
+            wall_x=wall_x,
+            block_shift=block_shift,
+            right_wall_sensitivity=right_wall_sensitivity,
+            manual_shift_map=normalised_manual_shift_map,
+            target_offset_map=target_offset_map,
+        )
+        preview_lines = _extract_frame_lines_for_repair(
+            rendered_bytes,
+            config,
+            preview_frame,
+            n_lines=n_lines,
+        )
+
+    line_arrays = []
+    for line in preview_lines:
+        samples = np.asarray(line.resampled, dtype=np.float32)
+        if samples.size == 0:
+            samples = np.zeros((1,), dtype=np.float32)
+        samples = np.clip(samples, 0.0, 255.0).astype(np.uint8)
+        line_arrays.append(samples)
+
+    sample_count = max((int(array.size) for array in line_arrays), default=1)
+    return {
+        'reference_frame': int(reference_frame),
+        'preview_frame': int(preview_frame),
+        'wall_x': float(wall_x) + float(block_shift),
+        'base_wall_x': float(wall_x),
+        'block_shift': int(round(float(block_shift))),
+        'default_wall_x': float(default_wall_x),
+        'sample_count': int(sample_count),
+        'line_count': int(len(line_arrays)),
+        'line_arrays': tuple(array.tolist() for array in line_arrays),
+        'right_edges': {int(line): float(values.get('shifted_right', values.get('right', 0.0))) for line, values in per_line.items()},
+        'selected_lines': tuple(sorted(int(line) for line in preview_data['selected_lines'])),
+        'reference_wall': float(reference_wall),
+        'target_offset_map': {
+            int(line): float(offset)
+            for line, offset in target_offset_map.items()
+        },
+        'mode': 'preview' if bool(preview_enabled) else 'source',
+    }
+
+
+def stabilize_wall_lock_vbi(
+    input_path,
+    output_path,
+    config,
+    tape_format,
+    controls,
+    line_selection=None,
+    decoder_tuning=None,
+    *,
+    reference_frame=0,
+    scope_mode='to_end',
+    frame_count=None,
+    wall_x=None,
+    block_shift=0,
+    right_wall_sensitivity=50,
+    manual_shift_map=None,
+    tuning_ranges=(),
+    n_lines=None,
+    progress_callback=None,
+):
+    if os.path.abspath(str(input_path)) == os.path.abspath(str(output_path)):
+        raise ValueError('Choose a different output file for stabilized VBI.')
+    controls = normalise_signal_controls_tuple(controls)
+    selected_lines = current_line_selection(config) if line_selection is None else frozenset(int(line) for line in line_selection)
+    if not selected_lines:
+        raise ValueError('Select at least one line before stabilizing VBI.')
+    manual_shift_map = _normalise_stabilize_manual_shift_map(manual_shift_map, maximum_line=max((int(line) for line in selected_lines), default=32))
+    decoder_tuning = _stabilization_decoder_tuning(config, tape_format, decoder_tuning)
+    total_frames = count_complete_frames(input_path, config)
+    reference_frame = max(min(int(reference_frame), max(int(total_frames) - 1, 0)), 0)
+    tuning_ranges = normalise_tuning_ranges(
+        tuning_ranges,
+        total_frames=total_frames,
+        line_count=max(useful_frame_lines(config), 32),
+    )
+
+    reference_preview = build_wall_lock_preview_data(
+        input_path,
+        config,
+        tape_format,
+        controls,
+        line_selection=selected_lines,
+        decoder_tuning=decoder_tuning,
+        reference_frame=reference_frame,
+        preview_frame=reference_frame,
+        wall_x=wall_x,
+        block_shift=0,
+        right_wall_sensitivity=right_wall_sensitivity,
+        manual_shift_map=manual_shift_map,
+        tuning_ranges=tuning_ranges,
+        n_lines=n_lines,
+        preview_enabled=False,
+    )
+    effective_wall_x = float(reference_preview['base_wall_x'] if wall_x is None else wall_x)
+    target_offset_map = {
+        int(line): float(offset)
+        for line, offset in dict(reference_preview.get('target_offset_map', {})).items()
+    }
+
+    scope_mode = str(scope_mode or 'to_end').strip().lower()
+    if scope_mode == 'whole':
+        start_frame = 0
+        end_frame = int(total_frames)
+    elif scope_mode == 'frames':
+        start_frame = int(reference_frame)
+        span = max(int(frame_count or 1), 1)
+        end_frame = min(start_frame + span, int(total_frames))
+    else:
+        start_frame = int(reference_frame)
+        end_frame = int(total_frames)
+    if start_frame >= end_frame:
+        raise ValueError('No frames selected for stabilization.')
+
+    frame_size = frame_size_for_config(config)
+    apply_total = max(end_frame - start_frame, 1)
+    with open(input_path, 'rb') as source, open(output_path, 'wb') as output:
+        source.seek(start_frame * frame_size)
+        for frame_index in range(start_frame, end_frame):
+            frame = source.read(frame_size)
+            if len(frame) < frame_size:
+                break
+            effective_controls, effective_selected_lines, effective_decoder_tuning, _active_key, _active_index = resolve_tuning_range(
+                frame_index,
+                controls,
+                selected_lines,
+                decoder_tuning,
+                tuning_ranges,
+                line_count=max(useful_frame_lines(config), 32),
+            )
+            effective_selected_lines = frozenset(int(line) for line in (effective_selected_lines or ()))
+            processed = bytearray(_processed_frame_for_output(
+                frame,
+                config,
+                effective_controls,
+                line_selection=effective_selected_lines,
+                temporal_state={},
+                decoder_tuning=effective_decoder_tuning,
+            ))
+            _configure_repair_lines(config, tape_format, effective_controls, effective_decoder_tuning)
+            lines = _extract_frame_lines_for_repair(
+                bytes(processed),
+                config,
+                frame_index,
+                n_lines=n_lines,
+            )
+            mappings = _repair_line_mappings(config, n_lines=n_lines)
+            shifted_bytes, _per_line = _apply_wall_lock_to_processed_frame(
+                processed,
+                config,
+                mappings,
+                lines,
+                effective_selected_lines,
+                wall_x=effective_wall_x,
+                block_shift=block_shift,
+                right_wall_sensitivity=right_wall_sensitivity,
+                manual_shift_map=manual_shift_map,
+                target_offset_map=target_offset_map,
+            )
+            output.write(shifted_bytes)
+            if callable(progress_callback):
+                progress_callback((frame_index - start_frame) + 1, apply_total)
+    return {
+        'reference_frame': int(reference_frame),
+        'start_frame': int(start_frame),
+        'end_frame': int(end_frame),
+        'wall_x': float(effective_wall_x) + float(block_shift),
+        'base_wall_x': float(effective_wall_x),
+        'block_shift': int(round(float(block_shift))),
+    }
 
 
 def _configure_repair_lines(config, tape_format, controls, decoder_tuning):
@@ -4041,17 +5244,18 @@ class VBIRepairDiagnostics:
         self._all_row_zero_render_key = None
         self._all_row_zero_render_text = None
 
-    def _page_history_start(self, frame_index):
-        return max(int(frame_index) - self._page_history_frames + 1, 0)
+    def _page_history_start(self, frame_index, history_frames=None):
+        history_frames = max(int(history_frames or self._page_history_frames), 1)
+        return max(int(frame_index) - history_frames + 1, 0)
 
-    def _history_covers_page_window(self, frame_index):
+    def _history_covers_page_window(self, frame_index, history_frames=None):
         frame_index = max(int(frame_index), 0)
         if not self._frame_history:
             return False
         history_indexes = tuple(int(index) for index, _ in self._frame_history)
         if not history_indexes or history_indexes[-1] != frame_index:
             return False
-        expected_start = self._page_history_start(frame_index)
+        expected_start = self._page_history_start(frame_index, history_frames=history_frames)
         if history_indexes[0] > expected_start:
             return False
         return history_indexes == tuple(range(history_indexes[0], frame_index + 1))
@@ -4128,14 +5332,17 @@ class VBIRepairDiagnostics:
             results.append(entry)
         return tuple(results), tuple(packets)
 
-    def _ensure_history(self, frame_index, runtime, require_history=False, progress_callback=None):
+    def _ensure_history(self, frame_index, runtime, require_history=False, progress_callback=None, history_frames=None):
         signature = self._signature_for_runtime(runtime)
         if signature != self._last_signature:
             self._reset_runtime_cache(signature)
 
         frame_index = max(int(frame_index), 0)
+        desired_history_frames = max(int(history_frames or self._page_history_frames), 1)
+        if self._frame_history.maxlen != desired_history_frames:
+            self._frame_history = deque(self._frame_history, maxlen=desired_history_frames)
         if self._last_frame_index == frame_index and (
-            (not require_history) or self._history_covers_page_window(frame_index)
+            (not require_history) or self._history_covers_page_window(frame_index, history_frames=desired_history_frames)
         ):
             return
 
@@ -4154,7 +5361,7 @@ class VBIRepairDiagnostics:
                 progress_callback(1, 1)
             return
 
-        if self._history_covers_page_window(frame_index):
+        if self._history_covers_page_window(frame_index, history_frames=desired_history_frames):
             return
 
         can_extend_history = (
@@ -4167,7 +5374,7 @@ class VBIRepairDiagnostics:
             self._frame_history.clear()
             self._last_processed_frame = None
             self._temporal_state = {}
-            start = self._page_history_start(frame_index)
+            start = self._page_history_start(frame_index, history_frames=desired_history_frames)
         else:
             start = self._last_frame_index + 1
 
@@ -4223,20 +5430,68 @@ class VBIRepairDiagnostics:
             lines.append('No matching decoded packets for this frame yet.')
         return '\n'.join(lines)
 
-    def _render_all_row_zero_results(self, runtime, hide_noisy=False, quality_threshold=0, progress_callback=None, cancel_callback=None):
+    def _render_row_range_results(self, frame_index, row, hide_noisy=False, quality_threshold=0, current_headers=None):
+        history_indexes = tuple(int(index) for index, _ in self._frame_history)
+        if history_indexes:
+            range_label = f'{history_indexes[0]}-{history_indexes[-1]} ({len(history_indexes)})'
+        else:
+            range_label = f'{int(frame_index)}-{int(frame_index)} (0)'
+        lines = [
+            f'Row {int(row):02d} | frames {range_label} | mode {self._mode}',
+        ]
+        if current_headers:
+            lines.append(current_headers)
+        visible = 0
+        for history_frame_index, frame_packets in self._frame_history:
+            frame_lines = []
+            for packet in frame_packets:
+                if int(packet.mrag.row) != int(row):
+                    continue
+                confidence = _repair_packet_confidence(packet, quality_threshold)
+                if hide_noisy and confidence < float(quality_threshold):
+                    continue
+                frame_lines.append(
+                    f"M{packet.mrag.magazine} R{packet.mrag.row:02d} "
+                    f"Q{confidence:05.1f} "
+                    f"{packet.to_ansi(colour=True)}"
+                )
+            if frame_lines:
+                visible += len(frame_lines)
+                lines.append(f'Frame {int(history_frame_index)}')
+                lines.extend(frame_lines)
+        if visible == 0:
+            lines.append('No matching decoded packets for this row in this frame range yet.')
+        return '\n'.join(lines)
+
+    def _render_all_row_zero_results(
+        self,
+        runtime,
+        frame_index,
+        range_frames=15,
+        hide_noisy=False,
+        quality_threshold=0,
+        progress_callback=None,
+        cancel_callback=None,
+    ):
         total_frames = count_complete_frames(self._current_input_path(), runtime['config'])
+        range_start = max(int(frame_index), 0)
+        range_frames = max(int(range_frames), 1)
+        range_end = min(range_start + range_frames, int(total_frames))
+        scan_total = max(range_end - range_start, 0)
         cache_key = (
             self._signature_for_runtime(runtime),
+            int(range_start),
+            int(range_end),
             bool(hide_noisy),
             int(quality_threshold),
-            int(total_frames),
+            int(scan_total),
         )
         if cache_key == self._all_row_zero_render_key and self._all_row_zero_render_text is not None:
             if callable(progress_callback):
-                progress_callback(max(int(total_frames), 1), max(int(total_frames), 1))
+                progress_callback(max(int(scan_total), 1), max(int(scan_total), 1))
             return self._all_row_zero_render_text
 
-        backup_history = deque(self._frame_history, maxlen=self._page_history_frames)
+        backup_history = deque(self._frame_history, maxlen=self._frame_history.maxlen)
         backup_last_signature = self._last_signature
         backup_last_frame_index = self._last_frame_index
         backup_last_frame_results = self._last_frame_results
@@ -4256,18 +5511,21 @@ class VBIRepairDiagnostics:
             self._reset_runtime_cache(self._signature_for_runtime(runtime))
             started_at = time.monotonic()
             if callable(progress_callback):
-                progress_callback(0, max(int(total_frames), 1), f'0/{max(int(total_frames), 1)} frames | left --:--')
-            lines = [f'All row 0 packets | frames {int(total_frames)} | mode {self._mode}']
+                progress_callback(0, max(int(scan_total), 1), f'0/{max(int(scan_total), 1)} frames | left --:--')
+            lines = [
+                f'Row 0 packets | frames {int(range_start)}-{max(int(range_end) - 1, int(range_start))} '
+                f'({int(scan_total)}) | mode {self._mode}'
+            ]
             visible = 0
-            for current_index in range(max(int(total_frames), 0)):
+            for offset, current_index in enumerate(range(range_start, range_end), start=1):
                 if callable(cancel_callback) and cancel_callback():
                     if callable(progress_callback):
                         progress_callback(
-                            current_index,
-                            max(int(total_frames), 1),
-                            f'{int(current_index)}/{max(int(total_frames), 1)} frames | cancelled',
+                            max(offset - 1, 0),
+                            max(int(scan_total), 1),
+                            f'{max(offset - 1, 0)}/{max(int(scan_total), 1)} frames | cancelled',
                         )
-                    return 'All row 0 scan cancelled.'
+                    return 'Row 0 range scan cancelled.'
                 results, _packets = self._decode_current_frame(current_index, runtime)
                 frame_lines = []
                 for item in results:
@@ -4289,20 +5547,20 @@ class VBIRepairDiagnostics:
                     visible += len(frame_lines)
                     lines.append(f'Frame {int(current_index)}')
                     lines.extend(frame_lines)
-                if callable(progress_callback) and (((current_index + 1) % 8) == 0 or (current_index + 1) >= int(total_frames)):
+                if callable(progress_callback) and ((offset % 8) == 0 or offset >= int(scan_total)):
                     elapsed = max(time.monotonic() - started_at, 0.0)
                     remaining = 0.0
-                    if current_index >= 0:
-                        progress = float(current_index + 1)
+                    if offset > 0:
+                        progress = float(offset)
                         if progress > 0.0:
-                            remaining = max((float(total_frames) - progress) * (elapsed / progress), 0.0)
+                            remaining = max((float(scan_total) - progress) * (elapsed / progress), 0.0)
                     progress_callback(
-                        current_index + 1,
-                        max(int(total_frames), 1),
-                        f'{int(current_index) + 1}/{max(int(total_frames), 1)} frames | left {int(remaining // 60):02d}:{int(remaining % 60):02d}',
+                        offset,
+                        max(int(scan_total), 1),
+                        f'{offset}/{max(int(scan_total), 1)} frames | left {int(remaining // 60):02d}:{int(remaining % 60):02d}',
                     )
             if visible == 0:
-                lines.append('No row 0 packets detected across all frames yet.')
+                lines.append('No row 0 packets detected in this frame range yet.')
             text = '\n'.join(lines)
             self._all_row_zero_render_key = cache_key
             self._all_row_zero_render_text = text
@@ -4415,14 +5673,256 @@ class VBIRepairDiagnostics:
             'packet_count': sum(1 for _ in subpages[0].packets),
         }
 
-    def describe_payload(self, frame_index, view_mode='packets', row=0, page='100', subpage='', hide_noisy=False, progress_callback=None, cancel_callback=None):
+    def deconvolve_page_t42(
+        self,
+        start_frame,
+        frame_count,
+        page_text,
+        subpage_text,
+        output_path,
+        hide_noisy=False,
+    ):
+        runtime = self._runtime()
+        quality_threshold = int(runtime['decoder_tuning'].get('quality_threshold', QUALITY_THRESHOLD_DEFAULT))
+        page_value, page_hex = _parse_repair_page_value(page_text)
+        subpage_value, subpage_hex = _parse_repair_subpage_value(subpage_text)
+        start_frame = max(int(start_frame), 0)
+        frame_count = max(int(frame_count), 1)
+        end_frame = start_frame + frame_count
+
+        backup_history = deque(self._frame_history, maxlen=self._frame_history.maxlen)
+        backup_last_signature = self._last_signature
+        backup_last_frame_index = self._last_frame_index
+        backup_last_frame_results = self._last_frame_results
+        backup_last_frame_packets = self._last_frame_packets
+        backup_last_processed_frame = self._last_processed_frame
+        backup_temporal_state = dict(self._temporal_state)
+        backup_temporal_profile_states = {
+            key: dict(value)
+            for key, value in dict(self._temporal_profile_states).items()
+        }
+        backup_last_page_render_key = self._last_page_render_key
+        backup_last_page_render_text = self._last_page_render_text
+        backup_all_row_zero_render_key = self._all_row_zero_render_key
+        backup_all_row_zero_render_text = self._all_row_zero_render_text
+
+        try:
+            self._reset_runtime_cache(self._signature_for_runtime(runtime))
+            for current_index in range(start_frame, end_frame):
+                results, packets = self._decode_current_frame(current_index, runtime)
+                if hide_noisy:
+                    filtered_packets = []
+                    for item in results:
+                        if item.get('status') != 'packet':
+                            continue
+                        packet = item['packet']
+                        confidence = _repair_packet_confidence(packet, item['quality'])
+                        if confidence < float(quality_threshold):
+                            continue
+                        filtered_packets.append(packet)
+                    packets = tuple(filtered_packets)
+                self._frame_history.append((int(current_index), tuple(packets)))
+                if current_index == (end_frame - 1):
+                    self._last_frame_results = results
+                    self._last_frame_packets = tuple(packets)
+            self._last_frame_index = int(max(end_frame - 1, start_frame))
+
+            _page_value, _page_hex, _subpage_value, _subpage_hex, subpages = self._collect_page_subpages(
+                page_text,
+                subpage_text,
+                hide_noisy=False,
+                quality_threshold=quality_threshold,
+            )
+            if not subpages:
+                message = (
+                    f'Page P{page_hex}'
+                    + (f' Subpage {subpage_hex}' if subpage_value is not None else '')
+                    + ' was not deconvolved in the selected frame range.'
+                )
+                raise ValueError(message)
+
+            packet_count = 0
+            with open(output_path, 'wb') as handle:
+                for subpage in subpages:
+                    for packet in subpage.packets:
+                        handle.write(packet.to_bytes())
+                        packet_count += 1
+
+            return {
+                'page': int(page_value),
+                'page_hex': str(page_hex),
+                'subpage': None if subpage_value is None else int(subpage_value),
+                'subpage_hex': '' if subpage_value is None else str(subpage_hex),
+                'packet_count': int(packet_count),
+                'group_count': int(len(subpages)),
+                'start_frame': int(start_frame),
+                'end_frame': int(max(end_frame - 1, start_frame)),
+            }
+        finally:
+            self._frame_history = backup_history
+            self._last_signature = backup_last_signature
+            self._last_frame_index = backup_last_frame_index
+            self._last_frame_results = backup_last_frame_results
+            self._last_frame_packets = backup_last_frame_packets
+            self._last_processed_frame = backup_last_processed_frame
+            self._temporal_state = backup_temporal_state
+            self._temporal_profile_states = backup_temporal_profile_states
+            self._last_page_render_key = backup_last_page_render_key
+            self._last_page_render_text = backup_last_page_render_text
+            self._all_row_zero_render_key = backup_all_row_zero_render_key
+            self._all_row_zero_render_text = backup_all_row_zero_render_text
+
+    def deconvolve_t42(
+        self,
+        start_frame,
+        frame_count,
+        output_path,
+        *,
+        mode='all',
+        page_text='100',
+        row=0,
+        hide_noisy=False,
+        progress_callback=None,
+    ):
+        runtime = self._runtime()
+        quality_threshold = int(runtime['decoder_tuning'].get('quality_threshold', QUALITY_THRESHOLD_DEFAULT))
+        mode = str(mode or 'all').strip().lower()
+        if mode not in {'all', 'page', 'row'}:
+            raise ValueError(f'Unsupported deconvolve mode: {mode}')
+
+        page_value = None
+        page_hex = ''
+        if mode == 'page':
+            page_value, page_hex = _parse_repair_page_value(page_text)
+        row = max(min(int(row), 31), 0)
+        start_frame = max(int(start_frame), 0)
+        frame_count = max(int(frame_count), 1)
+        end_frame = start_frame + frame_count
+
+        backup_history = deque(self._frame_history, maxlen=self._frame_history.maxlen)
+        backup_last_signature = self._last_signature
+        backup_last_frame_index = self._last_frame_index
+        backup_last_frame_results = self._last_frame_results
+        backup_last_frame_packets = self._last_frame_packets
+        backup_last_processed_frame = self._last_processed_frame
+        backup_temporal_state = dict(self._temporal_state)
+        backup_temporal_profile_states = {
+            key: dict(value)
+            for key, value in dict(self._temporal_profile_states).items()
+        }
+        backup_last_page_render_key = self._last_page_render_key
+        backup_last_page_render_text = self._last_page_render_text
+        backup_all_row_zero_render_key = self._all_row_zero_render_key
+        backup_all_row_zero_render_text = self._all_row_zero_render_text
+
+        try:
+            self._reset_runtime_cache(self._signature_for_runtime(runtime))
+            self._frame_history = deque(maxlen=max(int(frame_count), 1))
+            packet_count = 0
+            decoded_packets = []
+            if callable(progress_callback):
+                progress_callback(0, max(int(frame_count), 1))
+            for current_index in range(start_frame, end_frame):
+                results, packets = self._decode_current_frame(current_index, runtime)
+                filtered_packets = []
+                for item in results:
+                    if item.get('status') != 'packet':
+                        continue
+                    packet = item['packet']
+                    confidence = _repair_packet_confidence(packet, item['quality'])
+                    if hide_noisy and confidence < float(quality_threshold):
+                        continue
+                    if mode == 'row' and int(packet.mrag.row) != int(row):
+                        continue
+                    filtered_packets.append(packet)
+                packets = tuple(filtered_packets)
+                self._frame_history.append((int(current_index), packets))
+                decoded_packets.extend(packets)
+                if current_index == (end_frame - 1):
+                    self._last_frame_results = results
+                    self._last_frame_packets = packets
+                offset = (current_index - start_frame) + 1
+                if callable(progress_callback) and ((offset % 8) == 0 or offset >= int(frame_count)):
+                    progress_callback((current_index - start_frame) + 1, max(int(frame_count), 1))
+            self._last_frame_index = int(max(end_frame - 1, start_frame))
+
+            with open(output_path, 'wb') as handle:
+                if mode == 'page':
+                    _page_value, _page_hex, _subpage_value, _subpage_hex, subpages = self._collect_page_subpages(
+                        page_text,
+                        '',
+                        hide_noisy=False,
+                        quality_threshold=quality_threshold,
+                    )
+                    if not subpages:
+                        raise ValueError(f'Page P{page_hex} was not deconvolved in the selected frame range.')
+                    for subpage in subpages:
+                        for packet in subpage.packets:
+                            handle.write(packet.to_bytes())
+                            packet_count += 1
+                    return {
+                        'mode': 'page',
+                        'page': int(page_value),
+                        'page_hex': str(page_hex),
+                        'packet_count': int(packet_count),
+                        'group_count': int(len(subpages)),
+                        'start_frame': int(start_frame),
+                        'end_frame': int(max(end_frame - 1, start_frame)),
+                    }
+
+                if not decoded_packets:
+                    if mode == 'row':
+                        raise ValueError(
+                            f'Row {int(row):02d} was not deconvolved in the selected frame range.'
+                        )
+                    raise ValueError('No Teletext packets were deconvolved in the selected frame range.')
+
+                for packet in decoded_packets:
+                    handle.write(packet.to_bytes())
+                    packet_count += 1
+
+            return {
+                'mode': mode,
+                'row': int(row) if mode == 'row' else None,
+                'packet_count': int(packet_count),
+                'start_frame': int(start_frame),
+                'end_frame': int(max(end_frame - 1, start_frame)),
+            }
+        finally:
+            self._frame_history = backup_history
+            self._last_signature = backup_last_signature
+            self._last_frame_index = backup_last_frame_index
+            self._last_frame_results = backup_last_frame_results
+            self._last_frame_packets = backup_last_frame_packets
+            self._last_processed_frame = backup_last_processed_frame
+            self._temporal_state = backup_temporal_state
+            self._temporal_profile_states = backup_temporal_profile_states
+            self._last_page_render_key = backup_last_page_render_key
+            self._last_page_render_text = backup_last_page_render_text
+            self._all_row_zero_render_key = backup_all_row_zero_render_key
+            self._all_row_zero_render_text = backup_all_row_zero_render_text
+
+    def describe_payload(
+        self,
+        frame_index,
+        view_mode='packets',
+        row=0,
+        page='100',
+        subpage='',
+        row0_range_frames=15,
+        hide_noisy=False,
+        progress_callback=None,
+        cancel_callback=None,
+    ):
         runtime = self._runtime()
         mode = str(view_mode)
+        history_range_frames = max(int(row0_range_frames), 1)
         self._ensure_history(
             frame_index,
             runtime,
-            require_history=(mode == 'page'),
+            require_history=(mode in ('page', 'row')),
             progress_callback=progress_callback,
+            history_frames=history_range_frames if mode in ('page', 'row') else None,
         )
         quality_threshold = int(runtime['decoder_tuning'].get('quality_threshold', QUALITY_THRESHOLD_DEFAULT))
         current_headers = _repair_recent_header_summary(self._last_frame_packets, self._frame_history)
@@ -4458,19 +5958,19 @@ class VBIRepairDiagnostics:
                 quality_threshold=quality_threshold,
                 current_headers=None,
             )
-        elif mode == 'row0all':
+        elif mode == 'row0range':
             text = self._render_all_row_zero_results(
                 runtime,
+                frame_index,
+                range_frames=row0_range_frames,
                 hide_noisy=hide_noisy,
                 quality_threshold=quality_threshold,
                 progress_callback=progress_callback,
                 cancel_callback=cancel_callback,
             )
         elif mode == 'row':
-            text = self._render_packet_results(
+            text = self._render_row_range_results(
                 frame_index,
-                self._last_frame_results,
-                self._last_frame_packets,
                 row=int(row),
                 hide_noisy=hide_noisy,
                 quality_threshold=quality_threshold,
@@ -4492,6 +5992,7 @@ class VBIRepairDiagnostics:
             'quality_threshold': quality_threshold,
             'frame_index': int(frame_index),
             'mode': mode,
+            'row0_range_frames': int(row0_range_frames),
             'page_suggestions': _repair_page_suggestions(self._last_frame_packets, self._frame_history),
             'page_auto_suggestions': page_auto_suggestions,
             'subpage_suggestions': subpage_suggestions,
@@ -4499,8 +6000,16 @@ class VBIRepairDiagnostics:
             'current_page_entries': current_header_entries,
         }
 
-    def describe(self, frame_index, view_mode='packets', row=0, page='100', subpage='', hide_noisy=False):
-        return self.describe_payload(frame_index, view_mode=view_mode, row=row, page=page, subpage=subpage, hide_noisy=hide_noisy)['text']
+    def describe(self, frame_index, view_mode='packets', row=0, page='100', subpage='', row0_range_frames=15, hide_noisy=False):
+        return self.describe_payload(
+            frame_index,
+            view_mode=view_mode,
+            row=row,
+            page=page,
+            subpage=subpage,
+            row0_range_frames=row0_range_frames,
+            hide_noisy=hide_noisy,
+        )['text']
 
 
 def start_live_fix_capture_card(live_tuner, initial_settings):
@@ -4767,14 +6276,71 @@ def scan(packets, lines, frames):
 @click.option('-d', '--min-duplicates', type=int, default=3, help='Only squash and output subpages with at least N duplicates.')
 @click.option('-t', '--threshold', type=int, default=-1, help='Max difference for squashing.')
 @click.option('-i', '--ignore-empty', is_flag=True, default=False, help='Ignore the emptiest duplicate packets instead of the earliest.')
-@click.option('-md', '--mode', 'squash_mode', type=click.Choice(['v1', 'v3', 'auto']), default='v3', show_default=True,
-              help='Squash grouping mode. v1 groups by page similarity, v3 groups by subpage code, auto chooses per page.')
+@click.option('-md', '--mode', 'squash_mode', type=click.Choice(['v1', 'v3', 'auto', 'custom', 'profile']), default='v3', show_default=True,
+              help='Squash grouping mode. custom uses weighted hybrid matching, profile loads custom matching from JSON.')
+@click.option('--profile', 'squash_profile_path', type=click.Path(exists=True, dir_okay=False, readable=True), default=None,
+              help='Load squash profile from JSON. Used by --mode profile, or as a base for --mode custom.')
+@click.option('--profile-name', type=click.Choice(pipeline.builtin_squash_profile_names()), default=None,
+              help='Use a built-in squash profile by name. Useful for --mode custom/profile.')
+@click.option('--match-threshold', type=float, default=None, help='Custom/profile: minimum hybrid similarity score to group pages.')
+@click.option('--header-weight', type=float, default=None, help='Custom/profile: weight for header matching.')
+@click.option('--body-weight', type=float, default=None, help='Custom/profile: weight for body row matching.')
+@click.option('--footer-weight', type=float, default=None, help='Custom/profile: weight for footer/bottom row matching.')
+@click.option('--subcode-match-bonus', type=float, default=None, help='Custom/profile: bonus when subpage codes match.')
+@click.option('--subcode-mismatch-penalty', type=float, default=None, help='Custom/profile: penalty when subpage codes differ.')
+@click.option('--profile-iterations', type=int, default=None, help='Custom/profile: number of centroid regrouping passes.')
 @packetwriter
 @paginated(always=True)
 @packetreader()
-def squash(packets, min_duplicates, threshold, squash_mode, pages, subpages, ignore_empty):
+def squash(
+    packets,
+    min_duplicates,
+    threshold,
+    squash_mode,
+    squash_profile_path,
+    profile_name,
+    match_threshold,
+    header_weight,
+    body_weight,
+    footer_weight,
+    subcode_match_bonus,
+    subcode_mismatch_penalty,
+    profile_iterations,
+    pages,
+    subpages,
+    ignore_empty,
+):
 
     """Reduce errors in t42 stream by using frequency analysis."""
+
+    custom_fields = {
+        'match_threshold': match_threshold,
+        'header_weight': header_weight,
+        'body_weight': body_weight,
+        'footer_weight': footer_weight,
+        'subcode_match_bonus': subcode_match_bonus,
+        'subcode_mismatch_penalty': subcode_mismatch_penalty,
+        'iterations': profile_iterations,
+    }
+    has_custom_overrides = any(value is not None for value in custom_fields.values())
+    squash_profile = None
+
+    if squash_mode == 'profile' and squash_profile_path is None and profile_name is None:
+        raise click.UsageError('--mode profile requires --profile or --profile-name.')
+
+    if squash_mode not in {'custom', 'profile'} and (squash_profile_path is not None or profile_name is not None or has_custom_overrides):
+        raise click.UsageError('Custom/profile options can only be used with --mode custom or --mode profile.')
+
+    if squash_mode in {'custom', 'profile'}:
+        if squash_profile_path is not None:
+            squash_profile = pipeline.load_squash_profile(squash_profile_path)
+        if profile_name is not None:
+            squash_profile = pipeline.normalise_squash_profile({
+                **(squash_profile or {}),
+                **pipeline.get_builtin_squash_profile(profile_name),
+            })
+        overrides = {key: value for key, value in custom_fields.items() if value is not None}
+        squash_profile = pipeline.normalise_squash_profile({**(squash_profile or {}), **overrides})
 
     packets = (p for p in packets if not p.is_padding())
     for sp in pipeline.subpage_squash(
@@ -4782,8 +6348,39 @@ def squash(packets, min_duplicates, threshold, squash_mode, pages, subpages, ign
             min_duplicates=min_duplicates, ignore_empty=ignore_empty,
             threshold=threshold,
             squash_mode=squash_mode,
+            squash_profile=squash_profile,
     ):
         yield from sp.packets
+
+
+def _launch_squash_tool(input_path):
+    try:
+        from teletext.gui import squashtune as squashtool_gui
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+    argv = ['teletext']
+    if input_path:
+        argv.append(input_path)
+    return squashtool_gui.main(argv)
+
+
+@teletext.command()
+@click.argument('input_path', required=False, type=click.Path(exists=True, dir_okay=False, readable=True))
+def squashtool(input_path):
+
+    """Open the Squash Tool window for a .t42 file."""
+
+    return _launch_squash_tool(input_path)
+
+
+@teletext.command(name='squashtune', hidden=True)
+@click.argument('input_path', required=False, type=click.Path(exists=True, dir_okay=False, readable=True))
+def squashtune(input_path):
+
+    """Backward-compatible alias for squashtool."""
+
+    return _launch_squash_tool(input_path)
 
 
 @teletext.command()
@@ -6235,27 +7832,42 @@ def vbirepair(input_path, config, pause, mode, eight_bit, tape_format, line_qual
         page_history_frames=15,
     )
 
-    def save_callback(output_path):
+    def save_callback(output_path, start_frame=0, frame_count=None, *args, **kwargs):
+        if args:
+            if len(args) >= 1:
+                start_frame = args[0]
+            if len(args) >= 2:
+                frame_count = args[1]
+        if 'start_frame' in kwargs:
+            start_frame = kwargs['start_frame']
+        if 'frame_count' in kwargs:
+            frame_count = kwargs['frame_count']
         current_controls_value = state['controls'] if live_tuner is None else live_tuner.values()
         current_line_selection_value = state['selected_lines'] if live_tuner is None else live_tuner.line_selection()
         current_decoder_tuning_value = build_decoder_tuning_state(state['config'], state['tape_format']) if live_tuner is None else (live_tuner.decoder_tuning() or build_decoder_tuning_state(state['config'], state['tape_format']))
+        start_frame = max(int(start_frame), 0)
+        if frame_count is None:
+            end_frame = total_frames - 1
+        else:
+            frame_count = max(int(frame_count), 1)
+            end_frame = min(start_frame + frame_count - 1, total_frames - 1)
         save_cropped_vbi(
             input_path=input_path,
             output_path=output_path,
             config=state['config'],
-            start_frame=0,
-            end_frame=total_frames - 1,
+            start_frame=start_frame,
+            end_frame=end_frame,
             controls=current_controls_value,
             line_selection=current_line_selection_value,
             decoder_tuning=current_decoder_tuning_value,
             tuning_ranges=tuning_ranges,
         )
 
-    def stabilize_callback(output_path, global_shift, *, lock_mode, target_center, target_right_edge, reference_mode='median', reference_line=1, tolerance=3, quick_preview=False, preview_frames=300, start_frame=0, progress_callback=None):
+    def stabilize_callback(output_path, *, reference_frame=0, scope_mode='to_end', frame_count=300, wall_x=None, block_shift=0, right_wall_sensitivity=50, manual_shift_map=None, progress_callback=None):
         current_controls_value = state['controls'] if live_tuner is None else live_tuner.values()
         current_line_selection_value = state['selected_lines'] if live_tuner is None else live_tuner.line_selection()
         current_decoder_tuning_value = build_decoder_tuning_state(state['config'], state['tape_format']) if live_tuner is None else (live_tuner.decoder_tuning() or build_decoder_tuning_state(state['config'], state['tape_format']))
-        return stabilize_repair_vbi(
+        return stabilize_wall_lock_vbi(
             input_path=input_path,
             output_path=output_path,
             config=state['config'],
@@ -6263,104 +7875,44 @@ def vbirepair(input_path, config, pause, mode, eight_bit, tape_format, line_qual
             controls=current_controls_value,
             line_selection=current_line_selection_value,
             decoder_tuning=current_decoder_tuning_value,
-            global_shift=global_shift,
             n_lines=n_lines,
-            start_frame=start_frame if quick_preview else 0,
-            frame_count=preview_frames if quick_preview else None,
-            lock_mode=lock_mode,
-            target_center=target_center,
-            target_right_edge=target_right_edge,
-            reference_mode=reference_mode,
-            reference_line=reference_line,
-            tolerance=tolerance,
+            reference_frame=reference_frame,
+            scope_mode=scope_mode,
+            frame_count=frame_count,
+            wall_x=wall_x,
+            block_shift=block_shift,
+            right_wall_sensitivity=right_wall_sensitivity,
+            manual_shift_map=manual_shift_map,
             progress_callback=progress_callback,
             tuning_ranges=tuning_ranges,
         )
 
-    def stabilize_analysis_callback(*, global_shift, lock_mode, target_center, target_right_edge, reference_mode='median', reference_line=1, tolerance=3, quick_preview=False, preview_frames=300, start_frame=0, progress_callback=None):
+    stabilize_analysis_callback = None
+
+    def clear_stabilize_preview():
+        return None
+
+    def stabilize_preview_callback(*, reference_frame=0, preview_frame=0, wall_x=None, block_shift=0, right_wall_sensitivity=50, manual_shift_map=None, preview_enabled=False):
         current_controls_value = state['controls'] if live_tuner is None else live_tuner.values()
         current_line_selection_value = state['selected_lines'] if live_tuner is None else live_tuner.line_selection()
         current_decoder_tuning_value = build_decoder_tuning_state(state['config'], state['tape_format']) if live_tuner is None else (live_tuner.decoder_tuning() or build_decoder_tuning_state(state['config'], state['tape_format']))
-        return analyse_stabilize_repair_vbi(
+        return build_wall_lock_preview_data(
             input_path=input_path,
             config=state['config'],
             tape_format=state['tape_format'],
             controls=current_controls_value,
             line_selection=current_line_selection_value,
             decoder_tuning=current_decoder_tuning_value,
-            n_lines=n_lines,
-            start_frame=start_frame,
-            frame_count=1,
-            lock_mode=lock_mode,
-            target_center=target_center,
-            target_right_edge=target_right_edge,
-            reference_mode=reference_mode,
-            reference_line=reference_line,
-            tolerance=tolerance,
-            progress_callback=progress_callback,
+            reference_frame=reference_frame,
+            preview_frame=preview_frame,
+            wall_x=wall_x,
+            block_shift=block_shift,
+            right_wall_sensitivity=right_wall_sensitivity,
+            manual_shift_map=manual_shift_map,
             tuning_ranges=tuning_ranges,
+            n_lines=n_lines,
+            preview_enabled=preview_enabled,
         )
-
-    def clear_stabilize_preview():
-        nonlocal stabilize_preview_path, stabilize_preview_total_frames, stabilize_preview_start_frame
-        previous_path = stabilize_preview_path
-        stabilize_preview_path = None
-        stabilize_preview_total_frames = None
-        stabilize_preview_start_frame = 0
-        restart_viewer()
-        if previous_path and os.path.exists(previous_path):
-            try:
-                os.remove(previous_path)
-            except OSError:
-                pass
-
-    def stabilize_preview_callback(*, global_shift, lock_mode, target_center, target_right_edge, reference_mode='median', reference_line=1, tolerance=3, quick_preview=False, preview_frames=300, start_frame=0):
-        nonlocal stabilize_preview_path, stabilize_preview_total_frames, stabilize_preview_start_frame
-        current_controls_value = state['controls'] if live_tuner is None else live_tuner.values()
-        current_line_selection_value = state['selected_lines'] if live_tuner is None else live_tuner.line_selection()
-        current_decoder_tuning_value = build_decoder_tuning_state(state['config'], state['tape_format']) if live_tuner is None else (live_tuner.decoder_tuning() or build_decoder_tuning_state(state['config'], state['tape_format']))
-        preview_count = 1
-        fd, preview_path = tempfile.mkstemp(prefix='vhsttx-repair-preview-', suffix='.vbi')
-        os.close(fd)
-        try:
-            analysis = stabilize_repair_vbi(
-                input_path=input_path,
-                output_path=preview_path,
-                config=state['config'],
-                tape_format=state['tape_format'],
-                controls=current_controls_value,
-                line_selection=current_line_selection_value,
-                decoder_tuning=current_decoder_tuning_value,
-                global_shift=global_shift,
-                n_lines=n_lines,
-                start_frame=start_frame,
-                frame_count=preview_count,
-                lock_mode=lock_mode,
-                target_center=target_center,
-                target_right_edge=target_right_edge,
-                reference_mode=reference_mode,
-                reference_line=reference_line,
-                tolerance=tolerance,
-                progress_callback=None,
-                tuning_ranges=tuning_ranges,
-            )
-        except Exception:
-            try:
-                os.remove(preview_path)
-            except OSError:
-                pass
-            raise
-        previous_path = stabilize_preview_path
-        stabilize_preview_path = preview_path
-        stabilize_preview_total_frames = max(count_complete_frames(preview_path, state['config']), 1)
-        stabilize_preview_start_frame = max(int(start_frame), 0)
-        restart_viewer()
-        if previous_path and os.path.exists(previous_path):
-            try:
-                os.remove(previous_path)
-            except OSError:
-                pass
-        return analysis
 
     def save_page_callback(frame_index, page_text, subpage_text, include_noise, output_path):
         return diagnostics.export_page_t42(
@@ -6370,6 +7922,29 @@ def vbirepair(input_path, config, pause, mode, eight_bit, tape_format, line_qual
             output_path,
             hide_noisy=not bool(include_noise),
         )
+
+    def deconvolve_page_callback(start_frame, frame_count, output_path, mode, page_text, row, include_noise, progress_callback=None):
+        export_diagnostics = VBIRepairDiagnostics(
+            input_path,
+            state_provider=repair_runtime_state,
+            mode='deconvolve',
+            eight_bit=eight_bit,
+            n_lines=n_lines,
+            page_history_frames=max(int(frame_count), 15),
+        )
+        try:
+            return export_diagnostics.deconvolve_t42(
+                start_frame,
+                frame_count,
+                output_path,
+                mode=mode,
+                page_text=page_text,
+                row=row,
+                hide_noisy=not bool(include_noise),
+                progress_callback=progress_callback,
+            )
+        finally:
+            export_diagnostics.close()
 
     try:
         run_repair_window(
@@ -6387,6 +7962,7 @@ def vbirepair(input_path, config, pause, mode, eight_bit, tape_format, line_qual
             stabilize_preview_callback=stabilize_preview_callback,
             clear_stabilize_preview_callback=clear_stabilize_preview,
             save_page_callback=save_page_callback,
+            deconvolve_page_callback=deconvolve_page_callback,
             live_tune_callback=open_live_tune_callback,
             monitor_callback=open_monitor_callback,
             capture_tuning_range_callback=current_tuning_range_snapshot,

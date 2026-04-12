@@ -65,6 +65,7 @@ BASIC_OPTION_NAMES = {
     "vbi_tune_live",
 }
 PRIMARY_COMMANDS = {
+    "squashtool",
     "squash",
     "record",
     "vbiview",
@@ -81,6 +82,7 @@ PRIMARY_COMMAND_ORDER = (
     "vbirepair",
     "deconvolve",
     "t42tool",
+    "squashtool",
     "squash",
     "apps",
 )
@@ -91,6 +93,8 @@ LIST_MODE_ADDITIONAL = "additional"
 HIDDEN_COMMAND_PATHS = {
 }
 TTVIEWER_COMMAND_PATH = ("apps", "ttviewer")
+TTEDITOR_COMMAND_PATH = ("apps", "tteditor")
+SQUASHTOOL_COMMAND_PATH = ("squashtool",)
 _ANSI_PATTERN = re.compile(r"\x1b\[([0-9;]+)m")
 _ANSI_COLOURS = {
     0: "#000000",
@@ -207,7 +211,9 @@ def format_command_label(name):
         "vbicrop": "VBI Crop",
         "t42tool": "T42 Tool",
         "t42crop": "T42 Crop",
-        "ttviewer": "Teletext Viewer",
+        "squashtool": "Squash Tool",
+        "ttviewer": "TeleText Viewer",
+        "tteditor": "TeleText Editor",
         "servicedir": "Service Dir",
         "spellcheck-analyze": "Spellcheck Analyze",
     }
@@ -317,6 +323,8 @@ def bundled_executable_path(name):
 
 def launcher_process_command(preview_tokens):
     is_ttviewer = bool(preview_tokens and preview_tokens[0] == "ttviewer")
+    is_tteditor = bool(preview_tokens and preview_tokens[0] == "tteditor")
+    is_squashtool = bool(preview_tokens and preview_tokens[0] == "squashtool")
     if is_frozen_runtime():
         if is_ttviewer:
             program = (
@@ -325,11 +333,29 @@ def launcher_process_command(preview_tokens):
                 or "ttviewer"
             )
             return program, preview_tokens[1:]
+        if is_tteditor:
+            program = (
+                bundled_executable_path("TTEditor")
+                or bundled_executable_path("tteditor")
+                or "tteditor"
+            )
+            return program, preview_tokens[1:]
+        if is_squashtool:
+            program = (
+                bundled_executable_path("SquashTool")
+                or bundled_executable_path("squashtool")
+                or "squashtool"
+            )
+            return program, preview_tokens[1:]
         program = bundled_executable_path("teletext") or "teletext"
         return program, preview_tokens[1:]
 
     if is_ttviewer:
         return "ttviewer", preview_tokens[1:]
+    if is_tteditor:
+        return "tteditor", preview_tokens[1:]
+    if is_squashtool:
+        return "squashtool", preview_tokens[1:]
 
     cli_args = preview_tokens[1:]
     launcher_code = (
@@ -773,9 +799,18 @@ def build_command_tree(command, path=()):
                 CommandNode(
                     name="ttviewer",
                     path=TTVIEWER_COMMAND_PATH,
-                    help_text="Launch the Teletext Viewer GUI.",
+                    help_text="Launch the TeleText Viewer GUI.",
                     is_group=False,
                     command=click.Command("ttviewer"),
+                )
+            )
+            apps_group.children.append(
+                CommandNode(
+                    name="tteditor",
+                    path=TTEDITOR_COMMAND_PATH,
+                    help_text="Launch the TeleText Editor GUI.",
+                    is_group=False,
+                    command=click.Command("tteditor"),
                 )
             )
             node.children.append(
@@ -1459,6 +1494,12 @@ if QtWidgets is not None:
             self.save_preset_button = QtWidgets.QPushButton("Save Preset")
             self.save_preset_button.clicked.connect(self._save_layout_preset)
             title_row.addWidget(self.save_preset_button)
+            self.load_preset_file_button = QtWidgets.QPushButton("Load File")
+            self.load_preset_file_button.clicked.connect(self._load_layout_preset_from_file)
+            title_row.addWidget(self.load_preset_file_button)
+            self.save_preset_file_button = QtWidgets.QPushButton("Save File")
+            self.save_preset_file_button.clicked.connect(self._save_layout_preset_to_file)
+            title_row.addWidget(self.save_preset_file_button)
             self.delete_preset_button = QtWidgets.QPushButton("Delete Preset")
             self.delete_preset_button.clicked.connect(self._delete_layout_preset)
             title_row.addWidget(self.delete_preset_button)
@@ -1668,6 +1709,66 @@ if QtWidgets is not None:
             self._refresh_layout_preset_combo(preset_name)
             self.statusBar().showMessage(f"Preset saved: {preset_name}")
 
+        def _load_layout_preset_from_file(self, *_args):
+            start_path = str(_bundled_launcher_presets_path().parent)
+            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Load Preset File",
+                start_path,
+                "JSON Files (*.json);;All Files (*)",
+            )
+            if not filename:
+                return
+            try:
+                layout_map = load_launcher_layout_map(filename)
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(self, "Preset", f"Unable to load preset file:\n{exc}")
+                return
+            if not layout_map:
+                QtWidgets.QMessageBox.warning(self, "Preset", "Preset file is empty or invalid.")
+                return
+            suggested_name = pathlib.Path(filename).stem or "Imported Preset"
+            preset_name, accepted = QtWidgets.QInputDialog.getText(
+                self,
+                "Import Preset",
+                "Preset name:",
+                text=suggested_name,
+            )
+            preset_name = str(preset_name or "").strip()
+            if not accepted or not preset_name:
+                return
+            if preset_name == "Default":
+                QtWidgets.QMessageBox.warning(self, "Preset", "Default preset name is reserved.")
+                return
+            presets = load_launcher_layout_presets()
+            presets[preset_name] = layout_map
+            save_launcher_layout_presets(presets)
+            self._write_layout_map(layout_map)
+            self._refresh_layout_preset_combo(preset_name)
+            self._rebuild_param_panel()
+            self.statusBar().showMessage(f"Preset imported: {preset_name}")
+
+        def _save_layout_preset_to_file(self, *_args):
+            preset_name = str(self.layout_preset_combo.currentText() or "").strip() or "preset"
+            start_path = str(_bundled_launcher_presets_path().parent / f"{preset_name}.json")
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                "Save Preset File",
+                start_path,
+                "JSON Files (*.json);;All Files (*)",
+            )
+            if not filename:
+                return
+            output_path = pathlib.Path(filename)
+            if output_path.suffix.lower() != ".json":
+                output_path = output_path.with_suffix(".json")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps(self._current_layout_map(), ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            self.statusBar().showMessage(f"Preset exported: {output_path.name}")
+
         def _delete_layout_preset(self, *_args):
             preset_name = str(self.layout_preset_combo.currentText() or "").strip()
             if not preset_name or preset_name == "Default":
@@ -1852,8 +1953,14 @@ if QtWidgets is not None:
                 return
 
             if node.path == TTVIEWER_COMMAND_PATH:
-                self.command_title.setText("Teletext Viewer")
+                self.command_title.setText("TeleText Viewer")
                 self.command_path_label.setText("CLI path: ttviewer")
+            elif node.path == TTEDITOR_COMMAND_PATH:
+                self.command_title.setText("TeleText Editor")
+                self.command_path_label.setText("CLI path: tteditor")
+            elif node.path == SQUASHTOOL_COMMAND_PATH:
+                self.command_title.setText("Squash Tool")
+                self.command_path_label.setText("CLI path: squashtool")
             else:
                 self.command_title.setText(" ".join(node.path) if node.path else "teletext")
                 self.command_path_label.setText(f"CLI path: teletext {' '.join(node.path)}".strip())
@@ -1929,6 +2036,10 @@ if QtWidgets is not None:
                 return [], [], None
             if self.current_node.path == TTVIEWER_COMMAND_PATH:
                 tokens = ["ttviewer"]
+            elif self.current_node.path == TTEDITOR_COMMAND_PATH:
+                tokens = ["tteditor"]
+            elif self.current_node.path == SQUASHTOOL_COMMAND_PATH:
+                tokens = ["squashtool"]
             else:
                 tokens = ["teletext", *self.current_node.path]
             errors = []

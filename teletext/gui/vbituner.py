@@ -4,6 +4,8 @@ import os
 import shlex
 import sys
 import time
+import traceback
+import unicodedata
 
 import numpy as np
 
@@ -157,13 +159,16 @@ DEFAULT_ANALYSIS_EVALUATION_LINES = 960
 ANALYSIS_MODE_QUICK = 'quick'
 ANALYSIS_MODE_FULL = 'full'
 ANALYSIS_KIND_AUTO_TUNE = 'auto_tune'
+ANALYSIS_KIND_SIGNAL_CONTROLS = 'signal_controls'
 ANALYSIS_KIND_CLOCK_START = 'clock_start'
 ANALYSIS_EVALUATION_LINE_LIMITS = {
     ANALYSIS_KIND_AUTO_TUNE: 256,
+    ANALYSIS_KIND_SIGNAL_CONTROLS: 256,
     ANALYSIS_KIND_CLOCK_START: 384,
 }
 ANALYSIS_KIND_TITLES = {
     ANALYSIS_KIND_AUTO_TUNE: 'Auto Tune',
+    ANALYSIS_KIND_SIGNAL_CONTROLS: 'Auto Signal Controls',
     ANALYSIS_KIND_CLOCK_START: 'Clock / Start Auto-Lock',
 }
 SIGNAL_CONTROL_COUNT = len(DEFAULT_CONTROLS)
@@ -910,17 +915,202 @@ def _analysis_frame_indices(total_frames, mode=ANALYSIS_MODE_QUICK, quick_frames
     return tuple(sorted({int(value) for value in np.linspace(0, total_frames - 1, num=quick_frames)}))
 
 
-def _sample_analysis_preview_lines(preview_lines, limit=DEFAULT_ANALYSIS_EVALUATION_LINES):
+def _group_preview_lines_by_frame(preview_lines):
+    frames = []
+    current = []
+    previous_number = None
+    for item in tuple(preview_lines):
+        number = item[0] if item else None
+        try:
+            numeric_number = int(number) if number is not None else None
+        except (TypeError, ValueError):
+            numeric_number = None
+        if (
+            current
+            and numeric_number is not None
+            and previous_number is not None
+            and numeric_number <= previous_number
+        ):
+            frames.append(tuple(current))
+            current = []
+        current.append(item)
+        if numeric_number is not None:
+            previous_number = numeric_number
+    if current:
+        frames.append(tuple(current))
+    return tuple(frame for frame in frames if frame)
+
+
+def _sample_analysis_preview_lines(preview_lines, limit=DEFAULT_ANALYSIS_EVALUATION_LINES, preserve_frames=False):
     preview_lines = tuple(preview_lines)
     limit = max(int(limit), 1)
     if len(preview_lines) <= limit:
         return preview_lines
+    if preserve_frames:
+        frames = _group_preview_lines_by_frame(preview_lines)
+        if len(frames) > 1:
+            max_frame_length = max(len(frame) for frame in frames)
+            if max_frame_length > 0:
+                max_frames = max(int(limit) // int(max_frame_length), 1)
+                if max_frames >= len(frames):
+                    return preview_lines
+                sampled = []
+                selected = sorted({int(value) for value in np.linspace(0, len(frames) - 1, num=max_frames)})
+                for index in selected:
+                    frame = frames[int(index)]
+                    if sampled and (len(sampled) + len(frame)) > limit:
+                        break
+                    if len(frame) > limit and not sampled:
+                        return tuple(frame[:limit])
+                    sampled.extend(frame)
+                if sampled:
+                    return tuple(sampled)
     indices = np.linspace(0, len(preview_lines) - 1, num=limit)
     return tuple(preview_lines[int(index)] for index in indices)
 
 
 def _analysis_evaluation_line_limit(analysis_kind):
     return int(ANALYSIS_EVALUATION_LINE_LIMITS.get(analysis_kind, DEFAULT_ANALYSIS_EVALUATION_LINES))
+
+
+def _row_order_stats_from_entries(entries):
+    matches = 0
+    duplicates = 0
+    gaps = 0
+    backtracks = 0
+    wraps = 0
+    transitions = 0
+    header_matches = 0
+    header_conflicts = 0
+    score = 0.0
+    per_context = {}
+    current_context = {}
+    current_frame = None
+
+    for entry in tuple(entries):
+        if len(entry) >= 5:
+            frame_index, magazine, row, page, subpage = entry[:5]
+        else:
+            frame_index, magazine, row = entry[:3]
+            page = None
+            subpage = None
+        try:
+            frame_index = int(frame_index)
+            magazine = int(magazine)
+            row = int(row)
+        except (TypeError, ValueError):
+            continue
+        if row < 0 or row > 24:
+            continue
+        if current_frame is None or frame_index != current_frame:
+            per_context = {}
+            current_context = {}
+            current_frame = frame_index
+        try:
+            page = int(page) if page is not None else None
+        except (TypeError, ValueError):
+            page = None
+        try:
+            subpage = int(subpage) if subpage is not None else None
+        except (TypeError, ValueError):
+            subpage = None
+        page_context = (page, subpage) if page is not None else None
+        if row == 0:
+            previous_context = current_context.get(magazine)
+            if previous_context is not None and page_context is not None:
+                if page_context == previous_context:
+                    header_matches += 1
+                    score += 20.0
+                else:
+                    header_conflicts += 1
+                    score -= 80.0
+            current_context[magazine] = page_context if page_context is not None else previous_context
+            per_context[(magazine, current_context.get(magazine))] = 0
+            score += 18.0
+            continue
+        previous_row = per_context.get((magazine, current_context.get(magazine)))
+        if previous_row is None:
+            per_context[(magazine, current_context.get(magazine))] = row
+            score += 6.0
+            continue
+        if previous_row == 0 and row > 0:
+            per_context[(magazine, current_context.get(magazine))] = row
+            score += 8.0
+            continue
+
+        transitions += 1
+        delta = int(row - previous_row)
+        if delta == 1:
+            matches += 1
+            score += 160.0
+        elif delta == 0:
+            duplicates += 1
+            score -= 260.0
+        elif delta > 1:
+            gaps += 1
+            score += max(40.0 - (float(delta - 1) * 15.0), -35.0)
+        elif previous_row >= 20 and row <= 2:
+            wraps += 1
+            score -= 40.0
+        else:
+            backtracks += 1
+            score -= min((abs(delta) + 1) * 110.0, 440.0)
+        per_context[(magazine, current_context.get(magazine))] = row
+
+    order_ok = max(transitions - duplicates - gaps - backtracks, 0)
+    order_ratio = (float(order_ok) / float(transitions)) if transitions else 1.0
+    return {
+        'order_score': float(score),
+        'row_order_transitions': int(transitions),
+        'row_order_matches': int(matches),
+        'row_order_duplicates': int(duplicates),
+        'row_order_gaps': int(gaps),
+        'row_order_backtracks': int(backtracks),
+        'row_order_wraps': int(wraps),
+        'row_order_ratio': float(order_ratio),
+        'header_matches': int(header_matches),
+        'header_conflicts': int(header_conflicts),
+    }
+
+
+def _text_score_from_text(text):
+    text = str(text or '')
+    if not text:
+        return 0.0
+    chars = [char for char in text if char not in '\r\n\t']
+    if not chars:
+        return 0.0
+    visible = [char for char in chars if not char.isspace()]
+    if not visible:
+        return 0.0
+    printable_visible = sum(1 for char in visible if char.isprintable())
+    alnum_visible = sum(1 for char in visible if char.isalnum())
+    replacement_chars = sum(1 for char in visible if char == '\ufffd')
+    weird_chars = sum(
+        1
+        for char in visible
+        if (not char.isprintable()) or unicodedata.category(char).startswith('C')
+    )
+    score = float(printable_visible) * 0.7
+    score += float(alnum_visible) * 0.45
+    score -= float(replacement_chars) * 2.5
+    score -= float(weird_chars) * 1.5
+    return max(score, 0.0)
+
+
+def _packet_text_score(packet):
+    if packet is None or not hasattr(packet, 'to_ansi'):
+        return 0.0
+    try:
+        text = packet.to_ansi(colour=False)
+    except TypeError:
+        try:
+            text = packet.to_ansi()
+        except Exception:
+            return 0.0
+    except Exception:
+        return 0.0
+    return _text_score_from_text(text)
 
 
 def _hold_analysis_runner(thread, worker):
@@ -1023,6 +1213,7 @@ def analyse_vbi_file(
     evaluation_preview_lines = _sample_analysis_preview_lines(
         preview_lines,
         _analysis_evaluation_line_limit(analysis_kind),
+        preserve_frames=(analysis_kind in (ANALYSIS_KIND_AUTO_TUNE, ANALYSIS_KIND_SIGNAL_CONTROLS)),
     )
 
     _emit_analysis_progress(
@@ -1062,8 +1253,39 @@ def analyse_vbi_file(
             line_selection=line_selection,
             progress_callback=report_evaluation_progress,
         )
+        row_summary = ''
+        if int(stats.get('row_order_transitions', 0)) > 0:
+            row_summary = (
+                f" Row order ok {int(stats.get('row_order_matches', 0))}/{int(stats.get('row_order_transitions', 0))},"
+                f" dup {int(stats.get('row_order_duplicates', 0))},"
+                f" gaps {int(stats.get('row_order_gaps', 0))},"
+                f" backtracks {int(stats.get('row_order_backtracks', 0))}."
+            )
+        header_summary = ''
+        if int(stats.get('header_matches', 0)) or int(stats.get('header_conflicts', 0)):
+            header_summary = (
+                f" Header same-page {int(stats.get('header_matches', 0))},"
+                f" conflicts {int(stats.get('header_conflicts', 0))}."
+            )
         summary = (
             f"Auto Tune analysed {stats['teletext_lines']}/{stats['analysed_lines']} teletext lines "
+            f"across {len(frame_indices)}/{total_frames} frames"
+            f" (sampled {len(evaluation_preview_lines)}/{len(preview_lines)} lines)."
+            f"{row_summary}"
+            f"{header_summary}"
+        )
+    elif analysis_kind == ANALYSIS_KIND_SIGNAL_CONTROLS:
+        result_controls, result_decoder_tuning, stats = auto_signal_controls_preview(
+            evaluation_preview_lines,
+            config,
+            tape_format,
+            controls,
+            decoder_tuning=decoder_tuning,
+            line_selection=line_selection,
+            progress_callback=report_evaluation_progress,
+        )
+        summary = (
+            f"Auto Signal Controls analysed {stats['teletext_lines']}/{stats['analysed_lines']} teletext lines "
             f"across {len(frame_indices)}/{total_frames} frames"
             f" (sampled {len(evaluation_preview_lines)}/{len(preview_lines)} lines)."
         )
@@ -1801,8 +2023,23 @@ def _evaluate_preview_candidate(preview_lines, config, tape_format, controls, de
     analysed_lines = 0
     teletext_lines = 0
     score = 0.0
+    row_entries = []
+    current_frame = 0
+    previous_number = None
 
     for number, raw_bytes in preview_lines:
+        try:
+            numeric_number = int(number) if number is not None else None
+        except (TypeError, ValueError):
+            numeric_number = None
+        if (
+            previous_number is not None
+            and numeric_number is not None
+            and numeric_number <= previous_number
+        ):
+            current_frame += 1
+        if numeric_number is not None:
+            previous_number = numeric_number
         logical_line = (int(number) + 1) if number is not None else None
         if selected_lines is not None and logical_line is not None and logical_line not in selected_lines:
             continue
@@ -1815,10 +2052,75 @@ def _evaluate_preview_candidate(preview_lines, config, tape_format, controls, de
         if is_teletext:
             teletext_lines += 1
             score += 1000.0 + (margin * 2.0)
+            try:
+                packet = line.deconvolve()
+            except Exception:
+                packet = None
+            score += _packet_text_score(packet)
+            if hasattr(packet, 'mrag'):
+                row = int(packet.mrag.row)
+                page = int(packet.header.page) if row == 0 else None
+                subpage = int(packet.header.subpage) if row == 0 else None
+                row_entries.append((current_frame, int(packet.mrag.magazine), row, page, subpage))
         else:
             score += margin - (noise * 0.25)
 
+    order_stats = _row_order_stats_from_entries(row_entries)
+    score += float(order_stats['order_score'])
+
     return score, teletext_lines, analysed_lines
+
+
+def _collect_preview_packet_stats(preview_lines, config, tape_format, controls, decoder_tuning=None, line_selection=None):
+    row_entries = []
+    text_score = 0.0
+    text_scored_lines = 0
+    current_frame = 0
+    previous_number = None
+    rendered_lines, _, stats = _build_preview_line_objects(
+        preview_lines,
+        config,
+        tape_format,
+        controls,
+        decoder_tuning=decoder_tuning,
+        line_selection=line_selection,
+    )
+    for line in rendered_lines:
+        number = getattr(line, 'number', None)
+        try:
+            numeric_number = int(number) if number is not None else None
+        except (TypeError, ValueError):
+            numeric_number = None
+        if (
+            previous_number is not None
+            and numeric_number is not None
+            and numeric_number <= previous_number
+        ):
+            current_frame += 1
+        if numeric_number is not None:
+            previous_number = numeric_number
+        if not line.is_teletext:
+            continue
+        try:
+            packet = line.deconvolve()
+        except Exception:
+            packet = None
+        packet_text_score = _packet_text_score(packet)
+        if packet_text_score > 0.0:
+            text_score += float(packet_text_score)
+            text_scored_lines += 1
+        if hasattr(packet, 'mrag'):
+            row = int(packet.mrag.row)
+            page = int(packet.header.page) if row == 0 else None
+            subpage = int(packet.header.subpage) if row == 0 else None
+            row_entries.append((current_frame, int(packet.mrag.magazine), row, page, subpage))
+    return {
+        **stats,
+        **_row_order_stats_from_entries(row_entries),
+        'text_score': float(text_score),
+        'text_score_average': (float(text_score) / float(text_scored_lines)) if text_scored_lines else 0.0,
+        'text_scored_lines': int(text_scored_lines),
+    }
 
 
 def auto_tune_preview(preview_lines, config, tape_format, controls, decoder_tuning=None, line_selection=None, progress_callback=None):
@@ -1905,10 +2207,132 @@ def auto_tune_preview(preview_lines, config, tape_format, controls, decoder_tuni
                     best_score = trial_score
                     best_teletext = trial_teletext
 
+    final_score = float(best_score)
+    final_teletext = int(best_teletext)
+    order_stats = {
+        'order_score': 0.0,
+        'row_order_transitions': 0,
+        'row_order_matches': 0,
+        'row_order_duplicates': 0,
+        'row_order_gaps': 0,
+        'row_order_backtracks': 0,
+        'row_order_wraps': 0,
+        'row_order_ratio': 0.0,
+        'header_matches': 0,
+        'header_conflicts': 0,
+        'text_score': 0.0,
+        'text_score_average': 0.0,
+        'text_scored_lines': 0,
+    }
+    try:
+        final_score, final_teletext, analysed = _evaluate_preview_candidate(
+            preview_lines,
+            config,
+            tape_format,
+            best_controls,
+            decoder_tuning=best_decoder,
+            line_selection=line_selection,
+        )
+        order_stats = _collect_preview_packet_stats(
+            preview_lines,
+            config,
+            tape_format,
+            best_controls,
+            decoder_tuning=best_decoder,
+            line_selection=line_selection,
+        )
+    except Exception:
+        pass
+
     return best_controls, best_decoder, {
-        'score': float(best_score),
-        'teletext_lines': int(best_teletext),
+        'score': float(final_score),
+        'teletext_lines': int(final_teletext),
         'analysed_lines': int(analysed),
+        **order_stats,
+    }
+
+
+def auto_signal_controls_preview(preview_lines, config, tape_format, controls, decoder_tuning=None, line_selection=None, progress_callback=None):
+    controls = _normalise_signal_controls_tuple(controls)
+    decoder_tuning = _normalise_decoder_tuning(decoder_tuning)
+    preview_lines = tuple(preview_lines)
+
+    best_controls = tuple(controls)
+    best_score, best_teletext, analysed = _evaluate_preview_candidate(
+        preview_lines,
+        config,
+        tape_format,
+        best_controls,
+        decoder_tuning=decoder_tuning,
+        line_selection=line_selection,
+    )
+    control_candidates = {
+        'brightness': (35, 45, 50, 55, 65),
+        'sharpness': (20, 35, 50, 65, 80),
+        'gain': (35, 45, 50, 55, 65),
+        'contrast': (35, 45, 50, 55, 65),
+    }
+    total_steps = 1
+    for key, candidates in control_candidates.items():
+        current_value = int(best_controls[CONTROL_INDEX[key]])
+        total_steps += len(list(dict.fromkeys((current_value,) + tuple(int(value) for value in candidates))))
+    step = 1
+    if callable(progress_callback):
+        progress_callback(step, total_steps, 'Evaluating Auto Signal Controls')
+
+    for key, candidates in control_candidates.items():
+        current_value = int(best_controls[CONTROL_INDEX[key]])
+        values = list(dict.fromkeys((current_value,) + tuple(int(value) for value in candidates)))
+        for candidate in values:
+            step += 1
+            if callable(progress_callback):
+                progress_callback(step, total_steps, f'Evaluating Auto Signal Controls ({key})')
+            trial_controls = _controls_with_updates(best_controls, **{key: int(candidate)})
+            trial_score, trial_teletext, _ = _evaluate_preview_candidate(
+                preview_lines,
+                config,
+                tape_format,
+                trial_controls,
+                decoder_tuning=decoder_tuning,
+                line_selection=line_selection,
+            )
+            if (trial_score, trial_teletext) > (best_score, best_teletext):
+                best_controls = trial_controls
+                best_score = trial_score
+                best_teletext = trial_teletext
+
+    extra_stats = {
+        'text_score': 0.0,
+        'text_score_average': 0.0,
+        'text_scored_lines': 0,
+    }
+    final_score = float(best_score)
+    final_teletext = int(best_teletext)
+    try:
+        final_score, final_teletext, analysed = _evaluate_preview_candidate(
+            preview_lines,
+            config,
+            tape_format,
+            best_controls,
+            decoder_tuning=decoder_tuning,
+            line_selection=line_selection,
+        )
+        extra_stats = _collect_preview_packet_stats(
+            preview_lines,
+            config,
+            tape_format,
+            best_controls,
+            decoder_tuning=decoder_tuning,
+            line_selection=line_selection,
+        )
+    except Exception:
+        pass
+
+    return best_controls, decoder_tuning, {
+        'score': float(final_score),
+        'teletext_lines': int(final_teletext),
+        'analysed_lines': int(analysed),
+        **extra_stats,
     }
 
 
@@ -3594,6 +4018,16 @@ if IMPORT_ERROR is None:
             auto_tune_button.clicked.connect(lambda: self._run_analysis_dialog(ANALYSIS_KIND_AUTO_TUNE))
             tools_layout.addWidget(auto_tune_button)
 
+            auto_signal_controls_button = QtWidgets.QPushButton('Auto Signal Controls')
+            auto_signal_controls_button.setEnabled(self._analysis_available())
+            auto_signal_controls_button.setToolTip(
+                'Analyse a recorded .vbi file and suggest Brightness, Sharpness, Gain, and Contrast.'
+                if self._analysis_available()
+                else 'Auto Signal Controls needs a recorded .vbi file.'
+            )
+            auto_signal_controls_button.clicked.connect(lambda: self._run_analysis_dialog(ANALYSIS_KIND_SIGNAL_CONTROLS))
+            tools_layout.addWidget(auto_signal_controls_button)
+
             auto_lock_button = QtWidgets.QPushButton('Clock / Start Auto-Lock')
             auto_lock_button.setEnabled(self._analysis_available() and self._decoder_tuning_enabled)
             auto_lock_button.setToolTip(
@@ -3678,7 +4112,12 @@ if IMPORT_ERROR is None:
                 info_text = 'Preview updates while you tune. Click Start to continue.'
             else:
                 info_text = 'Adjust values and click Start to continue.'
+            self._default_info_text = info_text
             self._info_label = QtWidgets.QLabel(info_text)
+            self._info_reset_timer = QtCore.QTimer(self)
+            self._info_reset_timer.setSingleShot(True)
+            self._info_reset_timer.setInterval(10000)
+            self._info_reset_timer.timeout.connect(self._restore_default_info_text)
             root.addWidget(self._info_label)
 
             buttons = QtWidgets.QHBoxLayout()
@@ -3847,6 +4286,20 @@ if IMPORT_ERROR is None:
             snapshot = self._history_redo_stack.pop()
             self._history_undo_stack.append(snapshot)
             self._restore_history_snapshot(snapshot)
+
+        def _restore_default_info_text(self):
+            if getattr(self, '_info_label', None) is None:
+                return
+            self._info_label.setText(getattr(self, '_default_info_text', ''))
+
+        def _set_transient_info_text(self, text, timeout_ms=30000):
+            if getattr(self, '_info_label', None) is None:
+                return
+            self._info_label.setText(str(text).strip())
+            if getattr(self, '_info_reset_timer', None) is not None:
+                self._info_reset_timer.stop()
+                if timeout_ms is not None and int(timeout_ms) > 0:
+                    self._info_reset_timer.start(int(timeout_ms))
 
         @property
         def raw_values(self):
@@ -4852,7 +5305,20 @@ if IMPORT_ERROR is None:
                 self._begin_bulk_change()
                 try:
                     if analysis_kind == ANALYSIS_KIND_AUTO_TUNE:
-                        for key in ('impulse_filter', 'temporal_denoise', 'noise_reduction', 'hum_removal', 'auto_black_level', 'clock_lock', 'start_lock', 'adaptive_threshold', 'quality_threshold'):
+                        for key in (
+                            'impulse_filter',
+                            'temporal_denoise',
+                            'noise_reduction',
+                            'hum_removal',
+                            'auto_black_level',
+                            'clock_lock',
+                            'start_lock',
+                            'adaptive_threshold',
+                            'quality_threshold',
+                        ):
+                            self._set_function_enabled(key, True)
+                    elif analysis_kind == ANALYSIS_KIND_SIGNAL_CONTROLS:
+                        for key in ('brightness', 'sharpness', 'gain', 'contrast'):
                             self._set_function_enabled(key, True)
                     elif analysis_kind == ANALYSIS_KIND_CLOCK_START:
                         self._set_function_enabled('line_start_range', True)
@@ -4866,7 +5332,7 @@ if IMPORT_ERROR is None:
                     )
                 finally:
                     self._end_bulk_change(record_history=True)
-                self._info_label.setText(result['summary'])
+                self._set_transient_info_text(result['summary'], timeout_ms=10000)
             finally:
                 if self._preview_timer is not None:
                     self._preview_timer.start()
@@ -5414,17 +5880,18 @@ def run_tuning_dialog(
     return None
 
 
-def _live_tuner_entry(shared_values, title, tape_formats, line_count, config=None, tape_format='vhs', analysis_source=None, visible_sections=None):
-    if IMPORT_ERROR is not None:
-        raise IMPORT_ERROR
+def _live_tuner_entry(shared_values, title, tape_formats, line_count, config=None, tape_format='vhs', analysis_source=None, visible_sections=None, error_queue=None):
+    try:
+        if IMPORT_ERROR is not None:
+            raise IMPORT_ERROR
 
-    _ensure_app()
+        _ensure_app()
 
-    line_offset = _line_selection_offset()
-    fix_offset = _fix_capture_card_offset(line_count)
-    line_control_offset = _line_control_override_offset(line_count)
-    line_decoder_offset = _line_decoder_override_offset(line_count)
-    decoder_tuning = {
+        line_offset = _line_selection_offset()
+        fix_offset = _fix_capture_card_offset(line_count)
+        line_control_offset = _line_control_override_offset(line_count)
+        line_decoder_offset = _line_decoder_override_offset(line_count)
+        decoder_tuning = {
         'tape_format': tape_formats[int(shared_values[SIGNAL_CONTROL_COUNT])],
         'extra_roll': int(shared_values[SIGNAL_CONTROL_COUNT + 1]),
         'line_start_range': (
@@ -5465,95 +5932,123 @@ def _live_tuner_entry(shared_values, title, tape_formats, line_count, config=Non
             shared_values[line_decoder_offset:line_decoder_offset + LINE_OVERRIDE_DECODER_SLOT_COUNT],
             line_count=line_count,
         ),
-    } if tape_formats else None
-    line_selection = frozenset(
-        line for line in range(1, line_count + 1)
-        if int(shared_values[line_offset + line - 1]) != 0
-    )
-    fix_capture_card = {
+        } if tape_formats else None
+        line_selection = frozenset(
+            line for line in range(1, line_count + 1)
+            if int(shared_values[line_offset + line - 1]) != 0
+        )
+        fix_capture_card = {
         'enabled': bool(int(shared_values[fix_offset])),
         'seconds': int(shared_values[fix_offset + 1]),
         'interval_minutes': int(shared_values[fix_offset + 2]),
         'device': DEFAULT_FIX_CAPTURE_CARD['device'],
-    }
+        }
 
-    def update_values(values, next_decoder_tuning, next_line_selection, next_fix_capture_card):
-        for index, value in enumerate(values):
-            shared_values[index] = float(value)
-        if tape_formats and next_decoder_tuning is not None:
-            shared_values[SIGNAL_CONTROL_COUNT] = float(tape_formats.index(next_decoder_tuning['tape_format']))
-            shared_values[SIGNAL_CONTROL_COUNT + 1] = float(next_decoder_tuning['extra_roll'])
-            shared_values[SIGNAL_CONTROL_COUNT + 2] = float(next_decoder_tuning['line_start_range'][0])
-            shared_values[SIGNAL_CONTROL_COUNT + 3] = float(next_decoder_tuning['line_start_range'][1])
-            shared_values[SIGNAL_CONTROL_COUNT + 4] = float(next_decoder_tuning['quality_threshold'])
-            shared_values[SIGNAL_CONTROL_COUNT + 5] = float(next_decoder_tuning.get('quality_threshold_coeff', QUALITY_THRESHOLD_COEFF_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 6] = float(next_decoder_tuning.get('clock_lock', CLOCK_LOCK_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 7] = float(next_decoder_tuning.get('clock_lock_coeff', CLOCK_LOCK_COEFF_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 8] = float(next_decoder_tuning.get('start_lock', START_LOCK_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 9] = float(next_decoder_tuning.get('start_lock_coeff', START_LOCK_COEFF_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 10] = float(next_decoder_tuning.get('adaptive_threshold', ADAPTIVE_THRESHOLD_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 11] = float(next_decoder_tuning.get('adaptive_threshold_coeff', ADAPTIVE_THRESHOLD_COEFF_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 12] = float(next_decoder_tuning.get('dropout_repair', DROPOUT_REPAIR_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 13] = float(next_decoder_tuning.get('dropout_repair_coeff', DROPOUT_REPAIR_COEFF_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 14] = float(next_decoder_tuning.get('wow_flutter_compensation', WOW_FLUTTER_COMPENSATION_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 15] = float(next_decoder_tuning.get('wow_flutter_compensation_coeff', WOW_FLUTTER_COMPENSATION_COEFF_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 16] = float(next_decoder_tuning.get('auto_line_align', AUTO_LINE_ALIGN_DEFAULT))
-            shared_values[SIGNAL_CONTROL_COUNT + 17] = 1.0 if next_decoder_tuning.get('show_quality', False) else 0.0
-            shared_values[SIGNAL_CONTROL_COUNT + 18] = 1.0 if next_decoder_tuning.get('show_rejects', False) else 0.0
-            shared_values[SIGNAL_CONTROL_COUNT + 19] = 1.0 if next_decoder_tuning.get('show_start_clock', False) else 0.0
-            shared_values[SIGNAL_CONTROL_COUNT + 20] = 1.0 if next_decoder_tuning.get('show_clock_visuals', False) else 0.0
-            shared_values[SIGNAL_CONTROL_COUNT + 21] = 1.0 if next_decoder_tuning.get('show_alignment_visuals', False) else 0.0
-            shared_values[SIGNAL_CONTROL_COUNT + 22] = 1.0 if next_decoder_tuning.get('show_quality_meter', False) else 0.0
-            shared_values[SIGNAL_CONTROL_COUNT + 23] = 1.0 if next_decoder_tuning.get('show_histogram_graph', False) else 0.0
-            shared_values[SIGNAL_CONTROL_COUNT + 24] = 1.0 if next_decoder_tuning.get('show_eye_pattern', False) else 0.0
-            per_line_shift = normalise_per_line_shift_map(next_decoder_tuning.get('per_line_shift', {}), maximum_line=line_count)
-            for line in range(1, PER_LINE_SHIFT_SLOT_COUNT + 1):
-                shared_values[_per_line_shift_offset(line)] = float(per_line_shift.get(line, 0))
-            line_control_slots = _serialise_line_control_override_slots(
-                next_decoder_tuning.get('line_control_overrides', {}),
-                line_count=line_count,
-            )
-            for index, value in enumerate(line_control_slots):
-                shared_values[line_control_offset + index] = float(value)
-            line_decoder_slots = _serialise_line_decoder_override_slots(
-                next_decoder_tuning.get('line_decoder_overrides', {}),
-                line_count=line_count,
-            )
-            for index, value in enumerate(line_decoder_slots):
-                shared_values[line_decoder_offset + index] = float(value)
-        for line in range(1, line_count + 1):
-            shared_values[line_offset + line - 1] = 1.0 if line in next_line_selection else 0.0
-        fix_settings = normalise_fix_capture_card(next_fix_capture_card)
-        shared_values[fix_offset] = 1.0 if fix_settings['enabled'] else 0.0
-        shared_values[fix_offset + 1] = float(fix_settings['seconds'])
-        shared_values[fix_offset + 2] = float(fix_settings['interval_minutes'])
+        def update_values(values, next_decoder_tuning, next_line_selection, next_fix_capture_card):
+            for index, value in enumerate(values):
+                shared_values[index] = float(value)
+            if tape_formats and next_decoder_tuning is not None:
+                shared_values[SIGNAL_CONTROL_COUNT] = float(tape_formats.index(next_decoder_tuning['tape_format']))
+                shared_values[SIGNAL_CONTROL_COUNT + 1] = float(next_decoder_tuning['extra_roll'])
+                shared_values[SIGNAL_CONTROL_COUNT + 2] = float(next_decoder_tuning['line_start_range'][0])
+                shared_values[SIGNAL_CONTROL_COUNT + 3] = float(next_decoder_tuning['line_start_range'][1])
+                shared_values[SIGNAL_CONTROL_COUNT + 4] = float(next_decoder_tuning['quality_threshold'])
+                shared_values[SIGNAL_CONTROL_COUNT + 5] = float(next_decoder_tuning.get('quality_threshold_coeff', QUALITY_THRESHOLD_COEFF_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 6] = float(next_decoder_tuning.get('clock_lock', CLOCK_LOCK_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 7] = float(next_decoder_tuning.get('clock_lock_coeff', CLOCK_LOCK_COEFF_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 8] = float(next_decoder_tuning.get('start_lock', START_LOCK_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 9] = float(next_decoder_tuning.get('start_lock_coeff', START_LOCK_COEFF_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 10] = float(next_decoder_tuning.get('adaptive_threshold', ADAPTIVE_THRESHOLD_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 11] = float(next_decoder_tuning.get('adaptive_threshold_coeff', ADAPTIVE_THRESHOLD_COEFF_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 12] = float(next_decoder_tuning.get('dropout_repair', DROPOUT_REPAIR_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 13] = float(next_decoder_tuning.get('dropout_repair_coeff', DROPOUT_REPAIR_COEFF_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 14] = float(next_decoder_tuning.get('wow_flutter_compensation', WOW_FLUTTER_COMPENSATION_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 15] = float(next_decoder_tuning.get('wow_flutter_compensation_coeff', WOW_FLUTTER_COMPENSATION_COEFF_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 16] = float(next_decoder_tuning.get('auto_line_align', AUTO_LINE_ALIGN_DEFAULT))
+                shared_values[SIGNAL_CONTROL_COUNT + 17] = 1.0 if next_decoder_tuning.get('show_quality', False) else 0.0
+                shared_values[SIGNAL_CONTROL_COUNT + 18] = 1.0 if next_decoder_tuning.get('show_rejects', False) else 0.0
+                shared_values[SIGNAL_CONTROL_COUNT + 19] = 1.0 if next_decoder_tuning.get('show_start_clock', False) else 0.0
+                shared_values[SIGNAL_CONTROL_COUNT + 20] = 1.0 if next_decoder_tuning.get('show_clock_visuals', False) else 0.0
+                shared_values[SIGNAL_CONTROL_COUNT + 21] = 1.0 if next_decoder_tuning.get('show_alignment_visuals', False) else 0.0
+                shared_values[SIGNAL_CONTROL_COUNT + 22] = 1.0 if next_decoder_tuning.get('show_quality_meter', False) else 0.0
+                shared_values[SIGNAL_CONTROL_COUNT + 23] = 1.0 if next_decoder_tuning.get('show_histogram_graph', False) else 0.0
+                shared_values[SIGNAL_CONTROL_COUNT + 24] = 1.0 if next_decoder_tuning.get('show_eye_pattern', False) else 0.0
+                per_line_shift = normalise_per_line_shift_map(next_decoder_tuning.get('per_line_shift', {}), maximum_line=line_count)
+                for line in range(1, PER_LINE_SHIFT_SLOT_COUNT + 1):
+                    shared_values[_per_line_shift_offset(line)] = float(per_line_shift.get(line, 0))
+                line_control_slots = _serialise_line_control_override_slots(
+                    next_decoder_tuning.get('line_control_overrides', {}),
+                    line_count=line_count,
+                )
+                for index, value in enumerate(line_control_slots):
+                    shared_values[line_control_offset + index] = float(value)
+                line_decoder_slots = _serialise_line_decoder_override_slots(
+                    next_decoder_tuning.get('line_decoder_overrides', {}),
+                    line_count=line_count,
+                )
+                for index, value in enumerate(line_decoder_slots):
+                    shared_values[line_decoder_offset + index] = float(value)
+            for line in range(1, line_count + 1):
+                shared_values[line_offset + line - 1] = 1.0 if line in next_line_selection else 0.0
+            fix_settings = normalise_fix_capture_card(next_fix_capture_card)
+            shared_values[fix_offset] = 1.0 if fix_settings['enabled'] else 0.0
+            shared_values[fix_offset + 1] = float(fix_settings['seconds'])
+            shared_values[fix_offset + 2] = float(fix_settings['interval_minutes'])
 
-    dialog = VBITuningDialog(
-        title,
-        controls=tuple(float(value) for value in shared_values[:SIGNAL_CONTROL_COUNT]),
-        config=config,
-        tape_format=tape_format,
-        live=True,
-        decoder_tuning=decoder_tuning,
-        tape_formats=tape_formats,
-        line_selection=line_selection,
-        line_count=line_count,
-        fix_capture_card=fix_capture_card,
-        analysis_source=analysis_source,
-        visible_sections=visible_sections,
-    )
-    dialog.set_change_callback(update_values)
-    _run_dialog_window(dialog)
+        dialog = VBITuningDialog(
+            title,
+            controls=tuple(float(value) for value in shared_values[:SIGNAL_CONTROL_COUNT]),
+            config=config,
+            tape_format=tape_format,
+            live=True,
+            decoder_tuning=decoder_tuning,
+            tape_formats=tape_formats,
+            line_selection=line_selection,
+            line_count=line_count,
+            fix_capture_card=fix_capture_card,
+            analysis_source=analysis_source,
+            visible_sections=visible_sections,
+        )
+        dialog.set_change_callback(update_values)
+        _run_dialog_window(dialog)
+    except Exception:
+        formatted = traceback.format_exc()
+        if error_queue is not None:
+            try:
+                error_queue.put_nowait(formatted)
+            except Exception:
+                pass
+        raise
 
 
 class LiveTunerHandle:
-    def __init__(self, process, shared_values, tape_formats=None, line_count=DEFAULT_LINE_COUNT):
+    def __init__(self, process, shared_values, tape_formats=None, line_count=DEFAULT_LINE_COUNT, error_queue=None):
         self._process = process
         self._shared_values = shared_values
         self._tape_formats = list(tape_formats or [])
         self._line_count = int(line_count)
+        self._error_queue = error_queue
+        self._reported_stop = False
+
+    def _drain_error_messages(self):
+        messages = []
+        if self._error_queue is None:
+            return messages
+        while True:
+            try:
+                messages.append(self._error_queue.get_nowait())
+            except Exception:
+                break
+        return [message for message in messages if message]
+
+    def _report_if_stopped(self):
+        if self._reported_stop or self._process.is_alive():
+            return
+        self._reported_stop = True
+        self._drain_error_messages()
 
     def values(self):
+        self._report_if_stopped()
         return (
             int(self._shared_values[0]),
             int(self._shared_values[1]),
@@ -5582,6 +6077,7 @@ class LiveTunerHandle:
         )
 
     def decoder_tuning(self):
+        self._report_if_stopped()
         if not self._tape_formats:
             return None
         fix_offset = _fix_capture_card_offset(self._line_count)
@@ -5632,6 +6128,7 @@ class LiveTunerHandle:
         }
 
     def line_selection(self):
+        self._report_if_stopped()
         line_offset = _line_selection_offset()
         return frozenset(
             line for line in range(1, self._line_count + 1)
@@ -5639,6 +6136,7 @@ class LiveTunerHandle:
         )
 
     def fix_capture_card(self):
+        self._report_if_stopped()
         fix_offset = _fix_capture_card_offset(self._line_count)
         return {
             'enabled': bool(int(self._shared_values[fix_offset])),
@@ -5648,6 +6146,7 @@ class LiveTunerHandle:
         }
 
     def is_alive(self):
+        self._report_if_stopped()
         return self._process.is_alive()
 
     def apply(self, values=None, decoder_tuning=None, line_selection=None, fix_capture_card=None):
@@ -5712,9 +6211,13 @@ class LiveTunerHandle:
             self._shared_values[fix_offset + 2] = float(settings['interval_minutes'])
 
     def close(self):
+        self._report_if_stopped()
         if self._process.is_alive():
             self._process.terminate()
             self._process.join(timeout=1)
+        else:
+            self._process.join(timeout=0.1)
+        self._report_if_stopped()
 
 
 def launch_live_tuner(
@@ -5817,7 +6320,9 @@ def launch_live_tuner(
         line_count=line_count,
     ))
     shared_values = ctx.Array('d', shared_seed, lock=False)
-    process = ctx.Process(target=_live_tuner_entry, args=(shared_values, title, tape_formats, line_count, config, tape_format, analysis_source, visible_sections))
+    error_queue = ctx.Queue()
+    process = ctx.Process(target=_live_tuner_entry, args=(shared_values, title, tape_formats, line_count, config, tape_format, analysis_source, visible_sections, error_queue))
     process.daemon = True
     process.start()
-    return LiveTunerHandle(process, shared_values, tape_formats=tape_formats, line_count=line_count)
+    time.sleep(0.15)
+    return LiveTunerHandle(process, shared_values, tape_formats=tape_formats, line_count=line_count, error_queue=error_queue)

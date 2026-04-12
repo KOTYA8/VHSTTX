@@ -9,6 +9,41 @@ from PyQt5.QtGui import QFont, QColor
 
 from teletext.parser import Parser
 
+PREVIEW_CONTROL_GLYPHS = {
+    0x00: 'K',
+    0x01: 'R',
+    0x02: 'G',
+    0x03: 'Y',
+    0x04: 'B',
+    0x05: 'M',
+    0x06: 'C',
+    0x07: 'W',
+    0x08: 'F',
+    0x09: 'S',
+    0x0A: ']',
+    0x0B: '[',
+    0x0C: 'n',
+    0x0D: 'h',
+    0x0E: 'w',
+    0x0F: 'd',
+    0x10: 'k',
+    0x11: 'r',
+    0x12: 'g',
+    0x13: 'y',
+    0x14: 'b',
+    0x15: 'm',
+    0x16: 'c',
+    0x17: 'w',
+    0x18: 'o',
+    0x19: '#',
+    0x1A: ':',
+    0x1B: 'e',
+    0x1C: 'k',
+    0x1D: 'N',
+    0x1E: 'H',
+    0x1F: 'R',
+}
+
 
 class Palette(object):
 
@@ -78,10 +113,36 @@ class ParserQML(Parser):
 
     def emitcharacter(self, c):
         self._cells[self._cell].setProperty('c', c)
+        self._cells[self._cell].setProperty('controlcode', False)
         for state, value in self._state.items():
             self._cells[self._cell].setProperty(state, value)
         self._dh |= self._state['dh']
         self._cell += 1
+
+    def emitcode(self, code=None):
+        show_control = bool(self._root.property('showcontrolcodes'))
+        if show_control and code is not None:
+            code_value = int(code) & 0x1F
+            state = dict(self._state)
+            if 0x00 <= code_value <= 0x07:
+                state['fg'] = code_value
+                state['mosaic'] = False
+                state['conceal'] = False
+            elif 0x10 <= code_value <= 0x17:
+                state['fg'] = code_value & 0x07
+                state['mosaic'] = True
+                state['conceal'] = False
+            self._cells[self._cell].setProperty('c', PREVIEW_CONTROL_GLYPHS.get(int(code) & 0x1F, '?'))
+            self._cells[self._cell].setProperty('controlcode', True)
+            for key, value in state.items():
+                self._cells[self._cell].setProperty(key, value)
+            self._dh |= self._state['dh']
+            self._cell += 1
+            return
+        if self._held:
+            super().emitcode(code)
+            return
+        self._emitcharacter(' ')
 
     def parse(self):
         self.localcodepage = self._local_codepage()
@@ -198,6 +259,22 @@ class Decoder(object):
     @showallsymbols.setter
     def showallsymbols(self, enabled):
         self.widget.rootObject().setProperty('showallsymbols', bool(enabled))
+
+    @property
+    def showcontrolcodes(self):
+        return self.widget.rootObject().property('showcontrolcodes')
+
+    @showcontrolcodes.setter
+    def showcontrolcodes(self, enabled):
+        self.widget.rootObject().setProperty('showcontrolcodes', bool(enabled))
+
+    @property
+    def showgrid(self):
+        return self.widget.rootObject().property('showgrid')
+
+    @showgrid.setter
+    def showgrid(self, enabled):
+        self.widget.rootObject().setProperty('showgrid', bool(enabled))
 
     @property
     def crteffect(self):
