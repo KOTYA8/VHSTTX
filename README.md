@@ -30,18 +30,20 @@ In a folder `myvenv/lib/python3.12/site-packages`, we delete `teletext` and `tel
 Runs on latest Python 3.14.3
 ```
 python -m pip install -e .[qt,viewer,spellcheck]
-python -m pip install pyinstaller
-powershell -ExecutionPolicy Bypass -File misc\windows\build-vhsttx.ps1
 ```
 ### Launch Apps
 ```
+python -m pip install pyinstaller
+powershell -ExecutionPolicy Bypass -File misc\windows\build-vhsttx.ps1   
+
 dist\VHSTTX-Windows\VHSTTX.exe
 dist\VHSTTX-Windows\teletext.exe
 dist\VHSTTX-Windows\TTViewer.exe
+dist\VHSTTX-Windows\TTEditor.exe
 ```
 
 # Future Apps
-## **Teletext Viewer** - ✅ realized
+## **TeleText Viewer** - ✅ realized
 * Opening T42 and HTML files and folders - ✅ realized
 * Split individual pages in HTML and T42 - ✅ realized
 * Opening from .t42 file - ✅ realized
@@ -85,6 +87,7 @@ dist\VHSTTX-Windows\TTViewer.exe
 * Adding/replacing pages/subpages from a .t42 file - ✅ realized
 * View teletext on a page/subpage - ✅ realized
 * Inserting lines from any teletext into your - ✅ realized
+* Managing hidden subpages - ✅ realized
 
 ## **VBI Repair** - ✅ realized
 * Frame-by-frame viewing - ✅ realized
@@ -98,8 +101,19 @@ dist\VHSTTX-Windows\TTViewer.exe
 * Quick launch of teletext commands - ✅ realized
 * Checking for updates - ✅ realized
 
+## **TeleText Editor** - ✅ realized
+* Split individual pages in HTML and T42 - ✅ realized
+* Setting up pages, 8/30 service, Fastext, adding pictures, managing strings and control codes - ✅ realized
+* Changing pages in different languages - ✅ realized
+* Adding and disabling pages/subpages - ✅ realized
+* Managing hidden subpages - ✅ realized
+
+## **Squash Tool** - ✅ realized
+* Selecting methods, selecting subpages for squash - ✅ realized
+* Choice for each page, different squash method - ✅ realized
+
 # Apps
-* **Teletext Viewer** - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection.   
+* **TeleText Viewer** (`ttviewer`) - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection. 
 * **VBI Tune** for **record/deconvolve** (`-vtn/--vbi-tune`) - VBI Tune: simplifies VBI setup before recording.   
 **VBI Tune Live** for **deconvolve/vbiview** (`-vtnl/--vbi-tune-live`) - VBI Tune Live: selects real-time value for VBI.    
 ```
@@ -122,7 +136,12 @@ teletext t42tool test.vbi
 ```
 teletext vbirepair test.vbi
 ```
-* **VHSTTX (GUI)** - Running all commands through the visual shell.
+* **VHSTTX (GUI)** (`vhsttx`) - Running all commands through the visual shell.
+* **TeleText Editor** (`tteditor`) - Teletext editing application. Supports changing pages/subpages/hidden subpages, strings, characters, 8/30 service. Overlaying images and importing from other T42.
+* **Squash Tool** - Visual editing squash methods for pages.
+```
+teletext squashtool test.t42
+```
 
 # Future Functions
 * **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
@@ -134,7 +153,7 @@ teletext vbirepair test.vbi
 * **Pause for (record/deconvolve)** - ✅ realized
 * **Timer for (record)** - ✅ realized
 * **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (❗support only bttv - BT8x8)
-* **Mode: V1|V3|auto for (squash)** - ✅ realized (auto - ⚠️bugs) 
+* **Mode: V1|V3|auto|custom|profile for (squash)** - ✅ realized
 * **Spellcheck** - ⚠️bugs
 
 # Functions
@@ -206,9 +225,18 @@ teletext deconvolve test.vbi > test.t42 -vs 1 -vc 32
 teletext vbiview test.vbi -vs 1 -vc 32
 ```
 
-* **Mode**: V1|V3|auto for **squash** (`-md/--mode`)
+* **Mode**: V1|V3|auto|custom|profile for **squash** (`-md/--mode`). Custom: --match_threshold, --header_weight, --body_weight, --footer_weight, --subcode_match_bonus, --subcode_mismatch_penalty, --iterations. Profile: JSON or --profile-name aggressive, balanced, broken-subcodes.
 ```
 teletext squash test.t42 > tests.t42 -md V1
+```
+```
+teletext squash test.t42 > tests.t42 -md custom --header-weight 0.7
+```
+```
+teletext squash test.t42 > tests.t42 -md profile --profile-name aggressive
+```
+```
+teletext squash test.t42 > tests.t42 -md custom --profile-name aggressive --header-weight 0.7
 ```
 
 # Functions VBI Tune/VBI Tune Live (**deconvolve**/**vbiview**)
@@ -287,11 +315,13 @@ pipx install -e .[qt] --force
 ```
 ttviewer-install
 vhsttx-install
+tteditor-install
 ```
 ### Delete Apps
 ```
 ttviewer-uninstall
 vhsttx-uninstall
+tteditor-uninstall
 ```
 ## Preparing BT878
 1. Installing the QV4L2 Control Panel:
