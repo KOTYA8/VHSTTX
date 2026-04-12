@@ -225,7 +225,7 @@ teletext deconvolve test.vbi > test.t42 -vs 1 -vc 32
 teletext vbiview test.vbi -vs 1 -vc 32
 ```
 
-* **Mode**: V1|V3|auto|custom|profile for **squash** (`-md/--mode`). Custom: --match_threshold, --header_weight, --body_weight, --footer_weight, --subcode_match_bonus, --subcode_mismatch_penalty, --iterations. Profile: JSON or --profile-name aggressive, balanced, broken-subcodes.
+* **Mode**: V1|V3|auto|custom|profile for **squash** (`-md/--mode`). Custom: `--match_threshold`, `--header_weight`, `--body_weight`, `--footer_weight`, `--subcode_match_bonus`, `--subcode_mismatch_penalty`, `--iterations`. Profile: JSON or `--profile-name` aggressive, balanced, broken-subcodes.
 ```
 teletext squash test.t42 > tests.t42 -md V1
 ```
