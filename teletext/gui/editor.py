@@ -564,6 +564,45 @@ class T42EditorLoader(QtCore.QThread):
             self.loaded.emit(self._filename, tuple(entries), service, tuple(page_summary))
 
 
+class T42EditorDirectoryLoader(QtCore.QThread):
+    loaded = QtCore.pyqtSignal(str, object, object, object)
+    failed = QtCore.pyqtSignal(str)
+    progress = QtCore.pyqtSignal(int, int, float)
+
+    def __init__(self, directory):
+        super().__init__()
+        self._directory = os.path.abspath(directory)
+
+    def run(self):
+        raw_packets = []
+        try:
+            paths = [
+                os.path.join(self._directory, name)
+                for name in sorted(os.listdir(self._directory))
+                if name.lower().endswith('.t42') and os.path.isfile(os.path.join(self._directory, name))
+            ]
+            if not paths:
+                raise ValueError('Selected folder does not contain any .t42 files.')
+            total = len(paths)
+            started_at = time.monotonic()
+            packet_number = 0
+            for index, path in enumerate(paths, start=1):
+                with open(path, 'rb') as handle:
+                    chunks = FileChunker(handle, PACKET_SIZE)
+                    for _, data in chunks:
+                        raw_packets.append(bytes(data))
+                        packet_number += 1
+                self.progress.emit(index, total, time.monotonic() - started_at)
+            service = Service.from_packets(Packet(raw, number) for number, raw in enumerate(raw_packets))
+            entries = build_t42_entries(raw_packets)
+            page_summary = summarise_t42_pages(entries)
+            self.progress.emit(total, total, time.monotonic() - started_at)
+        except Exception as exc:  # pragma: no cover - GUI error path
+            self.failed.emit(str(exc))
+        else:
+            self.loaded.emit(self._directory, tuple(entries), service, tuple(page_summary))
+
+
 class TraceImageOverlay(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -773,7 +812,10 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._build_ui()
 
         if filename:
-            self.open_file(filename)
+            if os.path.isdir(filename):
+                self.open_folder(filename)
+            else:
+                self.open_file(filename)
         else:
             self.new_empty_document()
 
@@ -790,8 +832,17 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         toolbar.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._toolbar_widget)
 
-        self._open_button = QtWidgets.QPushButton('Open .t42')
-        self._open_button.clicked.connect(self.open_dialog)
+        self._open_button = QtWidgets.QToolButton()
+        self._open_button.setText('Open')
+        self._open_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self._open_menu = QtWidgets.QMenu(self._open_button)
+        self._open_file_action = QtWidgets.QAction('Open .t42...', self)
+        self._open_file_action.triggered.connect(self.open_dialog)
+        self._open_folder_action = QtWidgets.QAction('Open T42 Folder...', self)
+        self._open_folder_action.triggered.connect(self.open_folder_dialog)
+        self._open_menu.addAction(self._open_file_action)
+        self._open_menu.addAction(self._open_folder_action)
+        self._open_button.setMenu(self._open_menu)
         toolbar.addWidget(self._open_button)
 
         self._save_button = QtWidgets.QPushButton('Save .t42')
@@ -1477,6 +1528,8 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         open_action = file_menu.addAction('Open .t42...')
         open_action.triggered.connect(self.open_dialog)
+        open_folder_action = file_menu.addAction('Open T42 Folder...')
+        open_folder_action.triggered.connect(self.open_folder_dialog)
         file_menu.addSeparator()
         save_action = file_menu.addAction('Save .t42')
         save_action.triggered.connect(self.save_file)
@@ -2245,6 +2298,16 @@ class T42EditorWindow(QtWidgets.QMainWindow):
 
     def _document_display_name(self):
         return os.path.basename(self._filename) if self._filename else 'Untitled'
+
+    def _source_is_directory(self):
+        return bool(self._filename) and os.path.isdir(self._filename)
+
+    def _current_source_directory(self):
+        if self._source_is_directory():
+            return self._filename
+        if self._filename:
+            return os.path.dirname(self._filename)
+        return os.getcwd()
 
     def _set_document_caption(self):
         name = self._document_display_name()
@@ -3737,7 +3800,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             'Select trace image',
-            os.path.dirname(self._filename) if self._filename else os.getcwd(),
+            self._current_source_directory(),
             'Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All Files (*)',
         )
         if not path:
@@ -5441,11 +5504,20 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             'Open T42 file',
-            os.path.dirname(self._filename) if self._filename else os.getcwd(),
+            self._current_source_directory(),
             'Teletext Files (*.t42);;All Files (*)',
         )
         if filename:
             self.open_file(filename)
+
+    def open_folder_dialog(self):
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            'Open T42 folder',
+            self._current_source_directory(),
+        )
+        if directory:
+            self.open_folder(directory)
 
     def open_file(self, filename):
         filename = os.path.abspath(filename)
@@ -5472,6 +5544,37 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self._progress.setVisible(True)
 
         self._loader = T42EditorLoader(filename)
+        self._loader.progress.connect(self._loading_progress)
+        self._loader.failed.connect(self._loading_failed)
+        self._loader.loaded.connect(self._loading_done)
+        self._loader.finished.connect(self._loading_finished)
+        self._loader.start()
+
+    def open_folder(self, directory):
+        directory = os.path.abspath(directory)
+        if self._loader is not None and self._loader.isRunning():
+            return
+        self._filename = directory
+        self._entries = ()
+        self._service = None
+        self._navigator = None
+        self._page_summary = ()
+        self._modified_pages.clear()
+        self._modified_subpages.clear()
+        self._thumbnail_cache.clear()
+        self._thumbnail_queue = deque()
+        self._thumbnail_total = 0
+        self._thumbnail_timer.stop()
+        self._tree.clear()
+        self._tree_status_label.hide()
+        self._set_loaded_state(False)
+        self._clear_decoder()
+        self._set_document_caption()
+        self.statusBar().showMessage(f'Loading {os.path.basename(directory)}...')
+        self._progress.reset()
+        self._progress.setVisible(True)
+
+        self._loader = T42EditorDirectoryLoader(directory)
         self._loader.progress.connect(self._loading_progress)
         self._loader.failed.connect(self._loading_failed)
         self._loader.loaded.connect(self._loading_done)
@@ -6189,7 +6292,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         return result
 
     def _suggest_output_path(self, filename):
-        base_dir = os.path.dirname(self._filename) if self._filename else os.getcwd()
+        base_dir = self._current_source_directory()
         return os.path.join(base_dir, filename)
 
     def _current_screenshot_pixmap(self):
@@ -6199,7 +6302,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         return stage.grab()
 
     def _suggest_screenshot_path(self):
-        base_directory = os.path.dirname(self._filename) if self._filename else os.getcwd()
+        base_directory = self._current_source_directory()
         base_name = os.path.splitext(os.path.basename(self._filename or 'teletext'))[0]
         page_label = self._page_label(self._current_page_number)[1:] if self._current_page_number is not None else '100'
         subpage_label = f'-{int(self._current_subpage_number):04X}' if self._current_subpage_number is not None else ''
@@ -6240,7 +6343,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage('Screenshot copied to clipboard.', 2500)
 
     def save_file(self):
-        if not self._filename:
+        if not self._filename or self._source_is_directory():
             self.save_file_as()
             return
         if self._editor_dirty and not self._editing_locked_for_current_subpage():
@@ -6257,10 +6360,17 @@ class T42EditorWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f'Saved {target}', 5000)
 
     def save_file_as(self):
+        default_name = 'teletext.t42'
+        if self._filename:
+            base_name = os.path.basename(self._filename)
+            if self._source_is_directory():
+                default_name = f'{base_name}.t42'
+            else:
+                default_name = base_name
         target, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             'Save T42 file',
-            self._suggest_output_path(os.path.basename(self._filename) if self._filename else 'teletext.t42'),
+            self._suggest_output_path(default_name),
             'Teletext Files (*.t42)',
         )
         if not target:
@@ -6355,7 +6465,7 @@ class T42EditorWindow(QtWidgets.QMainWindow):
             self._page_label(self._current_page_number)[1:] if self._current_page_number is not None else '100',
             self._current_subpage_number or 0,
         )
-        base_dir = os.path.dirname(self._filename) if self._filename else os.getcwd()
+        base_dir = self._current_source_directory()
         dialog.set_default_directories(
             os.path.join(base_dir, 't42'),
             os.path.join(base_dir, 'html'),
