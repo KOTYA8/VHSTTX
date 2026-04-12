@@ -105,7 +105,7 @@ dist\VHSTTX-Windows\TTEditor.exe
 * Split individual pages in HTML and T42 - ✅ realized
 * Setting up pages, 8/30 service, Fastext, adding pictures, managing strings and control codes - ✅ realized
 * Changing pages in different languages - ✅ realized
-* Adding and disabling pages/subpages - ✅ realized
+* Adding and delete pages/subpages - ✅ realized
 * Managing hidden subpages - ✅ realized
 
 ## **Squash Tool** - ✅ realized
