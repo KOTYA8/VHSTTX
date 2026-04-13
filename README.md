@@ -250,7 +250,11 @@ teletext squash test.t42 > tests.t42 -md custom --profile-name aggressive --head
 * **VITC Decoder** for **vbiview/vbitool/vbirepair** (`--vitc`)/(`--vitcs` for outputting time only to the console)
 ```
 teletext vbiview test.vbi --vitc
+```
+```
 teletext vbitool test.vbi --vitc
+```
+```
 teletext vbirepair test.vbi --vitc
 ```
 
