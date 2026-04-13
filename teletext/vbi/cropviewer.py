@@ -301,8 +301,11 @@ def _run_crop_viewer(
     fixed_line_selection,
     fixed_tuning_ranges=(),
     window_name='VBI Crop',
+    show_vitc=False,
+    vitc_console=False,
 ):
     frame_line_count = int(n_lines) if n_lines is not None else (len(config.field_range) * 2)
+    max_frame_index = max(int(total_frames) - 1, 0)
     tuning_ranges = normalise_tuning_ranges(
         fixed_tuning_ranges,
         total_frames=total_frames,
@@ -431,6 +434,33 @@ def _run_crop_viewer(
     else:
         line_selection_cb = lambda: resolve_effective_state()[1]
 
+    def toggle_external_pause():
+        playing = bool(int(crop_shared_values[CropPlaybackStateProxy.PLAYING_INDEX]))
+        crop_shared_values[CropPlaybackStateProxy.PLAYING_INDEX] = 0 if playing else 1
+        return not bool(int(crop_shared_values[CropPlaybackStateProxy.PLAYING_INDEX]))
+
+    def step_external(direction):
+        current = max(min(int(crop_shared_values[CropPlaybackStateProxy.CURRENT_INDEX]), max_frame_index), 0)
+        next_index = max(min(current + (-1 if direction < 0 else 1), max_frame_index), 0)
+        crop_shared_values[CropPlaybackStateProxy.PLAYING_INDEX] = 0
+        crop_shared_values[CropPlaybackStateProxy.DIRECTION_INDEX] = -1 if direction < 0 else 1
+        crop_shared_values[CropPlaybackStateProxy.CURRENT_INDEX] = next_index
+        return True
+
+    def jump_external(index):
+        next_index = max(min(int(index), max_frame_index), 0)
+        crop_shared_values[CropPlaybackStateProxy.PLAYING_INDEX] = 0
+        crop_shared_values[CropPlaybackStateProxy.CURRENT_INDEX] = next_index
+        return True
+
+    playback_controls = {
+        'toggle_pause': toggle_external_pause,
+        'step': step_external,
+        'jump_to_frame': jump_external,
+        'frame_count': lambda: total_frames,
+        'current_frame': current_frame_index,
+    }
+
     VBIViewer(
         lines,
         effective_config,
@@ -442,6 +472,9 @@ def _run_crop_viewer(
         tape_format=effective_tape_format,
         line_selection=line_selection_cb,
         external_playback=True,
+        playback_controls=playback_controls,
+        vitc=show_vitc,
+        vitc_console=vitc_console,
     )
 
 
@@ -460,6 +493,8 @@ def launch_crop_viewer(
     fixed_line_selection=None,
     fixed_tuning_ranges=(),
     window_name='VBI Crop',
+    show_vitc=False,
+    vitc_console=False,
 ):
     ctx = mp.get_context('spawn')
     process = ctx.Process(
@@ -482,6 +517,8 @@ def launch_crop_viewer(
             fixed_line_selection,
             fixed_tuning_ranges,
             window_name,
+            show_vitc,
+            vitc_console,
         ),
     )
     process.daemon = True

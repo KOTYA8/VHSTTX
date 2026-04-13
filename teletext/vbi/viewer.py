@@ -11,6 +11,7 @@ from teletext.vbi.line import (
     normalise_per_line_shift_map,
     quality_meter_stats,
 )
+from teletext.vbi.vitc import decode_vitc_line, decode_vitc_lines, summarise_vitc_lines
 
 from OpenGL.GLUT import *
 from OpenGL.GL import *
@@ -22,9 +23,42 @@ def _glut_text(value):
     return str(value or "").encode("utf-8", errors="replace")
 
 
+class FrameLinePlaybackSource:
+
+    def __init__(self, frames):
+        self.frames = tuple(tuple(frame) for frame in frames)
+        self.position = 0
+
+    def _materialise(self, index, limit):
+        from teletext.vbi.line import Line
+
+        if not self.frames:
+            return []
+        return [Line(data, number) for number, data in self.frames[index][:limit]]
+
+    def initial_lines(self, limit):
+        return self._materialise(self.position, limit)
+
+    def step_lines(self, limit, direction=1):
+        if not self.frames:
+            return []
+        self.position = min(max(self.position + (1 if direction >= 0 else -1), 0), len(self.frames) - 1)
+        return self._materialise(self.position, limit)
+
+    def set_position(self, index):
+        if not self.frames:
+            self.position = 0
+        else:
+            self.position = min(max(int(index), 0), len(self.frames) - 1)
+
+    @property
+    def frame_count(self):
+        return len(self.frames)
+
+
 class VBIViewer(object):
 
-    def __init__(self, lines, config, name = "VBI Viewer", width=800, height=512, nlines=None, tint=True, show_grid=True, show_slices=False, pause=False, show_line_numbers=True, signal_controls=None, decoder_tuning=None, tape_format='vhs', line_selection=None, external_playback=False):
+    def __init__(self, lines, config, name = "VBI Viewer", width=800, height=512, nlines=None, tint=True, show_grid=True, show_slices=False, pause=False, show_line_numbers=True, signal_controls=None, decoder_tuning=None, tape_format='vhs', line_selection=None, external_playback=False, playback_controls=None, vitc=False, vitc_console=False, frame_line_count=None):
         self.config = config
         self.show_grid = show_grid
         self.tint = tint
@@ -40,6 +74,7 @@ class VBIViewer(object):
         self.tape_format = tape_format
         self.line_selection = line_selection
         self.external_playback = external_playback
+        self.playback_controls = playback_controls or {}
         self._current_signal_controls = None
         self._current_decoder_tuning = None
         self._show_quality = False
@@ -51,20 +86,34 @@ class VBIViewer(object):
         self._show_histogram_graph = False
         self._show_eye_pattern = False
         self._closing = False
+        self.show_vitc = bool(vitc)
+        self.vitc_console = bool(vitc_console)
+        self.vitc_window = None
+        self.vitc_width = 520
+        self.vitc_height = 220
+        self._vitc_results = ()
+        self._vitc_summary = {'summary': 'No VITC decoded', 'timecode': None, 'lines': (), 'results': ()}
+        self._vitc_frame_signature = None
+        self._last_vitc_console_summary = None
+        self._step_direction = 1
 
         self.line_attr = 'resampled'
 
         if nlines is None:
-            self.frame_line_count = len(self.config.field_range) * 2
+            self.frame_line_count = frame_line_count if frame_line_count is not None else (len(self.config.field_range) * 2)
             self.nlines = self.frame_line_count
         else:
             self.nlines = nlines
-            self.frame_line_count = nlines
+            self.frame_line_count = frame_line_count if frame_line_count is not None else nlines
 
         self.lines_src = lines
-        self.lines = list(islice(self.lines_src, 0, self.nlines))
+        if hasattr(self.lines_src, 'initial_lines'):
+            self.lines = list(self.lines_src.initial_lines(self.nlines))
+        else:
+            self.lines = list(islice(self.lines_src, 0, self.nlines))
         self._apply_live_decoder_tuning(rebuild=True)
         self._apply_live_signal_controls(rebuild=True)
+        self._update_vitc_results()
 
         glutInit(sys.argv)
         try:
@@ -79,6 +128,7 @@ class VBIViewer(object):
         glutDisplayFunc(self.display)
         glutReshapeFunc(self.reshape)
         glutKeyboardFunc(self.keyboard)
+        glutSpecialFunc(self.special)
         glutMouseFunc(self.mouse)
         try:
             glutCloseFunc(self.close_viewer)
@@ -100,12 +150,21 @@ class VBIViewer(object):
 
         self.set_plot_projection()
 
+        if self.show_vitc:
+            self._create_vitc_window()
+            glutSetWindow(self.window)
+
         glutMainLoop()
 
     def reshape(self, width, height):
         self.width = width
         self.height = height
         glViewport(0, 0, width, height)
+
+    def reshape_vitc(self, width, height):
+        self.vitc_width = width
+        self.vitc_height = height
+        self._set_simple_projection(width, height)
 
     @property
     def plot_width(self):
@@ -137,15 +196,25 @@ class VBIViewer(object):
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
+    def _set_simple_projection(self, width, height):
+        glViewport(0, 0, width, height)
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        glOrtho(0, width, 0, height, -1, 1)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+
     def keyboard(self, key, x, y):
+        if key in (b'P', b'Q', b'J'):
+            key = key.lower()
         if key == b'g':
             self.show_grid ^= True
         elif key == b'c':
             self.tint ^= True
-        elif key == b'p' and not self.external_playback:
-            self.pause ^= True
-        elif key == b'n' and not self.external_playback:
-            self.single_step = True
+        elif key == b'p' and (not self.external_playback or self.playback_controls):
+            self._toggle_pause()
+        elif key == b' ' and (not self.external_playback or self.playback_controls):
+            self._toggle_pause()
         elif key == b'r':
             self.dumpline(x, y, teletext=False)
         elif key == b't':
@@ -164,14 +233,141 @@ class VBIViewer(object):
             self.line_attr = 'gradient'
         elif key == b'l':
             self.show_line_numbers ^= True
+        elif key == b'j':
+            self._prompt_frame_jump()
         elif key == b'q':
             self.close_viewer()
         self.set_title()
+        try:
+            glutPostRedisplay()
+            if self.vitc_window is not None:
+                glutSetWindow(self.vitc_window)
+                glutPostRedisplay()
+                glutSetWindow(self.window)
+        except Exception:
+            pass
+
+    def special(self, key, x, y):
+        if self.external_playback and not self.playback_controls:
+            return
+        if key == GLUT_KEY_RIGHT:
+            self._request_step(1)
+        elif key == GLUT_KEY_LEFT and (self.playback_controls or hasattr(self.lines_src, 'step_lines')):
+            self._request_step(-1)
+        try:
+            glutPostRedisplay()
+            if self.vitc_window is not None:
+                glutSetWindow(self.vitc_window)
+                glutPostRedisplay()
+                glutSetWindow(self.window)
+        except Exception:
+            pass
+
+    def _toggle_pause(self):
+        toggle_pause = self.playback_controls.get('toggle_pause')
+        if callable(toggle_pause):
+            paused = toggle_pause()
+            if paused is not None:
+                self.pause = bool(paused)
+            return
+        if not self.external_playback:
+            self.pause ^= True
+
+    def _request_step(self, direction):
+        step = self.playback_controls.get('step')
+        if callable(step):
+            paused = step(direction)
+            if paused is not None:
+                self.pause = bool(paused)
+            return
+        if not self.external_playback:
+            self.pause = True
+            self.single_step = True
+            self._step_direction = -1 if direction < 0 else 1
+
+    def _jump_to_frame(self, index):
+        jump = self.playback_controls.get('jump_to_frame')
+        if callable(jump):
+            paused = jump(index)
+            if paused is not None:
+                self.pause = bool(paused)
+            return True
+        if hasattr(self.lines_src, 'set_position'):
+            self.lines_src.set_position(index)
+            self.lines = list(self.lines_src.initial_lines(self.nlines))
+            self._apply_live_signal_controls(rebuild=True)
+            self._update_vitc_results()
+            self.pause = True
+            return True
+        return False
+
+    def _prompt_frame_jump(self):
+        total_frames = None
+        if hasattr(self.lines_src, 'frame_count'):
+            total_frames = max(int(getattr(self.lines_src, 'frame_count', 0)), 0)
+        else:
+            getter = self.playback_controls.get('frame_count')
+            if callable(getter):
+                try:
+                    total_frames = max(int(getter()), 0)
+                except Exception:
+                    total_frames = None
+        if not total_frames:
+            return
+
+        current_index = 0
+        if hasattr(self.lines_src, 'position'):
+            current_index = max(int(getattr(self.lines_src, 'position', 0)), 0)
+        else:
+            getter = self.playback_controls.get('current_frame')
+            if callable(getter):
+                try:
+                    current_index = max(int(getter()), 0)
+                except Exception:
+                    current_index = 0
+
+        try:
+            from PyQt5 import QtWidgets
+        except Exception:
+            print(f'Jump available only with PyQt5. Frame range: 1-{total_frames}', file=sys.stderr)
+            sys.stderr.flush()
+            return
+
+        app = QtWidgets.QApplication.instance()
+        created_app = False
+        if app is None:
+            app = QtWidgets.QApplication(sys.argv[:1] or ['teletext'])
+            created_app = True
+        try:
+            value, accepted = QtWidgets.QInputDialog.getInt(
+                None,
+                'Jump to Frame',
+                f'Frame (1-{total_frames})',
+                min(current_index + 1, total_frames),
+                1,
+                total_frames,
+                1,
+            )
+        finally:
+            if created_app:
+                app.quit()
+        if not accepted:
+            return
+        if self._jump_to_frame(int(value) - 1):
+            try:
+                glutPostRedisplay()
+                if self.vitc_window is not None:
+                    glutSetWindow(self.vitc_window)
+                    glutPostRedisplay()
+                    glutSetWindow(self.window)
+            except Exception:
+                pass
 
     def close_viewer(self, *args):
         if self._closing:
             return
         self._closing = True
+        self._destroy_vitc_window()
         try:
             glutLeaveMainLoop()
         except Exception:
@@ -179,6 +375,48 @@ class VBIViewer(object):
                 glutDestroyWindow(self.window)
             except Exception:
                 pass
+
+    def _create_vitc_window(self):
+        glutInitWindowSize(self.vitc_width, self.vitc_height)
+        self.vitc_window = glutCreateWindow(_glut_text(f'{self.name} - VITC'))
+        glutDisplayFunc(self.display_vitc)
+        glutReshapeFunc(self.reshape_vitc)
+        glutKeyboardFunc(self.keyboard_vitc)
+        glutSpecialFunc(self.special_vitc)
+        try:
+            glutCloseFunc(self.close_vitc_window)
+        except Exception:
+            pass
+        glDisable(GL_LIGHTING)
+        glDisable(GL_DEPTH_TEST)
+        glDisable(GL_TEXTURE_2D)
+        glClearColor(0.05, 0.05, 0.06, 1.0)
+        self._set_simple_projection(self.vitc_width, self.vitc_height)
+
+    def _destroy_vitc_window(self):
+        if self.vitc_window is None:
+            return
+        try:
+            glutDestroyWindow(self.vitc_window)
+        except Exception:
+            pass
+        self.vitc_window = None
+
+    def close_vitc_window(self, *args):
+        self.vitc_window = None
+
+    def keyboard_vitc(self, key, x, y):
+        if key in (b'P', b'Q', b'J'):
+            key = key.lower()
+        if key == b'q':
+            self.close_viewer()
+        elif key in (b'p', b' '):
+            self.keyboard(b'p', x, y)
+        elif key == b'j':
+            self._prompt_frame_jump()
+
+    def special_vitc(self, key, x, y):
+        self.special(key, x, y)
 
     def mouse(self, button, state, x, y):
         if state != GLUT_DOWN:
@@ -208,6 +446,19 @@ class VBIViewer(object):
                 print(getattr(l, '_reason', None))
             sample_dtype = np.dtype(self.config.dtype)
             a = np.frombuffer(getattr(l, '_original_bytes', b''), dtype=sample_dtype)
+            if not l.is_teletext and a.size:
+                previous_lookup = {
+                    int(result.line_number): result
+                    for result in self._vitc_results
+                    if result.line_number is not None
+                }
+                vitc = decode_vitc_line(a, self.config, line_number=line_number, previous=previous_lookup.get(int(line_number or 0)))
+                if vitc is not None:
+                    print(
+                        f'VITC {vitc.timecode} '
+                        f'(line={vitc.line_number}, crc={"OK" if vitc.crc_ok else "BAD"}, '
+                        f'field={vitc.field_mark}, user_bits={vitc.user_bits_hex})'
+                    )
             d = np.diff(a.astype(np.int32))
             md = np.mean(np.abs(d)) if d.size else 0.0
             s = np.sort(a)
@@ -325,6 +576,79 @@ class VBIViewer(object):
         glRasterPos2f(x, y)
         for char in text:
             glutBitmapCharacter(font, ord(char))
+
+    def _update_vitc_results(self):
+        if not self.show_vitc and not self.vitc_console:
+            return
+        frame_lines = []
+        signature = []
+        for line in self.lines:
+            logical_number = self.line_number(line)
+            if logical_number is None:
+                continue
+            raw = getattr(line, '_original_bytes', b'')
+            frame_lines.append((logical_number, np.frombuffer(raw, dtype=self.config.dtype)))
+            signature.append((logical_number, raw))
+        signature = tuple(signature)
+        if signature == self._vitc_frame_signature:
+            return
+        self._vitc_frame_signature = signature
+        self._vitc_results = decode_vitc_lines(frame_lines, self.config, previous_results=self._vitc_results)
+        self._vitc_summary = summarise_vitc_lines(self._vitc_results)
+        if self.vitc_console:
+            summary_text = self._vitc_summary.get('summary')
+            if self._vitc_summary.get('timecode') and summary_text != self._last_vitc_console_summary:
+                if hasattr(self.lines_src, 'position'):
+                    print(f'Frame {getattr(self.lines_src, "position", 0):06d}: {summary_text}')
+                else:
+                    print(summary_text)
+                sys.stdout.flush()
+                self._last_vitc_console_summary = summary_text
+
+    def display_vitc(self):
+        glClear(GL_COLOR_BUFFER_BIT)
+        self._set_simple_projection(self.vitc_width, self.vitc_height)
+
+        header_font = GLUT_BITMAP_HELVETICA_18
+        body_font = GLUT_BITMAP_8_BY_13
+        y = self.vitc_height - 28
+
+        glColor4f(0.95, 0.95, 0.98, 1.0)
+        title = 'VITC Monitor'
+        if hasattr(self.lines_src, 'frame_count'):
+            title = f'{title}  Frame {getattr(self.lines_src, "position", 0) + 1}/{max(getattr(self.lines_src, "frame_count", 1), 1)}'
+        self.draw_text(12, y, title, font=header_font)
+        y -= 24
+
+        summary = self._vitc_summary or {'summary': 'No VITC decoded', 'results': ()}
+        summary_text = summary.get('summary') or 'No VITC decoded'
+        glColor4f(0.82, 0.86, 0.92, 0.95)
+        self.draw_text(12, y, summary_text, font=body_font)
+        y -= 20
+
+        if not summary.get('results'):
+            glColor4f(0.70, 0.72, 0.76, 0.90)
+            self.draw_text(12, y, 'No valid VITC packets in the current frame.', font=body_font)
+            glutSwapBuffers()
+            return
+
+        for result in summary['results'][:8]:
+            glColor4f(0.92, 0.92, 0.95, 0.95)
+            line_text = (
+                f'L{result.line_number:02d}  {result.timecode}  '
+                f'CRC {"OK" if result.crc_ok else "BAD"}  '
+                f'Field {result.field_mark}  UB {result.user_bits_hex}'
+            )
+            self.draw_text(12, y, line_text, font=body_font)
+            y -= 18
+            if y < 18:
+                break
+
+        hint_y = 10
+        glColor4f(0.70, 0.74, 0.80, 0.92)
+        self.draw_text(12, hint_y, 'Keys: P play/pause, Left/Right prev/next, J jump, Q close', font=body_font)
+
+        glutSwapBuffers()
 
     def draw_line_numbers(self):
         if not self.show_line_numbers and not self._show_quality:
@@ -908,6 +1232,7 @@ class VBIViewer(object):
 
         self._apply_live_decoder_tuning()
         self._apply_live_signal_controls()
+        self._update_vitc_results()
 
         self.set_plot_projection()
 
@@ -939,14 +1264,34 @@ class VBIViewer(object):
         self.draw_eye_pattern()
 
         glutSwapBuffers()
-        glutPostRedisplay()
+
+        keep_animating = (
+            (not self.pause)
+            or self.single_step
+            or self.external_playback
+            or self.signal_controls is not None
+            or self.decoder_tuning is not None
+        )
+
+        if keep_animating:
+            if self.vitc_window is not None:
+                glutSetWindow(self.vitc_window)
+                glutPostRedisplay()
+                glutSetWindow(self.window)
+            glutPostRedisplay()
 
         if self.pause and not self.single_step and not self.external_playback:
-            time.sleep(0.1)
+            time.sleep(0.03 if keep_animating else 0.12)
         else:
-            next_lines = list(islice(self.lines_src, 0, self.nlines))
+            if hasattr(self.lines_src, 'step_lines'):
+                direction = self._step_direction if self.single_step else 1
+                next_lines = list(self.lines_src.step_lines(self.nlines, direction=direction))
+            else:
+                next_lines = list(islice(self.lines_src, 0, self.nlines))
 
             if len(next_lines) > 0:
                 self.lines = next_lines
                 self._apply_live_signal_controls(rebuild=True)
+                self._update_vitc_results()
             self.single_step = False
+            self._step_direction = 1
