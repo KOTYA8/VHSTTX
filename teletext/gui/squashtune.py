@@ -554,6 +554,7 @@ if IMPORT_ERROR is None:
             self._output_mode_combo = QtWidgets.QComboBox()
             self._output_mode_combo.addItem('All Pages', 'all')
             self._output_mode_combo.addItem('Unaccepted Pages', 'lost')
+            self._output_mode_combo.setCurrentIndex(1)
             self._output_mode_combo.currentIndexChanged.connect(self._refresh_lost_pages_list)
             output_mode_row.addWidget(self._output_mode_combo, 1)
             errors_layout.addLayout(output_mode_row)

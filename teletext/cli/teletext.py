@@ -1242,6 +1242,29 @@ def current_line_selection(config, ignore_lines=(), used_lines=()):
     return frozenset(sorted(selected_lines))
 
 
+def default_vitc_line_selection(config, input_path=None, vbi_start=None, vbi_count=None):
+    from teletext.vbi.vitc import preferred_vitc_lines
+
+    reference_format = None
+    if input_path and os.path.abspath(input_path).startswith('/dev/vbi'):
+        try:
+            reference_format = get_vbi_capture_format_path(input_path)
+        except Exception:
+            reference_format = None
+
+    effective_start = (
+        tuple(int(value) for value in vbi_start)
+        if vbi_start is not None
+        else default_vbi_start_for_config(config, reference_format=reference_format)
+    )
+    effective_count = (
+        tuple(int(value) for value in vbi_count)
+        if vbi_count is not None
+        else default_vbi_count_for_config(config, reference_format=reference_format)
+    )
+    return frozenset(preferred_vitc_lines(effective_start, effective_count))
+
+
 def current_fix_capture_card(fix_capture_card):
     if fix_capture_card is None:
         return normalise_fix_capture_card(None)
@@ -6761,9 +6784,11 @@ def record(output, device, ignore_lines, used_lines, vbi_start, vbi_count, vbi_t
 @vbiformatparams
 @signalcontrolparams
 @click.option('-vtnl', '--vbi-tune-live', is_flag=True, help='Open the VBI tuning window with live preview instead of the OpenGL viewer.')
+@click.option('--vitc', 'show_vitc', is_flag=True, help='Open a second window and decode PAL VITC from the current VBI frame.')
+@click.option('--vitcs', 'show_vitc_console', is_flag=True, help='Decode PAL VITC from the current VBI frame and print timecode changes in the console.')
 @carduser(extended=True)
 @chunkreader()
-def vbiview(chunker, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, vbi_start, vbi_count, vbi_terminate_reset, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune_live):
+def vbiview(chunker, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, vbi_start, vbi_count, vbi_terminate_reset, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune_live, show_vitc, show_vitc_console):
 
     """Display raw VBI samples with OpenGL."""
 
@@ -6957,7 +6982,7 @@ def vbiview(chunker, config, pause, tape_format, line_quality, clock_lock, start
             decoder_tuning = build_decoder_tuning_state()
 
         try:
-            VBIViewer(lines, config, pause=pause, nlines=n_lines, signal_controls=signal_controls, decoder_tuning=decoder_tuning, tape_format=tape_format, line_selection=line_selection)
+            VBIViewer(lines, config, pause=pause, nlines=n_lines, signal_controls=signal_controls, decoder_tuning=decoder_tuning, tape_format=tape_format, line_selection=line_selection, vitc=show_vitc, vitc_console=show_vitc_console)
         finally:
             if live_tuner is not None:
                 live_tuner.close()
@@ -6978,8 +7003,263 @@ def vbiview(chunker, config, pause, tape_format, line_quality, clock_lock, start
                     pass
 
 
-def _launch_vbi_tool_editor(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune):
-    return _vbitool_impl(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune)
+@teletext.command()
+@click.option('-p', '--pause/--play', default=True,
+              help='Start the VITC window paused. Use P to toggle pause and Left/Right for frame step.')
+@click.option('-il', '--ignore-line', 'ignore_lines', multiple=True, callback=parse_ignore_lines,
+              help='Ignore 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 23,24,25.')
+@click.option('-ul', '--used-line', 'used_lines', multiple=True, callback=parse_used_lines,
+              help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 13,15,29,31.')
+@vbiformatparams
+@signalcontrolparams
+@click.option('--all-frames/--changes-only', default=False,
+              help='Print every decoded frame, or only print when the decoded VITC changes.')
+@click.option('-cs', '--console', 'console_output', is_flag=True,
+              help='Decode VITC in the terminal instead of opening the lightweight VITC viewer.')
+@carduser(extended=True)
+@chunkreader()
+def vitc(chunker, config, pause, ignore_lines, used_lines, vbi_start, vbi_count, vbi_terminate_reset, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, all_frames, console_output):
+
+    """Decode PAL VITC from VBI frames without opening the raw viewer."""
+
+    from teletext.vbi.line import Line, process_line_bytes
+    from teletext.vbi.vitc import decode_vitc_lines, summarise_vitc_lines
+
+    input_path = chunker_input_path(chunker)
+    input_handle = chunker_input_handle(chunker)
+    original_vbi_format = None
+    config, original_vbi_format = apply_vbi_runtime_format(
+        input_handle,
+        input_path,
+        config,
+        vbi_start=vbi_start,
+        vbi_count=vbi_count,
+    )
+
+    if used_lines:
+        selected_lines = current_line_selection(config, ignore_lines=ignore_lines, used_lines=used_lines)
+    else:
+        preferred_lines = default_vitc_line_selection(config, input_path=input_path, vbi_start=vbi_start, vbi_count=vbi_count)
+        selected_lines = current_line_selection(config, ignore_lines=ignore_lines, used_lines=preferred_lines or ())
+
+    controls = current_signal_controls(
+        brightness,
+        sharpness,
+        gain,
+        contrast,
+        impulse_filter,
+        temporal_denoise,
+        noise_reduction,
+        hum_removal,
+        auto_black_level,
+        head_switching_mask,
+        line_to_line_stabilization,
+        auto_gain_contrast,
+    )
+    brightness, sharpness, gain, contrast, brightness_coeff, sharpness_coeff, gain_coeff, contrast_coeff, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, impulse_filter_coeff, temporal_denoise_coeff, noise_reduction_coeff, hum_removal_coeff, auto_black_level_coeff, head_switching_mask_coeff, line_to_line_stabilization_coeff, auto_gain_contrast_coeff = controls
+
+    lines_per_frame = useful_frame_lines(config)
+    chunks = chunker(config.line_bytes, config.field_lines, config.field_range)
+
+    try:
+        if console_output:
+            def emit_frame(frame_index, frame_lines, previous_results, previous_summary):
+                if not frame_lines:
+                    return previous_results, previous_summary
+                results = decode_vitc_lines(frame_lines, config, previous_results=previous_results)
+                summary = summarise_vitc_lines(results)
+                summary_text = summary['summary']
+                should_print = bool(summary['timecode']) and (all_frames or summary_text != previous_summary)
+                if should_print:
+                    click.echo(f'Frame {frame_index:06d}: {summary_text}')
+                    previous_summary = summary_text
+                return results or previous_results, previous_summary
+
+            previous_results = ()
+            previous_summary = None
+            current_frame_index = None
+            current_frame_lines = []
+
+            for number, chunk in chunks:
+                frame_index = int(number // lines_per_frame)
+                logical_line = int((number % lines_per_frame) + 1)
+
+                if current_frame_index is None:
+                    current_frame_index = frame_index
+                elif frame_index != current_frame_index:
+                    previous_results, previous_summary = emit_frame(
+                        current_frame_index,
+                        current_frame_lines,
+                        previous_results,
+                        previous_summary,
+                    )
+                    current_frame_index = frame_index
+                    current_frame_lines = []
+
+                if logical_line not in selected_lines:
+                    continue
+
+                processed = process_line_bytes(
+                    chunk,
+                    config,
+                    brightness=brightness,
+                    sharpness=sharpness,
+                    gain=gain,
+                    contrast=contrast,
+                    brightness_coeff=brightness_coeff,
+                    sharpness_coeff=sharpness_coeff,
+                    gain_coeff=gain_coeff,
+                    contrast_coeff=contrast_coeff,
+                    impulse_filter=impulse_filter,
+                    temporal_denoise=temporal_denoise,
+                    noise_reduction=noise_reduction,
+                    hum_removal=hum_removal,
+                    auto_black_level=auto_black_level,
+                    head_switching_mask=head_switching_mask,
+                    line_stabilization=line_to_line_stabilization,
+                    auto_gain_contrast=auto_gain_contrast,
+                    impulse_filter_coeff=impulse_filter_coeff,
+                    temporal_denoise_coeff=temporal_denoise_coeff,
+                    noise_reduction_coeff=noise_reduction_coeff,
+                    hum_removal_coeff=hum_removal_coeff,
+                    auto_black_level_coeff=auto_black_level_coeff,
+                    head_switching_mask_coeff=head_switching_mask_coeff,
+                    line_stabilization_coeff=line_to_line_stabilization_coeff,
+                    auto_gain_contrast_coeff=auto_gain_contrast_coeff,
+                )
+                current_frame_lines.append((logical_line, np.frombuffer(processed, dtype=config.dtype)))
+
+            if current_frame_index is not None:
+                emit_frame(current_frame_index, current_frame_lines, previous_results, previous_summary)
+        else:
+            try:
+                from teletext.vbi.viewer import FrameLinePlaybackSource, VBIViewer
+            except ModuleNotFoundError as e:
+                if e.name.startswith('OpenGL'):
+                    raise click.UsageError(f'{e.msg}. PyOpenGL is not installed. Use --console for terminal decoding.')
+                raise
+
+            Line.configure(
+                config,
+                force_cpu=True,
+                tape_format='vhs',
+                brightness=brightness,
+                sharpness=sharpness,
+                gain=gain,
+                contrast=contrast,
+                brightness_coeff=brightness_coeff,
+                sharpness_coeff=sharpness_coeff,
+                gain_coeff=gain_coeff,
+                contrast_coeff=contrast_coeff,
+                impulse_filter=impulse_filter,
+                temporal_denoise=temporal_denoise,
+                noise_reduction=noise_reduction,
+                hum_removal=hum_removal,
+                auto_black_level=auto_black_level,
+                head_switching_mask=head_switching_mask,
+                line_stabilization=line_to_line_stabilization,
+                auto_gain_contrast=auto_gain_contrast,
+                impulse_filter_coeff=impulse_filter_coeff,
+                temporal_denoise_coeff=temporal_denoise_coeff,
+                noise_reduction_coeff=noise_reduction_coeff,
+                hum_removal_coeff=hum_removal_coeff,
+                auto_black_level_coeff=auto_black_level_coeff,
+                head_switching_mask_coeff=head_switching_mask_coeff,
+                line_stabilization_coeff=line_to_line_stabilization_coeff,
+                auto_gain_contrast_coeff=auto_gain_contrast_coeff,
+            )
+
+            viewer_height = max(36, min(88, len(selected_lines) * 10))
+            playback_source = None
+            lines = None
+
+            if input_path is not None and not os.path.abspath(input_path).startswith('/dev/vbi'):
+                frames = []
+                current_frame_index = None
+                current_frame = []
+                for number, chunk in chunks:
+                    frame_index = int(number // lines_per_frame)
+                    logical_line = int((number % lines_per_frame) + 1)
+                    if logical_line not in selected_lines:
+                        continue
+                    processed = process_line_bytes(
+                        chunk,
+                        config,
+                        brightness=brightness,
+                        sharpness=sharpness,
+                        gain=gain,
+                        contrast=contrast,
+                        brightness_coeff=brightness_coeff,
+                        sharpness_coeff=sharpness_coeff,
+                        gain_coeff=gain_coeff,
+                        contrast_coeff=contrast_coeff,
+                        impulse_filter=impulse_filter,
+                        temporal_denoise=temporal_denoise,
+                        noise_reduction=noise_reduction,
+                        hum_removal=hum_removal,
+                        auto_black_level=auto_black_level,
+                        head_switching_mask=head_switching_mask,
+                        line_stabilization=line_to_line_stabilization,
+                        auto_gain_contrast=auto_gain_contrast,
+                        impulse_filter_coeff=impulse_filter_coeff,
+                        temporal_denoise_coeff=temporal_denoise_coeff,
+                        noise_reduction_coeff=noise_reduction_coeff,
+                        hum_removal_coeff=hum_removal_coeff,
+                        auto_black_level_coeff=auto_black_level_coeff,
+                        head_switching_mask_coeff=head_switching_mask_coeff,
+                        line_stabilization_coeff=line_to_line_stabilization_coeff,
+                        auto_gain_contrast_coeff=auto_gain_contrast_coeff,
+                    )
+                    if current_frame_index is None:
+                        current_frame_index = frame_index
+                    elif frame_index != current_frame_index:
+                        frames.append(tuple(current_frame))
+                        current_frame = []
+                        current_frame_index = frame_index
+                    current_frame.append((number, processed))
+                if current_frame:
+                    frames.append(tuple(current_frame))
+                playback_source = FrameLinePlaybackSource(frames)
+                lines = playback_source
+            else:
+                filtered_chunks = (
+                    (number, chunk)
+                    for number, chunk in chunks
+                    if int((number % lines_per_frame) + 1) in selected_lines
+                )
+                lines = (Line(chunk, number) for number, chunk in filtered_chunks)
+
+            VBIViewer(
+                lines,
+                config,
+                name='VITC Viewer',
+                pause=pause,
+                nlines=max(len(selected_lines), 1),
+                height=viewer_height,
+                tape_format='vhs',
+                vitc=True,
+                frame_line_count=lines_per_frame,
+            )
+    finally:
+        restore_format = original_vbi_format
+        _close_handle_quietly(input_handle)
+        if vbi_terminate_reset and input_path and os.path.abspath(input_path).startswith('/dev/vbi'):
+            try:
+                restore_format = bt8x8_default_vbi_capture_format(get_vbi_capture_format_path(input_path))
+            except click.UsageError as exc:
+                click.echo(f'Warning: {exc}', err=True)
+                restore_format = None
+        if restore_format is not None:
+            try:
+                restore_vbi_capture_format_path(input_path, restore_format)
+            except click.UsageError as exc:
+                click.echo(f'Warning: {exc}', err=True)
+            except OSError:
+                pass
+
+
+def _launch_vbi_tool_editor(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune, show_vitc=False, show_vitc_console=False):
+    return _vbitool_impl(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune, show_vitc=show_vitc, show_vitc_console=show_vitc_console)
 
 
 @teletext.command(name='vbitool')
@@ -6994,12 +7274,14 @@ def _launch_vbi_tool_editor(input_path, config, pause, tape_format, line_quality
               help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
 @signalcontrolparams
 @click.option('-vtn', '--vbi-tune', is_flag=True, help='Open the VBI tuning window before starting the crop editor.')
+@click.option('--vitc', 'show_vitc', is_flag=True, help='Open a second VITC monitor window for the current VBI frame.')
+@click.option('--vitcs', 'show_vitc_console', is_flag=True, help='Decode PAL VITC from the current VBI frame and print timecode changes in the console.')
 @carduser(extended=True)
-def vbitool(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune):
+def vbitool(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune, show_vitc, show_vitc_console):
 
     """Open the VBI tool editor for a recorded .vbi file."""
 
-    return _launch_vbi_tool_editor(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune)
+    return _launch_vbi_tool_editor(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune, show_vitc=show_vitc, show_vitc_console=show_vitc_console)
 
 
 @teletext.command(name='vbicrop', hidden=True)
@@ -7014,15 +7296,17 @@ def vbitool(input_path, config, pause, tape_format, line_quality, clock_lock, st
               help='Use only 1-based VBI lines within each frame. Accepts comma-separated values, e.g. 4,5.')
 @signalcontrolparams
 @click.option('-vtn', '--vbi-tune', is_flag=True, help='Open the VBI tuning window before starting the crop editor.')
+@click.option('--vitc', 'show_vitc', is_flag=True, help='Open a second VITC monitor window for the current VBI frame.')
+@click.option('--vitcs', 'show_vitc_console', is_flag=True, help='Decode PAL VITC from the current VBI frame and print timecode changes in the console.')
 @carduser(extended=True)
-def vbicrop(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune):
+def vbicrop(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune, show_vitc, show_vitc_console):
 
     """Backward-compatible alias for vbitool."""
 
-    return _launch_vbi_tool_editor(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune)
+    return _launch_vbi_tool_editor(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune, show_vitc=show_vitc, show_vitc_console=show_vitc_console)
 
 
-def _vbitool_impl(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune):
+def _vbitool_impl(input_path, config, pause, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, vbi_tune, show_vitc=False, show_vitc_console=False):
 
     """Open the VBI tool editor for a recorded .vbi file."""
 
@@ -7231,6 +7515,8 @@ def _vbitool_impl(input_path, config, pause, tape_format, line_quality, clock_lo
             fixed_decoder_tuning=build_decoder_tuning_state(preview_config, state['tape_format']),
             fixed_line_selection=line_selection_override,
             window_name=window_name,
+            show_vitc=show_vitc,
+            vitc_console=show_vitc_console,
         )
 
     def restart_viewer():
@@ -7253,6 +7539,8 @@ def _vbitool_impl(input_path, config, pause, tape_format, line_quality, clock_lo
             fixed_line_selection=state['selected_lines'],
             fixed_tuning_ranges=tuning_ranges,
             window_name='VBI Tool',
+            show_vitc=show_vitc,
+            vitc_console=show_vitc_console,
         )
 
     restart_viewer()
@@ -7450,9 +7738,11 @@ def _vbitool_impl(input_path, config, pause, tape_format, line_quality, clock_lo
 @signalcontrolparams
 @fixcaptureparams
 @previewtuneparams
+@click.option('--vitc', 'show_vitc', is_flag=True, help='Open a second VITC monitor window for the current VBI frame.')
+@click.option('--vitcs', 'show_vitc_console', is_flag=True, help='Decode PAL VITC from the current VBI frame and print timecode changes in the console.')
 @carduser(extended=True)
 @click.argument('input_path', type=click.Path(exists=True, dir_okay=False, readable=True))
-def vbirepair(input_path, config, pause, mode, eight_bit, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, fix_capture_card, vbi_tune, vbi_tune_live):
+def vbirepair(input_path, config, pause, mode, eight_bit, tape_format, line_quality, clock_lock, start_lock, adaptive_threshold, dropout_repair, wow_flutter_compensation, auto_line_align, per_line_shift, show_quality, show_rejects, show_start_clock, show_clock_visuals, show_alignment_visuals, show_quality_meter, show_histogram_graph, show_eye_pattern, n_lines, ignore_lines, used_lines, brightness, sharpness, gain, contrast, impulse_filter, temporal_denoise, noise_reduction, hum_removal, auto_black_level, head_switching_mask, line_to_line_stabilization, auto_gain_contrast, fix_capture_card, vbi_tune, vbi_tune_live, show_vitc, show_vitc_console):
 
     """Open the VBI repair tool for a recorded .vbi file."""
 
@@ -7754,6 +8044,8 @@ def vbirepair(input_path, config, pause, mode, eight_bit, tape_format, line_qual
             fixed_line_selection=state['selected_lines'],
             fixed_tuning_ranges=tuning_ranges,
             window_name='VBI Repair Preview' if stabilize_preview_path else 'VBI Repair',
+            show_vitc=show_vitc,
+            vitc_console=show_vitc_console,
         )
 
     def apply_tuning_ranges(next_ranges):
