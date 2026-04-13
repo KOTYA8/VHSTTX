@@ -82,6 +82,7 @@ from teletext.vbi.line import (
     process_lines,
     quality_meter_stats,
 )
+from teletext.vbi.vitc import decode_vitc_line, decode_vitc_lines, summarise_vitc_lines
 
 
 class TestSignalControls(unittest.TestCase):
@@ -2091,3 +2092,45 @@ class TestSignalControls(unittest.TestCase):
             self.assertEqual(entry['result']['summary'], 'Saved suggestion')
             self.assertEqual(entry['result']['decoder_tuning']['clock_lock'], 67)
             self.assertEqual(entry['result']['line_selection'], (4, 5))
+
+
+class TestVITCDecode(unittest.TestCase):
+
+    def _sample_frame(self):
+        sample_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'vitc.vbi')
+        if not os.path.exists(sample_path):
+            self.skipTest('vitc.vbi sample is not available in this workspace.')
+        config = Config(card='bt8x8')
+        raw = np.fromfile(sample_path, dtype=config.dtype, count=config.frame_lines * config.line_length)
+        frame = raw.reshape(config.frame_lines, config.line_length)
+        return config, frame
+
+    def test_decode_vitc_line_from_sample(self):
+        config, frame = self._sample_frame()
+
+        result = decode_vitc_line(frame[12], config, line_number=13)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.line_number, 13)
+        self.assertEqual(result.timecode, '00:02:36:23')
+        self.assertTrue(result.crc_ok)
+        self.assertEqual(result.user_bits_hex, '00000000')
+
+    def test_decode_vitc_lines_from_sample_frame(self):
+        config, frame = self._sample_frame()
+
+        results = decode_vitc_lines(
+            (
+                (13, frame[12]),
+                (15, frame[14]),
+                (29, frame[28]),
+                (31, frame[30]),
+            ),
+            config,
+        )
+        summary = summarise_vitc_lines(results)
+
+        self.assertEqual([result.line_number for result in results], [13, 15, 29, 31])
+        self.assertTrue(all(result.crc_ok for result in results))
+        self.assertEqual(summary['timecode'], '00:02:36:23')
+        self.assertEqual(summary['lines'], (13, 15, 29, 31))

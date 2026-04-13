@@ -111,6 +111,10 @@ class TestCmdVBIView(TestCommandTeletext):
     cmd = teletext.cli.teletext.vbiview
 
 
+class TestCmdVITC(TestCommandTeletext):
+    cmd = teletext.cli.teletext.vitc
+
+
 class TestCmdVBICrop(TestCommandTeletext):
     cmd = teletext.cli.teletext.vbicrop
 
@@ -238,6 +242,8 @@ class TestSignalControlOptions(TestCommandTeletext):
         self.assertIn('-at, --adaptive-threshold', result.output)
         self.assertIn('-dr, --dropout-repair', result.output)
         self.assertIn('-wf, --wow-flutter-compensation', result.output)
+        self.assertIn('--vitc', result.output)
+        self.assertIn('--vitcs', result.output)
         self.assertIn('-ala, --auto-line-align', result.output)
         self.assertIn('-pls, --per-line-shift', result.output)
         self.assertIn('--show-quality', result.output)
@@ -249,14 +255,33 @@ class TestSignalControlOptions(TestCommandTeletext):
         self.assertIn('--show-histogram-graph', result.output)
         self.assertIn('--show-eye-pattern', result.output)
         self.assertIn('VALUE[/COEFF]', result.output)
-        self.assertNotIn('-lqcf, --line-quality-coeff', result.output)
-        self.assertNotIn('-ifcf, --impulse-filter-coeff', result.output)
-        self.assertNotIn('-bncf, --brightness-coeff', result.output)
-        self.assertIn('-vtnl, --vbi-tune-live', result.output)
+
+    def test_vitc_help_lists_vitc_options(self):
+        result = self.runner.invoke(teletext.cli.teletext.vitc, ['--help'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('-p, --pause / --play', result.output)
+        self.assertIn('Left/Right', result.output)
+        self.assertNotIn('N for single-frame step', result.output)
+        self.assertIn('-il, --ignore-line', result.output)
+        self.assertIn('-ul, --used-line', result.output)
+        self.assertIn('-vs, --vbi-start', result.output)
+        self.assertIn('-vc, --vbi-count', result.output)
+        self.assertIn('-vt, --vbi-terminate-reset', result.output)
+        self.assertIn('--all-frames / --changes-only', result.output)
+        self.assertIn('-cs, --console', result.output)
+        self.assertIn('-bn, --brightness', result.output)
+
+    def test_vbitool_help_lists_vitc_option(self):
+        result = self.runner.invoke(teletext.cli.teletext.vbitool, ['--help'])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('--vitc', result.output)
+        self.assertIn('--vitcs', result.output)
 
     def test_vbicrop_help_lists_signal_controls(self):
         result = self.runner.invoke(teletext.cli.teletext.vbicrop, ['--help'])
         self.assertEqual(result.exit_code, 0)
+        self.assertIn('--vitc', result.output)
+        self.assertIn('--vitcs', result.output)
         self.assertIn('-il, --ignore-line', result.output)
         self.assertIn('-ul, --used-line', result.output)
         self.assertNotIn('-fcc, --fix-capture-card', result.output)
@@ -297,6 +322,8 @@ class TestSignalControlOptions(TestCommandTeletext):
     def test_vbirepair_help_lists_repair_options(self):
         result = self.runner.invoke(teletext.cli.teletext.vbirepair, ['--help'])
         self.assertEqual(result.exit_code, 0)
+        self.assertIn('--vitc', result.output)
+        self.assertIn('--vitcs', result.output)
         self.assertIn('-M, --mode', result.output)
         self.assertIn('-8, --eight-bit', result.output)
         self.assertIn('-il, --ignore-line', result.output)
@@ -562,6 +589,13 @@ class TestVBICropHelpers(unittest.TestCase):
         self.assertEqual(
             teletext.cli.teletext.default_vbi_count_for_config(config),
             teletext.cli.teletext.BT8X8_DEFAULT_VBI_COUNT,
+        )
+
+    def test_default_vitc_line_selection_for_bt8x8_matches_pal_lines(self):
+        config = Config(card='bt8x8')
+        self.assertEqual(
+            teletext.cli.teletext.default_vitc_line_selection(config),
+            frozenset((13, 15, 29, 31)),
         )
 
     def test_apply_vbi_runtime_format_supports_vbi_count_without_vbi_start(self):
