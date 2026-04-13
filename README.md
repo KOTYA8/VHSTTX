@@ -112,6 +112,9 @@ dist\VHSTTX-Windows\TTEditor.exe
 * Selecting methods, selecting subpages for squash - ✅ realized
 * Choice for each page, different squash method - ✅ realized
 
+## **VITC Decoder** - ✅ realized
+* Frame-by-frame viewing - ✅ realized
+
 # Apps
 * **TeleText Viewer** (`ttviewer`) - Application for viewing teletext. Supports arrow switching. Shows subpages. Can be opened via .t42 file. Customize pages (remove blinking, double height and width). Language selection. 
 * **VBI Tune** for **record/deconvolve** (`-vtn/--vbi-tune`) - VBI Tune: simplifies VBI setup before recording.   
@@ -142,6 +145,11 @@ teletext vbirepair test.vbi
 ```
 teletext squashtool test.t42
 ```
+* **VITC Decoder** - Viewing timestamps in VITC rows. `-cs/--console` - Display time only in console.
+```
+teletext vitc test.vbi
+teletext vitc test.vbi -cs
+```
 
 # Future Functions
 * **Ignore Line (record/deconvolve/vbiview)** - ✅ realized
@@ -155,6 +163,7 @@ teletext squashtool test.t42
 * **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (❗support only bttv - BT8x8)
 * **Mode: V1|V3|auto|custom|profile for (squash)** - ✅ realized
 * **Spellcheck** - ⚠️bugs
+* **VITC Decoder** (vbiview/vbitool/vbirepair) - ✅ realized
 
 # Functions
 * **Ignore Line** for **record**/**deconvolve**/**vbiview** (`-il/--ignore-line`) - Ignoring lines when writing to VBI and deconvolving to t42.   
@@ -237,6 +246,12 @@ teletext squash test.t42 > tests.t42 -md profile --profile-name aggressive
 ```
 ```
 teletext squash test.t42 > tests.t42 -md custom --profile-name aggressive --header-weight 0.7
+```
+* **VITC Decoder** for **vbiview/vbitool/vbirepair** (`--vitc`)/(`--vitcs` for outputting time only to the console)
+```
+teletext vbiview test.vbi --vitc
+teletext vbitool test.vbi --vitc
+teletext vbirepair test.vbi --vitc
 ```
 
 # Functions VBI Tune/VBI Tune Live (**deconvolve**/**vbiview**)
