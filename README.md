@@ -163,7 +163,7 @@ teletext vitc test.vbi -cs
 * **Capture сard settings: move down/increase frames/reset (record/deconvolve/vbiview)** - ✅ realized (❗support only bttv - BT8x8)
 * **Mode: V1|V3|auto|custom|profile for (squash)** - ✅ realized
 * **Spellcheck** - ⚠️bugs
-* **VITC Decoder** (vbiview/vbitool/vbirepair) - ✅ realized
+* **VITC Decoder (vbiview/vbitool/vbirepair)** - ✅ realized
 
 # Functions
 * **Ignore Line** for **record**/**deconvolve**/**vbiview** (`-il/--ignore-line`) - Ignoring lines when writing to VBI and deconvolving to t42.   
